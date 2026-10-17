@@ -7,7 +7,7 @@ web_dir = "/usr/share/abshare/web"
 ffmpeg = "/usr/bin/ffmpeg"
 ffprobe = "/usr/bin/ffprobe"
 jail = "/usr/local/bin/abshare-jail"
-libs = ["/usr/lib", "/etc/ld.so.cache"]
+libs = []
 [[library]]
 name = "Audiobooks"
 path = "/library"

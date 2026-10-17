@@ -110,3 +110,13 @@ jobs:
           test "$(docker inspect -f '{{.Config.User}}' abshare:ci)" = "65534:65534"
           docker run --rm --entrypoint /usr/local/bin/abshare-jail abshare:ci 2>&1 | grep -q "usage: abshare-jail"
           docker run --rm --entrypoint /bin/sh abshare:ci -c 'test -f /usr/share/abshare/web/index.html && test -f /usr/share/abshare/web/service-worker.js'
+      - name: The image's ffmpeg is the minimal static build, with no network protocols
+        run: |
+          for t in ffmpeg ffprobe; do
+            version="$(docker run --rm --entrypoint /usr/bin/$t abshare:ci -hide_banner -version)"
+            case "$version" in "$t version 7.1."*) ;; *) echo "$version"; exit 1 ;; esac
+            protocols="$(docker run --rm --entrypoint /usr/bin/$t abshare:ci -hide_banner -protocols)"
+            test "$(printf '%s\n' "$protocols" | grep -v ':$' | tr -d ' ' | sort -u)" = "file" || { echo "$protocols"; exit 1; }
+          done
+          conf="$(docker run --rm --entrypoint /usr/bin/ffmpeg abshare:ci -hide_banner -buildconf)"
+          case "$conf" in *--disable-network*) ;; *) echo "$conf"; exit 1 ;; esac
