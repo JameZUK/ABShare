@@ -3,9 +3,11 @@
 
 #![forbid(unsafe_code)]
 
+mod auth;
 mod catalogue;
 mod config;
 mod covers;
+mod db;
 mod probe;
 mod scan;
 mod secret;
