@@ -1150,3 +1150,256 @@ async fn enrolment_refuses_common_leaked_passwords() {
     .await;
     assert_eq!(r.status(), StatusCode::OK);
 }
+
+// ---------------------------------------------------------------- passkeys (software authenticator)
+
+/// A minimal software authenticator: one P-256 key, "none" attestation, user present and
+/// verified. Enough to drive the real WebAuthn verification end to end.
+struct SoftKey {
+    key: openssl::ec::EcKey<openssl::pkey::Private>,
+    cred_id: Vec<u8>,
+    user_handle: Vec<u8>,
+    counter: u32,
+}
+
+fn b64u(b: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::new();
+    for c in b.chunks(3) {
+        let n = c.iter().enumerate().fold(0u32, |n, (i, &x)| n | (u32::from(x) << (16 - 8 * i)));
+        for i in 0..=c.len() {
+            out.push(A[(n >> (18 - 6 * i) & 63) as usize] as char);
+        }
+    }
+    out
+}
+
+fn b64u_decode(s: &str) -> Vec<u8> {
+    let val = |c: u8| match c {
+        b'A'..=b'Z' => c - b'A',
+        b'a'..=b'z' => c - b'a' + 26,
+        b'0'..=b'9' => c - b'0' + 52,
+        b'-' | b'+' => 62,
+        _ => 63,
+    };
+    let bytes: Vec<u8> = s.bytes().filter(|c| *c != b'=').map(val).collect();
+    let mut out = Vec::new();
+    for c in bytes.chunks(4) {
+        let n = c.iter().enumerate().fold(0u32, |n, (i, &x)| n | (u32::from(x) << (18 - 6 * i)));
+        for i in 0..c.len().saturating_sub(1) {
+            out.push((n >> (16 - 8 * i)) as u8);
+        }
+    }
+    out
+}
+
+fn sha256(b: &[u8]) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(b).to_vec()
+}
+
+impl SoftKey {
+    fn new() -> Self {
+        let group = openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::X9_62_PRIME256V1).expect("group");
+        Self {
+            key: openssl::ec::EcKey::generate(&group).expect("key"),
+            cred_id: crate::auth::crypto::random::<16>().to_vec(),
+            user_handle: Vec::new(),
+            counter: 0,
+        }
+    }
+
+    fn cose_key(&self) -> Vec<u8> {
+        use serde_cbor_2::Value;
+        let mut ctx = openssl::bn::BigNumContext::new().expect("ctx");
+        let (mut x, mut y) = (openssl::bn::BigNum::new().expect("x"), openssl::bn::BigNum::new().expect("y"));
+        self.key.public_key().affine_coordinates(self.key.group(), &mut x, &mut y, &mut ctx).expect("coords");
+        let pad = |b: openssl::bn::BigNum| b.to_vec_padded(32).expect("pad");
+        let map: std::collections::BTreeMap<Value, Value> = [
+            (Value::Integer(1), Value::Integer(2)),
+            (Value::Integer(3), Value::Integer(-7)),
+            (Value::Integer(-1), Value::Integer(1)),
+            (Value::Integer(-2), Value::Bytes(pad(x))),
+            (Value::Integer(-3), Value::Bytes(pad(y))),
+        ]
+        .into_iter()
+        .collect();
+        serde_cbor_2::to_vec(&Value::Map(map)).expect("cbor")
+    }
+
+    /// Answers `navigator.credentials.create` for the server's options.
+    fn create(&mut self, options: &Value, origin: &str) -> Value {
+        use serde_cbor_2::Value as C;
+        let pk = &options["publicKey"];
+        self.user_handle = b64u_decode(pk["user"]["id"].as_str().expect("user id"));
+        let client =
+            json!({ "type": "webauthn.create", "challenge": pk["challenge"], "origin": origin, "crossOrigin": false })
+                .to_string();
+        let mut auth = sha256(pk["rp"]["id"].as_str().expect("rp").as_bytes());
+        auth.push(0x45); // user present, user verified, attested credential data
+        auth.extend(0u32.to_be_bytes());
+        auth.extend([0u8; 16]);
+        auth.extend((self.cred_id.len() as u16).to_be_bytes());
+        auth.extend(&self.cred_id);
+        auth.extend(self.cose_key());
+        let att: std::collections::BTreeMap<C, C> = [
+            (C::Text("fmt".into()), C::Text("none".into())),
+            (C::Text("attStmt".into()), C::Map(Default::default())),
+            (C::Text("authData".into()), C::Bytes(auth)),
+        ]
+        .into_iter()
+        .collect();
+        json!({
+            "id": b64u(&self.cred_id), "rawId": b64u(&self.cred_id), "type": "public-key", "extensions": {},
+            "response": { "attestationObject": b64u(&serde_cbor_2::to_vec(&C::Map(att)).expect("cbor")), "clientDataJSON": b64u(client.as_bytes()) },
+        })
+    }
+
+    /// Answers `navigator.credentials.get`, signing with `signer` (normally this key).
+    fn get_signed_by(
+        &mut self,
+        options: &Value,
+        origin: &str,
+        signer: &openssl::ec::EcKey<openssl::pkey::Private>,
+    ) -> Value {
+        let pk = &options["publicKey"];
+        self.counter += 1;
+        let client =
+            json!({ "type": "webauthn.get", "challenge": pk["challenge"], "origin": origin, "crossOrigin": false })
+                .to_string();
+        let mut auth = sha256(pk["rpId"].as_str().expect("rpId").as_bytes());
+        auth.push(0x05); // user present, user verified
+        auth.extend(self.counter.to_be_bytes());
+        let mut signed = auth.clone();
+        signed.extend(sha256(client.as_bytes()));
+        let pkey = openssl::pkey::PKey::from_ec_key(signer.clone()).expect("pkey");
+        let mut s = openssl::sign::Signer::new(openssl::hash::MessageDigest::sha256(), &pkey).expect("signer");
+        s.update(&signed).expect("update");
+        let sig = s.sign_to_vec().expect("sign");
+        json!({
+            "id": b64u(&self.cred_id), "rawId": b64u(&self.cred_id), "type": "public-key", "extensions": {},
+            "response": {
+                "authenticatorData": b64u(&auth), "clientDataJSON": b64u(client.as_bytes()),
+                "signature": b64u(&sig), "userHandle": b64u(&self.user_handle),
+            },
+        })
+    }
+
+    fn get(&mut self, options: &Value, origin: &str) -> Value {
+        let k = self.key.clone();
+        self.get_signed_by(options, origin, &k)
+    }
+}
+
+/// Enrols `username` with only a passkey; returns the key and the access token.
+async fn enrol_passkey(t: &T, username: &str) -> (SoftKey, String) {
+    let tok = invite(t, Role::Listener);
+    let r = send(t, "POST", "/v1/auth/enrol/start", Some(json!({"token": tok, "username": username})), &[]).await;
+    let enrol = json_of(r).await["enrol"].as_str().expect("enrol").to_owned();
+    let r = send(t, "POST", "/v1/auth/enrol/passkey/start", Some(json!({"enrol": enrol})), &[]).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let options = json_of(r).await["options"].clone();
+    let mut key = SoftKey::new();
+    let credential = key.create(&options, ORIGIN);
+    let r = send(
+        t,
+        "POST",
+        "/v1/auth/enrol/passkey/finish",
+        Some(json!({"enrol": enrol, "name": "Phone", "credential": credential})),
+        &[],
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK, "{}", json_of(r).await);
+    let r = send(t, "POST", "/v1/auth/enrol/finish", Some(json!({"enrol": enrol, "device_name": "Phone"})), &[]).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let access = json_of(r).await["access_token"].as_str().expect("access").to_owned();
+    (key, access)
+}
+
+async fn passkey_challenge(t: &T, username: Option<&str>) -> (String, Value) {
+    let body = username.map_or_else(|| json!({}), |u| json!({ "username": u }));
+    let r = send(t, "POST", "/v1/auth/login/passkey/start", Some(body), &[]).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let v = json_of(r).await;
+    (v["challenge"].as_str().expect("challenge").to_owned(), v["options"].clone())
+}
+
+async fn passkey_finish(t: &T, challenge: &str, credential: &Value) -> Response {
+    send(
+        t,
+        "POST",
+        "/v1/auth/login/passkey/finish",
+        Some(json!({"challenge": challenge, "device_name": "Laptop", "credential": credential})),
+        &[],
+    )
+    .await
+}
+
+#[tokio::test]
+async fn passkey_enrolment_and_sign_in_work_end_to_end() {
+    let t = setup();
+    let (mut key, access) = enrol_passkey(&t, "pam").await;
+    let r = send(&t, "GET", "/v1/me", None, &[("authorization", &format!("Bearer {access}"))]).await;
+    assert_eq!(json_of(r).await["factors"]["passkeys"], 1);
+    // Discoverable sign-in (no username), and with a username.
+    for who in [None, Some("pam")] {
+        let (ch, options) = passkey_challenge(&t, who).await;
+        let r = passkey_finish(&t, &ch, &key.get(&options, ORIGIN)).await;
+        assert_eq!(r.status(), StatusCode::OK, "{who:?}");
+        assert!(cookie_value(&r, "abshare_refresh").len() == 64);
+        assert_eq!(json_of(r).await["user"]["username"], "pam");
+    }
+}
+
+#[tokio::test]
+async fn passkey_sign_in_refuses_forgery_phishing_and_replay() {
+    let t = setup();
+    let (mut key, _) = enrol_passkey(&t, "quin").await;
+    // Signed by a different key (a stolen credential ID is not enough).
+    let (ch, options) = passkey_challenge(&t, None).await;
+    let other = SoftKey::new();
+    let forged = key.get_signed_by(&options, ORIGIN, &other.key);
+    assert_eq!(passkey_finish(&t, &ch, &forged).await.status(), StatusCode::UNAUTHORIZED);
+    // A look-alike site relaying our challenge: the origin in the signed data is wrong.
+    let (ch, options) = passkey_challenge(&t, None).await;
+    let phished = key.get(&options, "https://books.example.com.evil.example");
+    assert_eq!(passkey_finish(&t, &ch, &phished).await.status(), StatusCode::UNAUTHORIZED);
+    // Replay: a good assertion works once; the same challenge again is refused.
+    let (ch, options) = passkey_challenge(&t, None).await;
+    let good = key.get(&options, ORIGIN);
+    assert_eq!(passkey_finish(&t, &ch, &good).await.status(), StatusCode::OK);
+    assert_eq!(passkey_finish(&t, &ch, &good).await.status(), StatusCode::UNAUTHORIZED);
+    // An assertion for one challenge doesn't work against another.
+    let (ch2, _) = passkey_challenge(&t, None).await;
+    let (_, options3) = passkey_challenge(&t, None).await;
+    let wrong = key.get(&options3, ORIGIN);
+    assert_eq!(passkey_finish(&t, &ch2, &wrong).await.status(), StatusCode::UNAUTHORIZED);
+    // A key that was never enrolled.
+    let mut stranger = SoftKey::new();
+    stranger.user_handle = key.user_handle.clone();
+    let (ch, options) = passkey_challenge(&t, None).await;
+    assert_eq!(passkey_finish(&t, &ch, &stranger.get(&options, ORIGIN)).await.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn passkey_enrolment_refuses_a_credential_from_another_site() {
+    let t = setup();
+    let tok = invite(&t, Role::Listener);
+    let r = send(&t, "POST", "/v1/auth/enrol/start", Some(json!({"token": tok, "username": "ray"})), &[]).await;
+    let enrol = json_of(r).await["enrol"].as_str().expect("enrol").to_owned();
+    let r = send(&t, "POST", "/v1/auth/enrol/passkey/start", Some(json!({"enrol": enrol})), &[]).await;
+    let options = json_of(r).await["options"].clone();
+    let credential = SoftKey::new().create(&options, "https://evil.example");
+    let r = send(
+        &t,
+        "POST",
+        "/v1/auth/enrol/passkey/finish",
+        Some(json!({"enrol": enrol, "name": "Phone", "credential": credential})),
+        &[],
+    )
+    .await;
+    assert!(r.status().is_client_error(), "{}", r.status());
+    // Nothing was enrolled, so finishing is refused.
+    let r = send(&t, "POST", "/v1/auth/enrol/finish", Some(json!({"enrol": enrol, "device_name": "Phone"})), &[]).await;
+    assert!(r.status().is_client_error());
+}

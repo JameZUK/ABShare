@@ -39,5 +39,9 @@ bytes = "1"
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 tokio-util = { version = "0.7", features = ["io"] }
 
+[dev-dependencies]
+# A software authenticator for the passkey tests (both already in the tree via webauthn-rs).
+serde_cbor_2 = "0.13"
+
 [lints]
 workspace = true
