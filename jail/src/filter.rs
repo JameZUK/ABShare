@@ -1,8 +1,13 @@
 //! The seccomp part of the jail.
 //!
-//! Two filters are stacked. The first makes `clone3` fail with ENOSYS, so the C library
-//! falls back to `clone`, whose flags a filter can see. The second refuses, with EPERM, the
-//! system calls a media decoder never needs and an attacker would want.
+//! Three filters are stacked:
+//! 1. a hand-written guard that kills the process on any system call from another ABI: a
+//!    foreign architecture, or x86-64's x32 numbers (bit 0x40000000), which the rule-based
+//!    filters below would otherwise never match (review J1);
+//! 2. `clone3` fails with ENOSYS, so the C library falls back to `clone`, whose flags a
+//!    filter can see;
+//! 3. the system calls a media decoder never needs and an attacker would want are refused
+//!    with EPERM: among them every socket, and every new process (threads only).
 //!
 //! This is a deny-list. An allow-list depends on the exact ffmpeg build, so it comes when
 //! ABShare's own minimal ffmpeg is fixed (Phase 1); Landlock already confines files,
@@ -65,6 +70,14 @@ const DENIED: &[i64] = &[
     libc::SYS_fsmount,
     libc::SYS_fspick,
     libc::SYS_mount_setattr,
+    // No sockets of any family (ffmpeg reads files only): nothing can reach a UNIX socket on
+    // the host, such as a user D-Bus or a container runtime (review J2).
+    libc::SYS_socket,
+    libc::SYS_socketpair,
+    libc::SYS_connect,
+    // No new processes: a child could outlive the wall-clock kill (review J6).
+    libc::SYS_fork,
+    libc::SYS_vfork,
 ];
 
 /// Namespace flags `clone` may not carry.
@@ -79,6 +92,7 @@ const CLONE_NS_FLAGS: &[u64] = &[
 ];
 
 pub struct Filters {
+    abi: BpfProgram,
     clone3: BpfProgram,
     deny: BpfProgram,
 }
@@ -100,19 +114,47 @@ pub fn compile() -> Result<Filters, String> {
     let clone3 = build(BTreeMap::from([(libc::SYS_clone3, vec![])]), SeccompAction::Errno(libc::ENOSYS as u32))?;
 
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = DENIED.iter().map(|&nr| (nr, vec![])).collect();
-    // socket(domain, ...) with any domain but AF_UNIX.
-    rules.insert(libc::SYS_socket, vec![rule(vec![cond(0, Len::Dword, Op::Ne, libc::AF_UNIX as u64)?])?]);
-    // clone(flags, ...) carrying any namespace flag.
-    let clone_rules = CLONE_NS_FLAGS
+    // clone(flags, ...) carrying any namespace flag, or making a process rather than a thread.
+    let thread = libc::CLONE_THREAD as u64;
+    let mut clone_rules: Vec<SeccompRule> = CLONE_NS_FLAGS
         .iter()
         .map(|&f| rule(vec![cond(0, Len::Qword, Op::MaskedEq(f), f)?]))
         .collect::<Result<_, _>>()?;
+    clone_rules.push(rule(vec![cond(0, Len::Qword, Op::MaskedEq(thread), 0)?])?);
     rules.insert(libc::SYS_clone, clone_rules);
     let deny = build(rules, SeccompAction::Errno(libc::EPERM as u32))?;
-    Ok(Filters { clone3, deny })
+    Ok(Filters { abi: abi_guard(), clone3, deny })
+}
+
+/// Kills the process on a system call from any ABI but the native one. Raw BPF:
+/// `arch == native && nr < 0x40000000 ? ALLOW : KILL_PROCESS`.
+fn abi_guard() -> BpfProgram {
+    use seccompiler::sock_filter;
+    const LD_W_ABS: u16 = 0x20; // BPF_LD | BPF_W | BPF_ABS
+    const JEQ_K: u16 = 0x15; // BPF_JMP | BPF_JEQ | BPF_K
+    const JGE_K: u16 = 0x35; // BPF_JMP | BPF_JGE | BPF_K
+    const RET_K: u16 = 0x06; // BPF_RET | BPF_K
+    const KILL_PROCESS: u32 = 0x8000_0000;
+    const ALLOW: u32 = 0x7fff_0000;
+    const X32_BIT: u32 = 0x4000_0000;
+    #[cfg(target_arch = "x86_64")]
+    const AUDIT_ARCH: u32 = 0xC000_003E;
+    #[cfg(target_arch = "aarch64")]
+    const AUDIT_ARCH: u32 = 0xC000_00B7;
+    let i = |code, jt, jf, k| sock_filter { code, jt, jf, k };
+    vec![
+        i(LD_W_ABS, 0, 0, 4),         // A = seccomp_data.arch
+        i(JEQ_K, 1, 0, AUDIT_ARCH),   // native? skip the kill
+        i(RET_K, 0, 0, KILL_PROCESS), //
+        i(LD_W_ABS, 0, 0, 0),         // A = seccomp_data.nr
+        i(JGE_K, 0, 1, X32_BIT),      // x32 number? kill : allow
+        i(RET_K, 0, 0, KILL_PROCESS), //
+        i(RET_K, 0, 0, ALLOW),        //
+    ]
 }
 
 pub fn apply(f: &Filters) -> Result<(), String> {
+    seccompiler::apply_filter(&f.abi).map_err(|e| format!("seccomp: {e}"))?;
     seccompiler::apply_filter(&f.clone3).map_err(|e| format!("seccomp: {e}"))?;
     seccompiler::apply_filter(&f.deny).map_err(|e| format!("seccomp: {e}"))
 }

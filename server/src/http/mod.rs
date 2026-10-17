@@ -109,7 +109,8 @@ pub struct AppState {
     pub passkey_login: Ceremonies<PasskeyLogin>,
     pub passkey_add: Ceremonies<(i64, webauthn_rs::prelude::PasskeyRegistration)>,
     pub totp_add: Ceremonies<(i64, Vec<u8>)>,
-    pub anon_limit: RateLimit,
+    /// Keyed like the lockout: IPv4 exactly, IPv6 by /64 (one subscriber's allocation).
+    pub anon_limit: RateLimit<abshare_core::auth::lockout::AddrKey>,
     pub progress_limit: RateLimit<(i64, String)>,
     pub media: Option<Arc<crate::media::Media>>,
     pub web_dir: Option<std::path::PathBuf>,

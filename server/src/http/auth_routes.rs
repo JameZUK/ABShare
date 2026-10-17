@@ -106,7 +106,7 @@ struct TokenBody {
 }
 
 async fn invite_inspect(S(st): S<State>, Ip(ip): Ip, Json(b): Json<TokenBody>) -> Result<Json<Value>, ApiError> {
-    if !st.anon_limit.allow(ip, now()) {
+    if !st.anon_limit.allow(ip.into(), now()) {
         return Err(ApiError::too_many());
     }
     if !abshare_core::auth::codes::is_token(&b.token) {
@@ -125,7 +125,7 @@ struct EnrolStart {
 }
 
 async fn enrol_start(S(st): S<State>, Ip(ip): Ip, Json(b): Json<EnrolStart>) -> Result<Json<Value>, ApiError> {
-    if !st.anon_limit.allow(ip, now()) {
+    if !st.anon_limit.allow(ip.into(), now()) {
         return Err(ApiError::too_many());
     }
     if !abshare_core::auth::codes::is_token(&b.token) {
@@ -489,7 +489,7 @@ async fn login_passkey_start(
     Ip(ip): Ip,
     Json(b): Json<PasskeyStart>,
 ) -> Result<Json<Value>, ApiError> {
-    if !st.anon_limit.allow(ip, now()) {
+    if !st.anon_limit.allow(ip.into(), now()) {
         return Err(ApiError::too_many());
     }
     let (options, state) = match b.username.map(|u| u.trim().to_ascii_lowercase()).filter(|u| !u.is_empty()) {

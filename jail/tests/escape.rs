@@ -143,21 +143,25 @@ fn writing_anywhere_else_is_refused() {
 }
 
 #[test]
-fn network_sockets_are_refused_and_unix_sockets_allowed() {
+fn every_socket_is_refused() {
     need_landlock!();
     let s = Scratch::new();
     assert_eq!(out(&s.run(&["inet"])), EPERM);
     assert_eq!(out(&s.run(&["inet6"])), EPERM);
     assert_eq!(out(&s.run(&["connect"])), EPERM);
-    assert_eq!(out(&s.run(&["unix"])), "ok");
+    assert_eq!(out(&s.run(&["unix"])), EPERM);
 }
 
 #[test]
 fn starting_another_program_is_refused() {
     need_landlock!();
     let s = Scratch::new();
-    assert_eq!(out(&s.run(&["exec", "/bin/sh"])), EACCES);
-    assert_eq!(out(&s.run(&["exec", "/usr/bin/env"])), EACCES);
+    // Refused twice over: no new process (seccomp, EPERM), and no execution outside the
+    // allowed paths (Landlock, EACCES) if one were made.
+    for prog in ["/bin/sh", "/usr/bin/env"] {
+        let o = out(&s.run(&["exec", prog]));
+        assert!(o == EPERM || o == EACCES, "{prog}: {o}");
+    }
 }
 
 #[test]
@@ -237,4 +241,80 @@ fn a_program_inside_the_writable_directory_is_refused() {
     let o = Command::new(JAIL).args(["--write", &s.p("job"), "--", &copy, "env"]).output().expect("run");
     assert_eq!(o.status.code(), Some(125));
     assert_eq!(out(&o), "");
+}
+
+/// Runs a short Python script inside the jail (for raw system calls the probe can't make
+/// without `unsafe`). `None` when there's no python3 here.
+fn python_in_jail(s: &Scratch, script: &str) -> Option<String> {
+    let py = ["/usr/bin/python3", "/bin/python3"].into_iter().find(|p| Path::new(p).exists())?;
+    let mut cmd = Command::new(JAIL);
+    cmd.args(["--read", &s.p("input"), "--write", &s.p("job")]);
+    for lib in ["/usr/lib", "/usr/lib64", "/lib", "/lib64", "/etc/ld.so.cache"] {
+        if Path::new(lib).exists() {
+            cmd.args(["--lib", lib]);
+        }
+    }
+    let o = cmd.args(["--", py, "-I", "-S", "-c", script]).output().expect("run jail");
+    Some(format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout).trim(),
+        if o.status.code().is_none() { "killed" } else { "" }
+    ))
+}
+
+/// x32 system-call numbers (bit 0x40000000) must not slip past the filter (review J1).
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn x32_system_calls_cannot_bypass_the_filter() {
+    need_landlock!();
+    let s = Scratch::new();
+    // unshare(CLONE_NEWUSER) and socket(AF_INET, SOCK_DGRAM) through their x32 numbers.
+    for (name, nr, args) in [("unshare", 272, "0x10000000"), ("socket", 41, "2, 2, 0")] {
+        let script = format!(
+            "import ctypes\nl=ctypes.CDLL(None,use_errno=True)\nr=l.syscall(0x40000000|{nr},{args})\nprint('ok' if r>=0 else 'denied')"
+        );
+        let Some(out) = python_in_jail(&s, &script) else {
+            eprintln!("skipped: no python3");
+            return;
+        };
+        assert!(out != "ok", "x32 {name} succeeded inside the jail: {out}");
+    }
+}
+
+/// No sockets at all, so nothing can connect to a UNIX socket on the host (review J2).
+#[test]
+fn connecting_to_a_unix_socket_outside_the_jail_is_refused() {
+    need_landlock!();
+    let s = Scratch::new();
+    let path = s.root.join("elsewhere/listener.sock");
+    let _listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+    let script = format!(
+        "import socket\ntry:\n s=socket.socket(socket.AF_UNIX)\n s.connect({:?})\n print('ok')\nexcept OSError as e:\n print('denied')",
+        path.to_string_lossy()
+    );
+    let Some(out) = python_in_jail(&s, &script) else {
+        eprintln!("skipped: no python3");
+        return;
+    };
+    assert_eq!(out, "denied");
+}
+
+/// No new processes: a forked child could outlive the wall-clock kill (review J6).
+#[test]
+fn forking_is_refused_but_threads_work() {
+    need_landlock!();
+    let s = Scratch::new();
+    let Some(out) = python_in_jail(
+        &s,
+        "import os\ntry:\n pid=os.fork()\n print('ok') if pid else os._exit(0)\nexcept OSError:\n print('denied')",
+    ) else {
+        eprintln!("skipped: no python3");
+        return;
+    };
+    assert_eq!(out, "denied");
+    assert_eq!(
+        python_in_jail(&s, "import threading\nt=threading.Thread(target=lambda:None);t.start();t.join();print('ok')")
+            .as_deref(),
+        Some("ok")
+    );
 }

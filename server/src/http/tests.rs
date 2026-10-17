@@ -1613,3 +1613,20 @@ async fn admins_correct_book_details_and_everyone_sees_them_at_once() {
     let (_, b) = get_json(&m.t, &format!("/v1/books/{BOOK}"), &listener_token).await;
     assert_eq!(b["title"], "A Book");
 }
+
+#[tokio::test]
+async fn rotating_through_an_ipv6_64_does_not_dodge_the_anonymous_rate_limit() {
+    let t = setup();
+    let mut limited = false;
+    for i in 0..40u32 {
+        let mut r = req("POST", "/v1/auth/invite/inspect", Some(json!({})))
+            .header("x-forwarded-proto", "https")
+            // A different address in the same /64 each time (one attacker's allocation).
+            .header("x-forwarded-for", format!("2001:db8:1:2::{:x}", i + 1))
+            .body(Body::from(json!({"token": "f".repeat(64)}).to_string()))
+            .expect("req");
+        r.extensions_mut().insert(Peer(SocketAddr::from(([10, 0, 0, 10], 4000))));
+        limited |= call(&t.app, r).await.status() == StatusCode::TOO_MANY_REQUESTS;
+    }
+    assert!(limited, "40 requests from one /64 must hit the 30-a-minute limit");
+}
