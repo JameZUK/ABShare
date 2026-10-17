@@ -612,13 +612,13 @@ async fn status(S(st): S<State>, Admin(_): Admin) -> Result<Json<Value>, ApiErro
             Ok((users, admins, disabled, weak, invites))
         })
         .await?;
-    let landlock = tokio::fs::read_to_string("/sys/kernel/security/lsm")
-        .await
-        .is_ok_and(|s| s.split(',').any(|m| m.trim() == "landlock"));
+    let landlock = match st.media.as_ref() {
+        Some(m) => m.sandbox_works().await,
+        None => false,
+    };
     let mut warnings: Vec<String> = Vec::new();
     if !landlock {
-        warnings
-            .push("Landlock is not active on this kernel: ffmpeg can't be sandboxed, so media jobs will fail.".into());
+        warnings.push("ffmpeg can't run in its sandbox here (Landlock is needed): media jobs will fail.".into());
     }
     if st.guard.trusted.is_empty() {
         warnings.push(

@@ -54,14 +54,18 @@ pub async fn run(cfg: &Config) -> Vec<Check> {
             Level::Fail,
         ));
     }
-    let landlock =
-        std::fs::read_to_string("/sys/kernel/security/lsm").is_ok_and(|s| s.split(',').any(|m| m.trim() == "landlock"));
-    out.push(if landlock {
-        check(Level::Ok, "Landlock", "active")
-    } else {
-        check(Level::Fail, "Landlock", "not active: boot with lsm=landlock,... (SPEC D24); ffmpeg can't be sandboxed")
+    // The jail refuses to start without Landlock ABI 6, so a jailed run proves the sandbox
+    // works. (Containers often hide /sys/kernel/security, so the LSM list can't be relied on.)
+    let jailed = jailed_ffmpeg(cfg).await;
+    out.push(match &jailed {
+        Ok(_) => check(Level::Ok, "sandbox", "Landlock, seccomp and limits applied (the jail started)"),
+        Err(_) => check(
+            Level::Fail,
+            "sandbox",
+            "the jail can't start: Linux 6.12+ with lsm=landlock,... is needed (SPEC D24)",
+        ),
     });
-    out.push(from(jailed_ffmpeg(cfg).await, "jailed ffmpeg", Level::Fail));
+    out.push(from(jailed, "jailed ffmpeg", Level::Fail));
     out.push(from(database(cfg), "database", Level::Fail));
     out.push(from(audit_chain(cfg), "audit log", Level::Fail));
     if let Some(web) = &cfg.web_dir {

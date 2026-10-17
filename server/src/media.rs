@@ -31,6 +31,8 @@ pub struct Media {
     silent: Mutex<HashMap<u64, Vec<u8>>>,
     /// Cache key (`saver/<book>` or `copies/<book>.m4b`) → when it was last served.
     used: Mutex<HashMap<String, i64>>,
+    /// Whether the jail starts here (checked once, on first ask).
+    sandbox: tokio::sync::OnceCell<bool>,
 }
 
 /// What the media layer needs to know about a book's audio.
@@ -141,6 +143,7 @@ impl Media {
             seek_counter: AtomicU64::new(0),
             silent: Mutex::default(),
             used: Mutex::default(),
+            sandbox: tokio::sync::OnceCell::new(),
         }
     }
 
@@ -240,6 +243,24 @@ impl Media {
         tokio::fs::rename(&out, self.copy_path(&src.book_id)).await.map_err(|e| e.to_string())?;
         let _ = tokio::fs::remove_dir_all(&job).await;
         Ok(())
+    }
+
+    /// Whether ffmpeg can run in its sandbox here: a jailed `ffmpeg -version`, run once.
+    pub async fn sandbox_works(&self) -> bool {
+        *self
+            .sandbox
+            .get_or_init(|| async {
+                let limits = Limits {
+                    mem_mib: 2048,
+                    cpu_secs: 10,
+                    fsize_mib: 1,
+                    wall: Duration::from_secs(20),
+                    stdout_cap: 1024,
+                };
+                let args = [s("-hide_banner"), s("-version")];
+                run_jailed(&self.ff, &[], None, &self.ff.ffmpeg, &args, &limits).await.is_ok_and(|o| o.success)
+            })
+            .await
     }
 
     // ------------------------------------------------------------ cache limit
