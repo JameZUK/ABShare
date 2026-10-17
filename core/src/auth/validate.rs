@@ -9,6 +9,7 @@ pub enum Invalid {
     PasswordLength,
     PasswordContainsUsername,
     PasswordTooSimple,
+    PasswordCommon,
 }
 
 impl std::fmt::Display for Invalid {
@@ -21,6 +22,9 @@ impl std::fmt::Display for Invalid {
             Self::PasswordLength => "Passwords are 12 to 1024 characters.",
             Self::PasswordContainsUsername => "Passwords can't contain the username.",
             Self::PasswordTooSimple => "That password is too simple.",
+            Self::PasswordCommon => {
+                "That password is on lists of leaked passwords that attackers try first. Choose another."
+            }
         })
     }
 }
@@ -40,7 +44,31 @@ pub fn username(raw: &str) -> Result<String, Invalid> {
     Ok(u)
 }
 
-/// Checks a new password (the breached-password list is checked separately by the server).
+/// SHA-256 prefixes (8 bytes, sorted) of common leaked passwords of 12+ characters
+/// (`core/data/README.md`).
+static COMMON: &[u8] = include_bytes!("../../data/common-passwords.bin");
+
+/// Whether a password (case-insensitively) is on the bundled list of common leaked passwords.
+pub fn is_common(pw: &str) -> bool {
+    use sha2::{Digest, Sha256};
+    let lower = pw.to_lowercase();
+    let digest = Sha256::digest(lower.as_bytes());
+    let key = &digest[..8];
+    let n = COMMON.len() / 8;
+    let (mut lo, mut hi) = (0, n);
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        match COMMON[mid * 8..mid * 8 + 8].cmp(key) {
+            std::cmp::Ordering::Less => lo = mid + 1,
+            std::cmp::Ordering::Greater => hi = mid,
+            std::cmp::Ordering::Equal => return true,
+        }
+    }
+    false
+}
+
+/// Checks a new password: length, not containing the username, not trivially simple, and not
+/// on the bundled list of common leaked passwords.
 pub fn password(pw: &str, username: &str) -> Result<(), Invalid> {
     let n = pw.chars().count();
     if !(12..=1024).contains(&n) {
@@ -52,6 +80,9 @@ pub fn password(pw: &str, username: &str) -> Result<(), Invalid> {
     let distinct: std::collections::HashSet<char> = pw.chars().collect();
     if distinct.len() < 4 {
         return Err(Invalid::PasswordTooSimple);
+    }
+    if is_common(pw) {
+        return Err(Invalid::PasswordCommon);
     }
     Ok(())
 }
@@ -66,6 +97,24 @@ pub fn label(raw: &str, fallback: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn common_leaked_passwords_are_refused() {
+        assert_eq!(COMMON.len() % 8, 0);
+        assert!(COMMON.len() / 8 > 40_000, "the list is bundled");
+        assert!(
+            COMMON.chunks_exact(8).zip(COMMON.chunks_exact(8).skip(1)).all(|(a, b)| a < b),
+            "sorted, no duplicates"
+        );
+        for pw in ["password1234", "PassWord1234", "qwertyuiop12", "1q2w3e4r5t6y", "iloveyou1234", "abcdefghijkl"] {
+            assert!(is_common(pw), "{pw}");
+            assert_eq!(password(pw, "ada"), Err(Invalid::PasswordCommon), "{pw}");
+        }
+        for pw in ["correct horse battery", "tidal copper lantern walk"] {
+            assert!(!is_common(pw), "{pw}");
+            assert_eq!(password(pw, "ada"), Ok(()));
+        }
+    }
 
     #[test]
     fn usernames() {

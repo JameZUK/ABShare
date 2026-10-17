@@ -166,6 +166,10 @@ async fn stream(
     }
     let file = m.play_file(&src).ok_or_else(ApiError::not_found)?;
     let range_h = req.get(header::RANGE).and_then(|v| v.to_str().ok());
+    let saver = q.q.as_deref().is_some_and(|k| k != "original");
+    if saver || src.needs_copy {
+        m.mark_used(&src.book_id, !saver);
+    }
     match q.q.as_deref().unwrap_or("original") {
         "original" => serve_file(&src, &file, range_h, &m).await,
         k => {

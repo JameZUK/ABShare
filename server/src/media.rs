@@ -29,6 +29,8 @@ pub struct Media {
     seeks: Mutex<HashMap<i64, u64>>,
     seek_counter: AtomicU64,
     silent: Mutex<HashMap<u64, Vec<u8>>>,
+    /// Cache key (`saver/<book>` or `copies/<book>.m4b`) → when it was last served.
+    used: Mutex<HashMap<String, i64>>,
 }
 
 /// What the media layer needs to know about a book's audio.
@@ -85,6 +87,30 @@ pub fn open_inside(root: &Path, path: &Path) -> Result<std::fs::File, String> {
     Ok(f)
 }
 
+fn unix_now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
+}
+
+/// Total size and newest modification time of the files under `dir` (one level of
+/// subdirectories: `saver/<book>/k<kbps>/<segment>.mp3`).
+fn dir_usage(dir: &Path) -> (u64, i64) {
+    let (mut bytes, mut newest) = (0, 0);
+    let mut stack = vec![(dir.to_path_buf(), 0)];
+    while let Some((d, depth)) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for ent in rd.flatten() {
+            let Ok(m) = ent.metadata() else { continue };
+            if m.is_dir() && depth < 2 {
+                stack.push((ent.path(), depth + 1));
+            } else if m.is_file() {
+                bytes += m.len();
+                newest = newest.max(m.mtime());
+            }
+        }
+    }
+    (bytes, newest)
+}
+
 impl Media {
     pub fn new(ff: Ffmpeg, data_dir: PathBuf, roots: HashMap<String, PathBuf>) -> Self {
         let lanes = ff.jobs.clamp(1, 8);
@@ -101,6 +127,7 @@ impl Media {
             seeks: Mutex::default(),
             seek_counter: AtomicU64::new(0),
             silent: Mutex::default(),
+            used: Mutex::default(),
         }
     }
 
@@ -200,6 +227,76 @@ impl Media {
         tokio::fs::rename(&out, self.copy_path(&src.book_id)).await.map_err(|e| e.to_string())?;
         let _ = tokio::fs::remove_dir_all(&job).await;
         Ok(())
+    }
+
+    // ------------------------------------------------------------ cache limit
+
+    /// Notes that a book's cached data-saver segments or playable copy were just served.
+    pub fn mark_used(&self, book: &str, copy: bool) {
+        let key = if copy { format!("copies/{book}.m4b") } else { format!("saver/{book}") };
+        if let Ok(mut u) = self.used.lock() {
+            if u.len() > 50_000 {
+                u.clear();
+            }
+            u.insert(key, unix_now());
+        }
+    }
+
+    /// Deletes the least recently used data-saver segments and playable copies until the
+    /// cache fits in `limit` bytes (core::cache::evict). Anything served in the last 30
+    /// minutes stays. Returns the bytes freed.
+    pub async fn sweep(&self, limit: u64) -> Result<u64, String> {
+        let now = unix_now();
+        let used = self.used.lock().map(|u| u.clone()).unwrap_or_default();
+        let mut entries = Vec::new();
+        let saver = self.data_dir.join("saver");
+        let copies = self.data_dir.join("copies");
+        let (saver2, copies2) = (saver.clone(), copies.clone());
+        let found = tokio::task::spawn_blocking(move || -> Vec<(String, u64, i64)> {
+            let mut out = Vec::new();
+            for (dir, is_copy) in [(saver2, false), (copies2, true)] {
+                let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+                for ent in rd.flatten() {
+                    let name = ent.file_name().to_string_lossy().into_owned();
+                    let book = name.trim_end_matches(".m4b");
+                    if !abshare_core::ids::is_valid_id(book) {
+                        continue;
+                    }
+                    let (bytes, mtime) = if is_copy {
+                        ent.metadata().map_or((0, 0), |m| (m.len(), m.mtime()))
+                    } else {
+                        dir_usage(&ent.path())
+                    };
+                    let key = if is_copy { format!("copies/{name}") } else { format!("saver/{name}") };
+                    out.push((key, bytes, mtime));
+                }
+            }
+            out
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        for (key, bytes, mtime) in found {
+            let last_used = used.get(&key).copied().unwrap_or(0).max(mtime);
+            entries.push(abshare_core::cache::Entry { pinned: now - last_used < 30 * 60, key, bytes, last_used });
+        }
+        let mut freed = 0;
+        for key in abshare_core::cache::evict(&entries, limit) {
+            let bytes = entries.iter().find(|e| e.key == key).map_or(0, |e| e.bytes);
+            let path = self.data_dir.join(&key);
+            let r = if key.starts_with("copies/") {
+                tokio::fs::remove_file(&path).await
+            } else {
+                tokio::fs::remove_dir_all(&path).await
+            };
+            if r.is_ok() {
+                freed += bytes;
+                if let Ok(mut u) = self.used.lock() {
+                    u.remove(&key);
+                }
+            }
+        }
+        let _ = (saver, copies);
+        Ok(freed)
     }
 
     // ------------------------------------------------------------ data saver
@@ -509,6 +606,42 @@ mod tests {
             .is_ok_and(|s| s.success());
         assert!(ok, "ffmpeg could not make the test tone");
         p
+    }
+
+    #[tokio::test]
+    async fn the_cache_sweep_evicts_least_recently_used_and_spares_what_is_playing() {
+        let base = std::env::temp_dir().join(format!("abshare-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let ff = Ffmpeg { ffmpeg: "/x".into(), ffprobe: "/x".into(), jail: "/x".into(), libs: vec![], jobs: 1 };
+        let m = Media::new(ff, base.clone(), HashMap::new());
+        let (old, mid, new, copy) = ("o".repeat(26), "m".repeat(26), "n".repeat(26), "c".repeat(26));
+        let day = std::time::Duration::from_secs(86_400);
+        let ago = |d: u32| std::time::SystemTime::now() - day * d;
+        for (book, age) in [(&old, 3), (&mid, 2), (&new, 1)] {
+            let dir = base.join("saver").join(book).join("k48");
+            std::fs::create_dir_all(&dir).expect("mkdir");
+            let f = dir.join("000000.mp3");
+            std::fs::write(&f, vec![0u8; 1000]).expect("write");
+            std::fs::File::options().write(true).open(&f).expect("open").set_modified(ago(age)).expect("mtime");
+        }
+        std::fs::create_dir_all(base.join("copies")).expect("mkdir");
+        let c = base.join("copies").join(format!("{copy}.m4b"));
+        std::fs::write(&c, vec![0u8; 1000]).expect("write");
+        std::fs::File::options().write(true).open(&c).expect("open").set_modified(ago(10)).expect("mtime");
+        // Not ours: never touched.
+        std::fs::write(base.join("saver").join("notes.txt"), b"x").expect("write");
+        // Under the limit: nothing goes.
+        assert_eq!(m.sweep(10_000).await.expect("sweep"), 0);
+        // The copy is the oldest but is being listened to right now.
+        m.mark_used(&copy, true);
+        // 4000 bytes over a 2500 limit: evict to <= 2250, oldest unpinned first.
+        assert_eq!(m.sweep(2_500).await.expect("sweep"), 2_000);
+        assert!(!base.join("saver").join(&old).exists());
+        assert!(!base.join("saver").join(&mid).exists());
+        assert!(base.join("saver").join(&new).exists());
+        assert!(c.exists(), "a copy in use is never evicted");
+        assert!(base.join("saver").join("notes.txt").exists());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[tokio::test]

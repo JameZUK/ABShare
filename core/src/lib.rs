@@ -5,6 +5,7 @@
 
 pub mod assemble;
 pub mod auth;
+pub mod cache;
 pub mod chapters;
 pub mod ffprobe;
 pub mod genre;

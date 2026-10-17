@@ -126,7 +126,20 @@ async fn run() -> Result<(), String> {
                 jobs: cfg.ffmpeg.jobs,
             };
             state.web_dir = cfg.web_dir.clone();
-            state.media = Some(std::sync::Arc::new(media::Media::new(ff, cfg.data_dir.clone(), roots)));
+            let engine = std::sync::Arc::new(media::Media::new(ff, cfg.data_dir.clone(), roots));
+            state.media = Some(engine.clone());
+            // Keep the transcode cache within [cache] max_gib: a sweep at start and every 10 min.
+            let limit = cfg.cache.max_gib.saturating_mul(1 << 30);
+            tokio::spawn(async move {
+                loop {
+                    match engine.sweep(limit).await {
+                        Ok(0) => {}
+                        Ok(freed) => println!("abshare: cache sweep freed {} MiB", freed >> 20),
+                        Err(e) => eprintln!("abshare: cache sweep failed: {e}"),
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+                }
+            });
             let app = http::router(std::sync::Arc::new(state));
             let listener =
                 tokio::net::TcpListener::bind(&cfg.listen).await.map_err(|e| format!("bind {}: {e}", cfg.listen))?;

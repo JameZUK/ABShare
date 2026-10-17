@@ -1128,3 +1128,25 @@ async fn genre_shelves_count_and_filter_only_permitted_books() {
     assert_eq!(b["shelves"], json!([{ "id": "science-fiction", "name": "Science Fiction" }]));
     assert_eq!(get_json(&m.t, "/v1/genres", "forged").await.0, StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn enrolment_refuses_common_leaked_passwords() {
+    let t = setup();
+    let tok = invite(&t, Role::Listener);
+    let r = send(&t, "POST", "/v1/auth/enrol/start", Some(json!({"token": tok, "username": "lea"})), &[]).await;
+    let enrol = json_of(r).await["enrol"].as_str().expect("enrol").to_owned();
+    let r = send(&t, "POST", "/v1/auth/enrol/password", Some(json!({"enrol": enrol, "password": "Password1234"})), &[])
+        .await;
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    assert!(json_of(r).await["message"].as_str().unwrap_or("").contains("leaked"));
+    // The enrolment survives a refused password: a good one still works.
+    let r = send(
+        &t,
+        "POST",
+        "/v1/auth/enrol/password",
+        Some(json!({"enrol": enrol, "password": "correct horse battery"})),
+        &[],
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+}
