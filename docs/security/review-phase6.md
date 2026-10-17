@@ -20,7 +20,7 @@ Before public exposure, still recommended:
 
 1. **An independent human review.** This review was AI-assisted (see above).
 2. **D1:** allow only the reverse proxy to reach ABShare's port.
-3. **Proxy config:** apply the updated nginx example to the real proxy (request buffering for everything except media).
+3. ~~**Proxy config:** apply the updated nginx example to the real proxy (request buffering for everything except media).~~ **Done**, on the test deployment's proxy.
 4. **Device gates:** complete those from Phases 3 and 4.
 
 **Status:** **Fixed** means fixed with a test. **Open** means still to fix. **Accepted** is explained in the row.
