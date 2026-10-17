@@ -1,0 +1,22 @@
+# build output
+/target/
+node_modules/
+/web/app/build/
+/web/app/.svelte-kit/
+/fuzz/artifacts/
+/fuzz/corpus/
+dist/
+
+# local, never committed (homelab-specific values, real library data, secrets)
+.env
+.env.*
+!.env.example
+dev/local.*
+*.token
+*.key
+abshare.toml
+!deploy/abshare.example.toml
+
+# tool output
+.playwright-mcp/
+.claude/
