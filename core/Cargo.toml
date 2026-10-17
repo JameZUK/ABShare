@@ -13,6 +13,8 @@ name = "abshare_core"
 unicode-normalization = "0.1.26"
 hmac = "0.13"
 sha2 = "0.11"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.154"
 
 [lints]
 workspace = true

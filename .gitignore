@@ -20,3 +20,6 @@ abshare.toml
 # tool output
 .playwright-mcp/
 .claude/
+/fuzz/target/
+/fuzz/results.txt
+/fuzz/coverage/

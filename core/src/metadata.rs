@@ -262,7 +262,8 @@ fn description(tags: &Tags, side: &Sidecars) -> Option<String> {
         .get(&["description", "comment", "synopsis", "lyrics-eng", "lyrics"])
         .map(str::to_owned)
         .or_else(|| side.desc.clone())?;
-    let text = if raw.contains('<') && raw.contains('>') { html_to_text(&raw) } else { raw };
+    // Anything that could be markup goes through the HTML step, which never emits '<' or '>'.
+    let text = if raw.contains(['<', '>', '&']) { html_to_text(&raw) } else { raw };
     let d = clean_paragraphs(&text, MAX_DESCRIPTION);
     // Some rips put a placeholder in the comment tag.
     let trivial = matches!(d.to_ascii_lowercase().as_str(), "unabridged" | "abridged" | "audiobook");
@@ -443,6 +444,16 @@ mod tests {
         );
         let t = tags(&[("title", "E1"), ("comment", "Unabridged")]);
         assert_eq!(book_meta(&t, None, "f.mp3", &Sidecars::default(), false).description, None);
+    }
+
+    /// Regression (found by the metadata fuzz target): a lone '>' or '<' skipped the HTML step.
+    #[test]
+    fn descriptions_never_contain_angle_brackets() {
+        for raw in ["&>", "a < b", "<script", "x>y", "&lt;b&gt;bold"] {
+            let t = tags(&[("title", "T"), ("comment", raw)]);
+            let d = book_meta(&t, None, "f.m4b", &Sidecars::default(), false).description.unwrap_or_default();
+            assert!(!d.contains('<') && !d.contains('>'), "{raw:?} -> {d:?}");
+        }
     }
 
     #[test]

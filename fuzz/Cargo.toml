@@ -1,0 +1,85 @@
+[package]
+name = "abshare-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "GPL-2.0-or-later"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+arbitrary = { version = "1.5", features = ["derive"] }
+abshare-core = { path = "../core" }
+
+# Not part of the main workspace (cargo-fuzz builds it with nightly and sanitizers).
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "ffprobe_json"
+path = "fuzz_targets/ffprobe_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "html_text"
+path = "fuzz_targets/html_text.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "metadata"
+path = "fuzz_targets/metadata.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "range_header"
+path = "fuzz_targets/range_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "saver_segment"
+path = "fuzz_targets/saver_segment.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "episode_title"
+path = "fuzz_targets/episode_title.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "assemble"
+path = "fuzz_targets/assemble.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "chapters"
+path = "fuzz_targets/chapters.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "progress"
+path = "fuzz_targets/progress.rs"
+test = false
+doc = false
+bench = false
+
