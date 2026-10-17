@@ -255,7 +255,9 @@ impl Media {
                     cpu_secs: 10,
                     fsize_mib: 1,
                     wall: Duration::from_secs(20),
-                    stdout_cap: 1024,
+                    // `-version` prints about 2 KB: the cap must allow it, or a working
+                    // sandbox reads as broken.
+                    stdout_cap: 16 * 1024,
                 };
                 let args = [s("-hide_banner"), s("-version")];
                 run_jailed(&self.ff, &[], None, &self.ff.ffmpeg, &args, &limits).await.is_ok_and(|o| o.success)
@@ -676,6 +678,24 @@ mod tests {
         assert!(c.exists(), "a copy in use is never evicted");
         assert!(base.join("saver").join("notes.txt").exists());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn the_sandbox_self_check_passes_where_the_jail_runs() {
+        let Some(ff) = crate::tools::test_ffmpeg().await else {
+            eprintln!("skipped: the jailed ffmpeg cannot run here");
+            return;
+        };
+        let m = Media::new(ff, std::env::temp_dir(), HashMap::new());
+        assert!(m.sandbox_works().await, "a working jail must not be reported as broken");
+        let broken = Ffmpeg {
+            ffmpeg: "/usr/bin/ffmpeg".into(),
+            ffprobe: "/x".into(),
+            jail: "/nonexistent/jail".into(),
+            libs: vec![],
+            jobs: 1,
+        };
+        assert!(!Media::new(broken, std::env::temp_dir(), HashMap::new()).sandbox_works().await);
     }
 
     #[tokio::test]

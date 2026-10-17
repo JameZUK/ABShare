@@ -108,7 +108,8 @@ fn secret_file(path: &Path) -> Result<String, String> {
 }
 
 async fn jailed_ffmpeg(cfg: &Config) -> Result<String, String> {
-    let limits = Limits { mem_mib: 2048, cpu_secs: 10, fsize_mib: 1, wall: Duration::from_secs(20), stdout_cap: 4096 };
+    let limits =
+        Limits { mem_mib: 2048, cpu_secs: 10, fsize_mib: 1, wall: Duration::from_secs(20), stdout_cap: 16 * 1024 };
     let r =
         run_jailed(&cfg.ffmpeg, &[], None, &cfg.ffmpeg.ffmpeg, &["-hide_banner".into(), "-version".into()], &limits)
             .await?;
