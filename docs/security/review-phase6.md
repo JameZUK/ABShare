@@ -27,7 +27,7 @@ Started 2026-10-17. It covers:
 | J2 | **Jail: UNIX sockets.** It could connect to pathname UNIX sockets on the host, such as a user D-Bus or a container runtime socket. | **Fixed:** all sockets refused; escape test. |
 | P1 | **Anonymous rate limits keyed on the full IPv6 address.** Rotating through one /64 bypassed them. Found by the pentest and by two reviews. | **Fixed:** keyed like the lockout (/64); test. |
 | A1 | **Refresh-token reuse detection can be evaded, and a lost response wipes downloads.** Used tokens were deleted after 2 minutes, siblings issued in the grace window rotate forever, and a renewal response lost for more than 60 s is treated as theft. That revokes the device and wipes its downloads. | **Fixed:** spent tokens are kept for the session, so old copies always read as reuse; a retry is allowed (bounded) until a replacement is used; superseded siblings count as theft; reuse returns `session_reused` (sign out, keep downloads), not `device_revoked`; tests. |
-| A2 | **Strangers can keep a username throttled** from fresh /64s, using the shared allowance. Separately, flooding the lockout table evicts a username's soft lock. | Open |
+| A2 | **Strangers can keep a username throttled** from fresh /64s, using the shared allowance. Separately, flooding the lockout table evicts a username's soft lock. | **Fixed:** a browser with a live sign-in for the account skips the shared allowance; locked or recently failed entries are never evicted, and a full table refuses new entries (fail closed); username keys are bounded; tests. |
 | H2 | **Search can burn CPU.** `q` is unbounded in words, and work is done for every word and every book. | **Fixed:** 200 characters and 8 distinct words at most; test. |
 | M1 | **Symlink races in library files.** They are re-opened by path, following symlinks, after the check: sidecar text, cover sidecars, original streaming and ffmpeg inputs. | Open |
 | M2 | **Book IDs from ASINs are global.** A book in another library can take over the ID (and its caches). Caches also aren't invalidated when a book's parts change, which can panic the slice in a segment. | Open |
@@ -56,7 +56,7 @@ Started 2026-10-17. It covers:
 | M5 | Failed playable-copy builds retry without limit, and books with many parts hit the fd limit. | Open |
 | C5 | Saver maths underflows for segments shorter than the pre-roll (latent). | Open |
 | C6 | Invisible characters survive `clean_line` (U+061C, tag characters, variation selectors, Hangul fillers, unbounded combining marks). | Open |
-| C7 | A successful fifth attempt still locks the address. | Open |
+| C7 | A successful fifth attempt still locks the address. | **Fixed:** the lock is decided when the next attempt starts; test. |
 | W1 | Route params are decoded and spliced into API paths (`%2F`). | Open |
 | W2 | Completing an invite while signed in as someone else keeps the old player and outbox. | Open |
 | W3 | The revocation wipe can be blocked by another tab's open database. | Open |

@@ -1742,3 +1742,35 @@ async fn searches_are_bounded() {
     );
     assert_eq!(get_json(&m.t, "/v1/books?q=a%20book", &access).await.1["total"], 3);
 }
+
+#[tokio::test]
+async fn strangers_cannot_hold_the_owners_device_out_of_password_sign_in() {
+    let t = setup();
+    let (_, _, refresh, _) = enrol(&t, "olga").await;
+    let login = |xff: String, cookie: Option<String>, pw: &'static str| {
+        let mut b = req("POST", "/v1/auth/login/password", Some(json!({})))
+            .header("x-forwarded-proto", "https")
+            .header("x-forwarded-for", xff);
+        if let Some(c) = cookie {
+            b = b.header("cookie", c);
+        }
+        let mut r = b
+            .body(Body::from(json!({"username": "olga", "password": pw, "device_name": "x"}).to_string()))
+            .expect("req");
+        r.extensions_mut().insert(Peer(SocketAddr::from(([10, 0, 0, 10], 4000))));
+        call(&t.app, r)
+    };
+    // Strangers on many networks fail against the account and use up the shared allowance.
+    for i in 0..8u8 {
+        let _ = login(format!("2001:db8:{i}::1"), None, "guess guess guess").await;
+    }
+    // A new address without the owner's cookie is held back...
+    assert_eq!(
+        login("198.51.100.20".into(), None, "correct horse battery").await.status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    // ...but the owner's own browser, holding its sign-in cookie, still gets its attempt.
+    let r = login("198.51.100.21".into(), Some(format!("abshare_refresh={refresh}")), "correct horse battery").await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert!(json_of(r).await["challenge"].is_string());
+}

@@ -41,6 +41,9 @@ pub enum Refusal {
     AddressLocked { until: i64 },
     /// The username is soft-locked for this address, or the shared allowance is used up.
     UserThrottled,
+    /// The table of throttled addresses and names is full of active entries: refused rather
+    /// than forgetting a lock.
+    Busy,
 }
 
 /// A started attempt, to be passed back to [`Limiter::succeeded`].
@@ -79,13 +82,37 @@ impl Limiter {
 
     /// Starts an attempt. Counts it as a failure until [`Limiter::succeeded`] says otherwise.
     pub fn begin(&mut self, ip: IpAddr, user: &str, now: i64) -> Result<Attempt, Refusal> {
+        self.begin_with(ip, user, now, false)
+    }
+
+    /// As [`Limiter::begin`], for a device that already holds a valid sign-in for this user:
+    /// it isn't held by the shared allowance that strangers can use up (review A2). Address
+    /// locks still apply.
+    pub fn begin_known_device(&mut self, ip: IpAddr, user: &str, now: i64) -> Result<Attempt, Refusal> {
+        self.begin_with(ip, user, now, true)
+    }
+
+    fn begin_with(&mut self, ip: IpAddr, user: &str, now: i64, known: bool) -> Result<Attempt, Refusal> {
         let addr = AddrKey::from(ip);
-        let user = user.to_ascii_lowercase();
-        self.evict(now);
+        // Usernames are at most 32 characters; a longer key is never a real account.
+        let user: String = user.to_ascii_lowercase().chars().take(64).collect();
+        if !self.make_room(addr, &user, now) {
+            return Err(Refusal::Busy);
+        }
         let a = self.addrs.entry(addr).or_default();
         a.last_seen = now;
         while a.failures.front().is_some_and(|&t| t <= now - WINDOW) {
             a.failures.pop_front();
+        }
+        // Five failures lock the address from the fifth; the lock is decided when the next
+        // attempt starts, so a correct fifth password (taken back by `succeeded`) locks
+        // nobody out (review C7).
+        if a.failures.len() >= MAX_FAILURES {
+            let last = a.failures.back().copied().unwrap_or(now);
+            let lock = FIRST_LOCK.saturating_mul(1i64 << a.locks.min(10)).min(MAX_LOCK);
+            a.locked_until = last + lock;
+            a.locks = a.locks.saturating_add(1);
+            a.failures.clear();
         }
         if a.locked_until > now {
             return Err(Refusal::AddressLocked { until: a.locked_until });
@@ -98,7 +125,7 @@ impl Limiter {
         while u.shared.front().is_some_and(|&t| t <= now - 60) {
             u.shared.pop_front();
         }
-        if u.failures.len() >= MAX_FAILURES {
+        if u.failures.len() >= MAX_FAILURES && !known {
             let failed_here = u.failures.iter().any(|&(_, k)| k == addr);
             if failed_here || u.shared.len() >= SHARED_PER_MINUTE {
                 return Err(Refusal::UserThrottled);
@@ -108,12 +135,6 @@ impl Limiter {
         u.failures.push_back((now, addr));
         let a = self.addrs.entry(addr).or_default();
         a.failures.push_back(now);
-        if a.failures.len() >= MAX_FAILURES {
-            let lock = FIRST_LOCK.saturating_mul(1i64 << a.locks.min(10)).min(MAX_LOCK);
-            a.locked_until = now + lock;
-            a.locks = a.locks.saturating_add(1);
-            a.failures.clear();
-        }
         Ok(Attempt { addr, user, at: now })
     }
 
@@ -135,35 +156,90 @@ impl Limiter {
         self.addrs.len() + self.users.len()
     }
 
-    fn evict(&mut self, now: i64) {
-        if self.addrs.len() + self.users.len() < MAX_ENTRIES {
-            return;
+    /// Whether a lock or soft lock is in force for an entry (never evicted).
+    fn addr_active(a: &AddrState, now: i64) -> bool {
+        a.locked_until > now || a.failures.back().is_some_and(|&t| t > now - WINDOW)
+    }
+
+    fn user_active(u: &UserState, now: i64) -> bool {
+        u.failures.back().is_some_and(|&(t, _)| t > now - WINDOW)
+    }
+
+    /// Keeps the table within [`MAX_ENTRIES`]. Entries with nothing in force go first; an
+    /// entry holding a lock or recent failures is never dropped (dropping it would hand out
+    /// fresh attempts, review A2). If the table is full of those, a new address or username
+    /// is refused instead: fail closed. Returns whether this attempt may go ahead.
+    fn make_room(&mut self, addr: AddrKey, user: &str, now: i64) -> bool {
+        let new_entries = usize::from(!self.addrs.contains_key(&addr)) + usize::from(!self.users.contains_key(user));
+        if self.addrs.len() + self.users.len() + new_entries <= MAX_ENTRIES {
+            return true;
         }
-        // Drop entries with nothing active first, then the least recently seen.
-        self.addrs.retain(|_, a| a.locked_until > now || a.failures.back().is_some_and(|&t| t > now - WINDOW));
-        self.users.retain(|_, u| u.failures.back().is_some_and(|&(t, _)| t > now - WINDOW));
-        while self.addrs.len() + self.users.len() >= MAX_ENTRIES {
-            let oldest_addr = self.addrs.iter().min_by_key(|(_, a)| a.last_seen).map(|(k, a)| (*k, a.last_seen));
-            let oldest_user = self.users.iter().min_by_key(|(_, u)| u.last_seen).map(|(k, u)| (k.clone(), u.last_seen));
-            match (oldest_addr, oldest_user) {
-                (Some((k, ta)), Some((_, tu))) if ta <= tu => {
-                    self.addrs.remove(&k);
-                }
-                (_, Some((k, _))) => {
-                    self.users.remove(&k);
-                }
-                (Some((k, _)), None) => {
-                    self.addrs.remove(&k);
-                }
-                (None, None) => break,
-            }
-        }
+        self.addrs.retain(|_, a| Self::addr_active(a, now));
+        self.users.retain(|_, u| Self::user_active(u, now));
+        let new_entries = usize::from(!self.addrs.contains_key(&addr)) + usize::from(!self.users.contains_key(user));
+        self.addrs.len() + self.users.len() + new_entries <= MAX_ENTRIES
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review C7: four typos then the right password must not lock the address.
+    #[test]
+    fn a_correct_fifth_attempt_does_not_lock_the_address() {
+        let mut l = Limiter::new();
+        let a = ip("203.0.113.40");
+        for i in 0..4 {
+            assert!(l.begin(a, "ann", 1000 + i).is_ok());
+        }
+        let ok = l.begin(a, "ann", 1004).expect("fifth attempt");
+        l.succeeded(&ok);
+        assert!(l.begin(a, "bob", 1005).is_ok(), "the address isn't locked after a success");
+    }
+
+    /// Review A2: strangers using up the shared allowance can't keep the owner's own device
+    /// out of password sign-in.
+    #[test]
+    fn a_known_device_is_not_held_by_the_shared_allowance() {
+        let mut l = Limiter::new();
+        for i in 0..5u8 {
+            let _ = l.begin(ip(&format!("2001:db8:{i}::1")), "ann", 1000);
+        }
+        for i in 10..12u8 {
+            let _ = l.begin(ip(&format!("2001:db8:{i}::1")), "ann", 1001);
+        }
+        let owner = ip("198.51.100.7");
+        assert_eq!(l.begin(owner, "ann", 1002).err(), Some(Refusal::UserThrottled), "a stranger's view");
+        assert!(l.begin_known_device(owner, "ann", 1002).is_ok(), "the owner's device still gets its attempt");
+    }
+
+    /// Review A2: flooding the table with throwaway entries can't evict a username's soft
+    /// lock (which would hand out fresh guesses).
+    #[test]
+    fn a_flood_cannot_evict_a_soft_locked_username() {
+        let mut l = Limiter::new();
+        for i in 0..5u16 {
+            let _ = l.begin(ip(&format!("2001:db8:ffff:{i:x}::1")), "victim", 1000);
+        }
+        for i in 0..(MAX_ENTRIES as u32) {
+            let a = std::net::Ipv6Addr::from((0x2001_0db8_u128 << 96) | (u128::from(i) << 64) | 1);
+            let _ = l.begin(IpAddr::V6(a), &format!("junk{i}"), 1001);
+        }
+        assert!(l.tracked() <= MAX_ENTRIES + 2);
+        let fresh = ip("192.0.2.200");
+        let r1 = l.begin(fresh, "victim", 1002);
+        let r2 = l.begin(ip("192.0.2.201"), "victim", 1002);
+        let r3 = l.begin(ip("192.0.2.202"), "victim", 1002);
+        assert!([r1, r2, r3].iter().any(|r| r.is_err()), "the victim is still soft-locked");
+    }
+
+    #[test]
+    fn usernames_are_stored_bounded() {
+        let mut l = Limiter::new();
+        let _ = l.begin(ip("192.0.2.9"), &"x".repeat(16_000), 1);
+        assert!(l.users.keys().all(|k| k.len() <= 64));
+    }
 
     fn ip(s: &str) -> IpAddr {
         s.parse().expect("ip")

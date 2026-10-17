@@ -535,6 +535,19 @@ pub fn rotate_refresh(
     Ok(RefreshOutcome::Rotated { device, user })
 }
 
+/// Whether a refresh token belongs to a live device of `username` (any token of the chain,
+/// spent or not).
+pub fn refresh_belongs_to(c: &Connection, hash: &[u8; 32], username: &str) -> Result<bool, String> {
+    c.query_row(
+        "SELECT count(*) FROM refresh r JOIN device d ON d.id = r.device_id JOIN user u ON u.id = d.user_id
+         WHERE r.hash = ?1 AND u.username = ?2 AND d.revoked_at IS NULL AND u.disabled_at IS NULL",
+        params![hash.as_slice(), username],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| n > 0)
+    .map_err(sql_err)
+}
+
 #[cfg(test)]
 pub fn device_active(c: &Connection, device: i64) -> Result<bool, String> {
     let r: Option<Option<i64>> = c

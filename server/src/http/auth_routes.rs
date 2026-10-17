@@ -376,17 +376,34 @@ struct LoginPassword {
 
 fn refusal(r: Refusal) -> ApiError {
     match r {
-        Refusal::AddressLocked { .. } | Refusal::UserThrottled => ApiError::too_many(),
+        Refusal::AddressLocked { .. } | Refusal::UserThrottled | Refusal::Busy => ApiError::too_many(),
     }
 }
 
-async fn login_password(S(st): S<State>, Ip(ip): Ip, Json(b): Json<LoginPassword>) -> Result<Json<Value>, ApiError> {
+async fn login_password(
+    S(st): S<State>,
+    Ip(ip): Ip,
+    headers: HeaderMap,
+    Json(b): Json<LoginPassword>,
+) -> Result<Json<Value>, ApiError> {
     if b.password.len() > 4096 {
         return Err(ApiError::denied());
     }
     let username = b.username.trim().to_ascii_lowercase();
-    let attempt =
-        st.limiter.lock().map_err(|_| ApiError::internal("limiter"))?.begin(ip, &username, now()).map_err(refusal)?;
+    // A browser still holding a live sign-in for this account (its refresh cookie, sent to
+    // /v1/auth) isn't held back by the shared allowance strangers can use up (review A2).
+    let known = match cookie(&headers, REFRESH_COOKIE).filter(|t| abshare_core::auth::codes::is_token(t)) {
+        Some(t) => {
+            let (h, name) = (token_hash(&t), username.clone());
+            st.db.run(move |c| store::refresh_belongs_to(c, &h, &name)).await.unwrap_or(false)
+        }
+        None => false,
+    };
+    let attempt = {
+        let mut l = st.limiter.lock().map_err(|_| ApiError::internal("limiter"))?;
+        if known { l.begin_known_device(ip, &username, now()) } else { l.begin(ip, &username, now()) }
+    }
+    .map_err(refusal)?;
     let lookup = username.clone();
     let user = st.db.run(move |c| store::user_by_name(c, &lookup)).await?;
     let stored = user.as_ref().filter(|u| !u.disabled).and_then(|u| u.password_hash.clone());
