@@ -80,12 +80,15 @@ pub struct BookMeta {
 }
 
 /// Builds metadata for a book from its first file's tags, its folder name and sidecars.
-pub fn book_meta(tags: &Tags, folder: Option<&str>, file_name: &str, side: &Sidecars) -> BookMeta {
+/// For a book made of several parts the first part's `title` names that part, so the album
+/// (then the folder) names the book.
+pub fn book_meta(tags: &Tags, folder: Option<&str>, file_name: &str, side: &Sidecars, multi_part: bool) -> BookMeta {
     let line = |keys: &[&str]| tags.get(keys).map(|v| clean_line(v, MAX_NAME)).filter(|v| !v.is_empty());
 
     let album = line(&["album"]);
+    let from_title = if multi_part { None } else { line(&["title"]) };
     let (mut title, narrated_by) = split_narrated_by(
-        line(&["title"])
+        from_title
             .or_else(|| album.as_deref().map(strip_edition_suffix))
             .or_else(|| folder.map(|f| clean_line(strip_trailing_id(f), MAX_NAME)))
             .unwrap_or_else(|| clean_line(strip_trailing_id(strip_extension(file_name)), MAX_NAME)),
@@ -333,7 +336,7 @@ mod tests {
             ("part", "2"),
             ("subtitle", "A Novel"),
         ]);
-        let m = book_meta(&t, Some("The Copper Tide [B0TESTASIN]"), "x.m4b", &Sidecars::default());
+        let m = book_meta(&t, Some("The Copper Tide [B0TESTASIN]"), "x.m4b", &Sidecars::default(), false);
         assert_eq!(m.title, "The Copper Tide");
         assert_eq!(m.subtitle.as_deref(), Some("A Novel"));
         assert_eq!(names(&m.authors), ["Ada Example"]);
@@ -349,7 +352,7 @@ mod tests {
     #[test]
     fn sentinel_parts_are_ignored_and_book_n_is_used_instead() {
         let t = tags(&[("title", "Ep. 3"), ("series", "Night Shift"), ("part", "999999000"), ("album", "Night Shift")]);
-        assert_eq!(book_meta(&t, None, "f.m4b", &Sidecars::default()).series.and_then(|s| s.position), None);
+        assert_eq!(book_meta(&t, None, "f.m4b", &Sidecars::default(), false).series.and_then(|s| s.position), None);
         let t = tags(&[
             ("title", "Ember"),
             ("series", "Ash"),
@@ -357,7 +360,10 @@ mod tests {
             ("album", "Ember: Ash, Book 6 (Unabridged)"),
         ]);
         assert_eq!(
-            book_meta(&t, None, "f.m4b", &Sidecars::default()).series.and_then(|s| s.position).map(Position::display),
+            book_meta(&t, None, "f.m4b", &Sidecars::default(), false)
+                .series
+                .and_then(|s| s.position)
+                .map(Position::display),
             Some("6".into())
         );
     }
@@ -376,7 +382,7 @@ mod tests {
     #[test]
     fn series_qualifiers_are_split_off() {
         let t = tags(&[("title", "X"), ("series", "Long Saga [Chronological Order]"), ("part", "6")]);
-        let s = book_meta(&t, None, "f.m4b", &Sidecars::default()).series.expect("series");
+        let s = book_meta(&t, None, "f.m4b", &Sidecars::default(), false).series.expect("series");
         assert_eq!(s.name, "Long Saga");
         assert_eq!(s.qualifier.as_deref(), Some("Chronological Order"));
     }
@@ -395,7 +401,7 @@ mod tests {
     #[test]
     fn narrated_by_in_the_title_moves_to_narrators() {
         let t = tags(&[("title", "Lock Step (Narrated by Some Voice)"), ("artist", "An Author")]);
-        let m = book_meta(&t, None, "f.m4b", &Sidecars::default());
+        let m = book_meta(&t, None, "f.m4b", &Sidecars::default(), false);
         assert_eq!(m.title, "Lock Step");
         assert_eq!(names(&m.narrators), ["Some Voice"]);
     }
@@ -403,29 +409,40 @@ mod tests {
     #[test]
     fn untagged_files_fall_back_to_folder_then_file_name_and_sidecars() {
         let side = Sidecars { info: vec!["Ripped 1999\nRead by Ray Example\n".into()], ..Default::default() };
-        let m = book_meta(&Tags::default(), Some("Far Station [B0FOLDER01]"), "part 01.mp3", &side);
+        let m = book_meta(&Tags::default(), Some("Far Station [B0FOLDER01]"), "part 01.mp3", &side, false);
         assert_eq!(m.title, "Far Station");
         assert_eq!(m.asin.as_deref(), Some("B0FOLDER01"));
         assert_eq!(names(&m.narrators), ["Ray Example"]);
-        let m = book_meta(&Tags::default(), None, "Loose Track.mp3", &Sidecars::default());
+        let m = book_meta(&Tags::default(), None, "Loose Track.mp3", &Sidecars::default(), false);
         assert_eq!(m.title, "Loose Track");
+    }
+
+    #[test]
+    fn a_multi_part_book_is_named_by_its_album_not_its_first_part() {
+        let t = tags(&[("title", "Far Station 01-55"), ("album", "Far Station"), ("track", "1/55")]);
+        assert_eq!(
+            book_meta(&t, Some("Far Station (1999)"), "Far Station 01-55.mp3", &Sidecars::default(), true).title,
+            "Far Station"
+        );
+        let t = tags(&[("title", "Track 1")]);
+        assert_eq!(book_meta(&t, Some("Big Book"), "01.mp3", &Sidecars::default(), true).title, "Big Book");
     }
 
     #[test]
     fn album_without_title_loses_its_edition_suffix() {
         let t = tags(&[("album", "Some Gift Story (Unabridged)")]);
-        assert_eq!(book_meta(&t, None, "f.m4b", &Sidecars::default()).title, "Some Gift Story");
+        assert_eq!(book_meta(&t, None, "f.m4b", &Sidecars::default(), false).title, "Some Gift Story");
     }
 
     #[test]
     fn html_descriptions_become_text_and_placeholders_are_dropped() {
         let t = tags(&[("title", "E1"), ("lyrics-eng", "<p><strong>Hello</strong> &amp; welcome</p><p>Part two</p>")]);
         assert_eq!(
-            book_meta(&t, None, "f.mp3", &Sidecars::default()).description.as_deref(),
+            book_meta(&t, None, "f.mp3", &Sidecars::default(), false).description.as_deref(),
             Some("Hello & welcome\n\nPart two")
         );
         let t = tags(&[("title", "E1"), ("comment", "Unabridged")]);
-        assert_eq!(book_meta(&t, None, "f.mp3", &Sidecars::default()).description, None);
+        assert_eq!(book_meta(&t, None, "f.mp3", &Sidecars::default(), false).description, None);
     }
 
     #[test]
@@ -446,7 +463,7 @@ mod tests {
             ("comment", "<img src=x onerror=alert(1)> stored at /srv/library/x.m4b"),
             ("artist", "\u{0000}Null Author"),
         ]);
-        let m = book_meta(&t, None, "f.m4b", &Sidecars::default());
+        let m = book_meta(&t, None, "f.m4b", &Sidecars::default(), false);
         assert_eq!(m.title, "Eviltxt.exe");
         assert_eq!(m.description.as_deref(), Some("stored at"));
         assert_eq!(names(&m.authors), ["Null Author"]);

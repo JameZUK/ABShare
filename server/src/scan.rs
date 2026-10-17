@@ -14,7 +14,7 @@ use abshare_core::metadata::{BookMeta, book_meta};
 use abshare_core::model::{ProbedFile, Sidecars};
 use abshare_core::series::{self, Item, Kind};
 use serde_json::json;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -123,8 +123,8 @@ pub async fn scan_library(
         let folder_path = plan.key.split('#').next().unwrap_or(&plan.key).to_owned();
         let loose = plan.parts.len() == 1 && first.dir().is_empty();
         let folder_name = if loose { None } else { folder_path.rsplit('/').next() };
-        let side = sidecars(&lib.path, w.extras.get(first.dir()));
-        let meta = book_meta(&first.tags, folder_name, first.file_name(), &side);
+        let side = sidecars(&lib.path, &w.extras, first.dir());
+        let meta = book_meta(&first.tags, folder_name, first.file_name(), &side, plan.parts.len() > 1);
         let parts: Vec<&ProbedFile> = plan.parts.iter().map(|&i| &files[i]).collect();
         let chapters = chapters::for_parts(&parts);
         let id = match meta.asin.as_deref() {
@@ -142,7 +142,7 @@ pub async fn scan_library(
                 ext: first.file_name().rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default(),
             })
         } else {
-            cover_sidecar(w.extras.get(first.dir())).map(|p| covers::Source::Sidecar(lib.path.join(p)))
+            cover_sidecar(&w.extras, first.dir()).map(|p| covers::Source::Sidecar(lib.path.join(p)))
         };
         let cover = match src {
             Some(s) => match covers::make(&cfg.ffmpeg, &cfg.data_dir, &id, s).await {
@@ -206,10 +206,26 @@ pub async fn scan_library(
     Ok(rep)
 }
 
-fn sidecars(root: &Path, extras: Option<&DirExtras>) -> Sidecars {
+/// The book's folder and up to two parent folders (never the library root itself): rips
+/// often keep the info text or cover one level above the audio.
+fn nearby<'a>(extras: &'a BTreeMap<String, DirExtras>, dir: &str) -> Vec<&'a DirExtras> {
+    let mut out = Vec::new();
+    let mut d = dir.to_owned();
+    for _ in 0..3 {
+        if d.is_empty() {
+            break;
+        }
+        if let Some(x) = extras.get(&d) {
+            out.push(x);
+        }
+        d = d.rsplit_once('/').map_or(String::new(), |(p, _)| p.to_owned());
+    }
+    out
+}
+
+fn sidecars(root: &Path, extras: &BTreeMap<String, DirExtras>, dir: &str) -> Sidecars {
     let mut s = Sidecars::default();
-    let Some(x) = extras else { return s };
-    for rel in x.texts.iter().take(8) {
+    for rel in nearby(extras, dir).iter().flat_map(|x| x.texts.iter()).take(8) {
         let Ok(text) = std::fs::read_to_string(root.join(rel)) else { continue };
         let name = rel.rsplit('/').next().unwrap_or("").to_ascii_lowercase();
         match name.as_str() {
@@ -221,8 +237,11 @@ fn sidecars(root: &Path, extras: Option<&DirExtras>) -> Sidecars {
     s
 }
 
-fn cover_sidecar(extras: Option<&DirExtras>) -> Option<&String> {
-    let x = extras?;
+fn cover_sidecar<'a>(extras: &'a BTreeMap<String, DirExtras>, dir: &str) -> Option<&'a String> {
+    nearby(extras, dir).into_iter().find_map(cover_in)
+}
+
+fn cover_in(x: &DirExtras) -> Option<&String> {
     let named = x.images.iter().find(|p| {
         let n = p.rsplit('/').next().unwrap_or("").to_ascii_lowercase();
         n.starts_with("cover.") || n.starts_with("folder.")

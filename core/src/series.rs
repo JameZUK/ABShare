@@ -89,7 +89,9 @@ pub fn classify(items: &[Item<'_>], members: &[usize]) -> Kind {
     let n = members.len();
     let short = members.iter().filter(|&&i| items[i].duration_ms < TWO_HOURS).count();
     let episodic = members.iter().filter(|&&i| parse_episode(&items[i].meta.title).number.is_some()).count();
-    if (short * 3 >= n * 2 && episodic * 3 >= n * 2) || (short == n && n >= 3) { Kind::Show } else { Kind::BookSeries }
+    // Every show seen in a real library had episode-style titles; length alone is not
+    // enough (a series of novellas is still a book series).
+    if short * 3 >= n * 2 && episodic * 3 >= n * 2 { Kind::Show } else { Kind::BookSeries }
 }
 
 fn order(items: &[Item<'_>], g: &mut Group) {

@@ -181,7 +181,7 @@ Both are grouped by that series value. Each group is then classified automatical
 
 | Kind | Rule (first match wins) |
 |---|---|
-| **Show** | The genre includes "Podcast"; **or** at least ⅔ of the group's items are under 2 h **and** at least ⅔ of the titles match an episode pattern (below); **or** every item is under 2 h and the group has 3 or more items |
+| **Show** | The genre includes "Podcast"; **or** at least ⅔ of the group's items are under 2 h **and** at least ⅔ of the titles match an episode pattern (below). Length alone never makes a show: a series of novellas is still a book series (changed 2026-10-17 after the first demo scan). |
 | **Book series** | Anything else with 2 or more items (a series may contain a short story or novella; one short item doesn't make it a show) |
 | (no group) | A single item with no series is a standalone book |
 
