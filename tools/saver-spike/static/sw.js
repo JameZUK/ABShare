@@ -1,4 +1,4 @@
-// Phase 0(a) option B: answer the player's Range requests for /offline/<id> from the pieces
+// v2 · Phase 0(a) option B: answer the player's Range requests for /offline/<id> from the pieces
 // stored in IndexedDB. Every other request goes to the network untouched.
 'use strict';
 
@@ -31,8 +31,10 @@ async function respond(request, id) {
   const db = await openDb();
   try {
     const m = await get(db, 'manifest', id);
-    if (!m || m.next < m.total) return new Response('not downloaded', { status: 404 });
-    const total = m.total;
+    if (!m || m.next === 0) return new Response('not downloaded', { status: 404 });
+    // Serve the downloaded part as if it were the whole file, so a partial download plays
+    // (the player sees a shorter book). A complete download is the real thing.
+    const total = m.next;
     const range = (request.headers.get('range') || '').match(/^bytes=(\d*)-(\d*)$/);
     let start = 0;
     let end = total - 1;
@@ -46,7 +48,7 @@ async function respond(request, id) {
     const parts = [];
     for (let i = 0; i < m.pieces.length; i++) {
       const pStart = m.pieces[i];
-      const pEnd = (i + 1 < m.pieces.length ? m.pieces[i + 1] : total) - 1;
+      const pEnd = (i + 1 < m.pieces.length ? m.pieces[i + 1] : m.next) - 1;
       if (pEnd < start || pStart > end) continue;
       const blob = await get(db, 'pieces', [id, pStart]);
       parts.push(blob.slice(Math.max(start, pStart) - pStart, Math.min(end, pEnd) - pStart + 1));

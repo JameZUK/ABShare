@@ -12,6 +12,7 @@ const storageEl = document.getElementById('storage');
 const statusEl = document.getElementById('status');
 const ua = navigator.userAgent;
 let stopRequested = false;
+let limitBytes = Infinity;
 let blobUrl = null;
 
 function note(msg) {
@@ -71,11 +72,18 @@ async function showProgress() {
   const m = await getManifest(db, bookId(what()));
   db.close();
   if (!m) { progressEl.textContent = 'Nothing downloaded yet.'; return; }
-  progressEl.textContent = `${mib(m.next)} of ${mib(m.total)} (${((m.next / m.total) * 100).toFixed(1)} %)${m.next >= m.total ? ' · complete' : ''}`;
+  progressEl.textContent = `${mib(m.next)} of ${mib(m.total)} (${((m.next / m.total) * 100).toFixed(1)} %)${m.next >= m.total ? ' · complete' : ''} · ${playable(m)}`;
 }
 
-async function download() {
+// Rough playable time of the downloaded part (exact for data saver: 4000 bytes a second at 32 kb/s).
+function playable(m) {
+  const secs = m.src.includes('q=32') ? m.next / 4000 : (m.next / m.total) * 306399;
+  return `about ${(secs / 3600).toFixed(1)} h playable offline`;
+}
+
+async function download(limit) {
   stopRequested = false;
+  limitBytes = limit || Infinity;
   const src = what();
   const id = bookId(src);
   const db = await openDb();
@@ -88,6 +96,7 @@ async function download() {
       if (stopRequested) { note('download paused'); break; }
       const from = m ? m.next : 0;
       if (m && from >= m.total) { note('download complete'); break; }
+      if (from >= limitBytes) { note(`quick test: stopped at ${mib(from)}`); break; }
       const resp = await fetch(src, { headers: { Range: `bytes=${from}-${from + PIECE - 1}` }, cache: 'no-store' });
       if (resp.status !== 206) throw new Error(`HTTP ${resp.status}`);
       const cr = (resp.headers.get('content-range') || '').match(/bytes (\d+)-(\d+)\/(\d+)/);
@@ -104,7 +113,7 @@ async function download() {
       });
       fetched += blob.size;
       const secs = (performance.now() - started) / 1000;
-      progressEl.textContent = `${mib(m.next)} of ${mib(m.total)} (${((m.next / m.total) * 100).toFixed(1)} %) · ${(fetched / 1048576 / secs).toFixed(1)} MiB/s`;
+      progressEl.textContent = `${mib(m.next)} of ${mib(m.total)} (${((m.next / m.total) * 100).toFixed(1)} %) · ${(fetched / 1048576 / secs).toFixed(1)} MiB/s · ${playable(m)}`;
     }
   } catch (e) {
     note(`download error: ${e.message || e}`);
@@ -134,7 +143,7 @@ async function playA() {
   const id = bookId(what());
   const db = await openDb();
   const m = await getManifest(db, id);
-  if (!m || m.next < m.total) { note('download it fully first'); db.close(); return; }
+  if (!m || m.next === 0) { note('download something first'); db.close(); return; }
   const t0 = performance.now();
   const parts = [];
   const t = db.transaction('pieces');
@@ -142,17 +151,25 @@ async function playA() {
   db.close();
   if (blobUrl) URL.revokeObjectURL(blobUrl);
   blobUrl = URL.createObjectURL(new Blob(parts, { type: m.type }));
-  note(`A: Blob URL from ${parts.length} pieces in ${Math.round(performance.now() - t0)} ms`);
+  note(`A: Blob URL from ${parts.length} pieces (${mib(m.next)}) in ${Math.round(performance.now() - t0)} ms`);
   audio.src = blobUrl;
   audio.play().catch((e) => note(`play refused: ${e.name}`));
 }
 
 async function playB() {
   if (!('serviceWorker' in navigator)) { note('no service worker support'); return; }
-  const reg = await navigator.serviceWorker.register('sw.js');
-  await navigator.serviceWorker.ready;
-  if (!navigator.serviceWorker.controller) { note('service worker installed: reload the page once, then try B again'); return; }
-  note(`B: service worker active (${reg.active ? reg.active.state : '?'})`);
+  // Offline, registering would fail (it fetches sw.js), so only register when no worker
+  // controls the page yet.
+  if (!navigator.serviceWorker.controller) {
+    try {
+      await navigator.serviceWorker.register('sw.js');
+      await navigator.serviceWorker.ready;
+    } catch (e) {
+      note(`service worker: ${e.message || e}`);
+    }
+    if (!navigator.serviceWorker.controller) { note('service worker installed: reload the page once (while online), then try B again'); return; }
+  }
+  note(`B: service worker controls the page (${navigator.onLine ? 'online' : 'offline'})`);
   audio.src = `offline/${bookId(what())}`;
   audio.play().catch((e) => note(`play refused: ${e.name}`));
 }
@@ -164,9 +181,12 @@ for (const ev of ['loadedmetadata', 'playing', 'pause', 'waiting', 'stalled', 'e
   });
 }
 document.addEventListener('visibilitychange', () => note(`page ${document.visibilityState}`));
+addEventListener('online', () => note('back online'));
+addEventListener('offline', () => note('went offline'));
 setInterval(() => { statusEl.textContent = `${audio.currentTime.toFixed(0)} s / ${(audio.duration || 0).toFixed(0)} s · ${navigator.onLine ? 'online' : 'OFFLINE'}`; }, 1000);
 
-document.getElementById('start').addEventListener('click', download);
+document.getElementById('start').addEventListener('click', () => download());
+document.getElementById('quick').addEventListener('click', () => download(64 * 1024 * 1024));
 document.getElementById('stop').addEventListener('click', () => { stopRequested = true; });
 document.getElementById('remove').addEventListener('click', remove);
 document.getElementById('playA').addEventListener('click', playA);
@@ -181,7 +201,7 @@ for (const b of document.querySelectorAll('button[data-frac]')) {
 }
 for (const r of document.querySelectorAll('input[name=what]')) r.addEventListener('change', showProgress);
 
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch((e) => note(`sw register: ${e.message}`));
+if ('serviceWorker' in navigator && navigator.onLine) navigator.serviceWorker.register('sw.js').catch((e) => note(`sw register: ${e.message}`));
 showStorage();
 showProgress();
 note(`offline page loaded: ${ua}`);

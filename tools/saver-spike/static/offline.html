@@ -17,14 +17,15 @@
 </fieldset>
 <div class="row">
   <button id="persist">Ask to keep storage</button>
-  <button id="start">Download / resume</button>
+  <button id="quick">Quick test: first 64 MiB</button>
+  <button id="start">Download all / resume</button>
   <button id="stop">Pause download</button>
   <button id="remove">Remove</button>
 </div>
 <p id="storage">Storage: …</p>
 <p id="progress">Nothing downloaded yet.</p>
 <h2>Play offline</h2>
-<p class="note">Turn on flight mode first to prove it is offline. A = one Blob URL built from the pieces. B = a service worker answering the player's range requests from storage.</p>
+<p class="note">Plays whatever has been downloaded so far. Keep this page open while it downloads. Turn on flight mode first to prove it is offline. A = one Blob URL built from the pieces. B = a service worker answering the player's range requests from storage.</p>
 <div class="row">
   <button id="playA">Play with A (Blob URL)</button>
   <button id="playB">Play with B (service worker)</button>

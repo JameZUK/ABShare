@@ -596,6 +596,15 @@ lyrion-anywhere's policy:
 
 The spike tests both with a 2.5 GB, 85 h file on iOS 17/18 (installed PWA, screen locked) and on Android Chrome. The losing option is dropped.
 
+**Phase 0(a) so far, 2026-10-17:**
+- **Chromium (headless, local):** both options played and seeked to 50, 75 and 90 % from a complete download, **with the server stopped**. Composing the Blob for option A from 13 pieces took 3 ms.
+- **First device run:** failed only because the test page required a complete 1.2 GB download first. The page now plays any downloaded prefix, and has a 64 MiB quick test.
+- **Three findings:**
+  1. A download runs only while the page is open: Firefox aborted the fetch when the page was hidden, and iOS has no background-fetch API. Downloads must resume cleanly, which they do (piece by piece, with an ETag check), and the UI must say "keep ABShare open while downloading".
+  2. The service worker must not be re-registered while offline, because registering fetches the script. Register only when no worker controls the page.
+  3. On the target host, data-saver downloads were bottlenecked at about 0.34 MB/s by per-segment encoding (about 0.7 s per 240 KB segment). Downloads therefore encode many segments per ffmpeg run (§5.4), or a whole-book data-saver file is prepared once and served like a playable copy.
+- **Safari:** `persist()` returns false in a browser tab (only Home Screen web apps get persistent storage); Firefox for Android returned true.
+
 ### 8.4 Sync-back
 
 - Progress, bookmarks and finished marks made offline go into a per-user IndexedDB outbox with idempotency keys. They are flushed on reconnect, oldest first, and each is removed only on the server's acknowledgement.
