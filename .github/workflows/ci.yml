@@ -45,7 +45,7 @@ jobs:
         run: npm run check
       - name: Unit tests and the HTML-injection source scan
         run: npm test
-      - name: Build (fails on any inline script, on* attribute or javascript: URL)
+      - name: "Build (fails on any inline script, on* attribute or javascript: URL)"
         run: npm run build
 
   supply-chain:
@@ -80,3 +80,4 @@ jobs:
         run: |
           test "$(docker inspect -f '{{.Config.User}}' abshare:ci)" = "65534:65534"
           docker run --rm --entrypoint /usr/local/bin/abshare-jail abshare:ci 2>&1 | grep -q "usage: abshare-jail"
+          docker run --rm --entrypoint /bin/sh abshare:ci -c 'test -f /usr/share/abshare/web/index.html && test -f /usr/share/abshare/web/service-worker.js'

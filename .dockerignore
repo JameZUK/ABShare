@@ -5,3 +5,6 @@ dev
 *.token
 .claude
 .playwright-mcp
+web/app/node_modules
+web/app/build
+web/app/.svelte-kit
