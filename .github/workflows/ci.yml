@@ -29,12 +29,17 @@ jobs:
       # the jailed ffmpeg tests and the demo-library integration test fail instead of skipping.
       - name: Landlock is available
         run: cat /sys/kernel/security/lsm | grep -q landlock
-      - run: cargo test --workspace
+      # The runner leaks open file descriptors into every step (seen: 142 and 145), and the jail
+      # rightly refuses to start with any inherited descriptor above 2 (one would bypass
+      # Landlock). Close them first. (Bash keeps its script on 255.)
+      - name: Tests, debug and release
         env:
           ABSHARE_REQUIRE_LANDLOCK: "1"
-      - run: cargo test --workspace --release
-        env:
-          ABSHARE_REQUIRE_LANDLOCK: "1"
+        run: |
+          for fd in /proc/$$/fd/*; do n=${fd##*/}; if [ "$n" -gt 2 ] && [ "$n" -lt 255 ]; then eval "exec $n>&-"; fi; done
+          ls -l /proc/$$/fd
+          cargo test --workspace
+          cargo test --workspace --release
 
   web:
     runs-on: ubuntu-24.04
