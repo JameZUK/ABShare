@@ -52,6 +52,11 @@ class Session {
 
 	/** Takes a successful sign-in or refresh answer. */
 	accept(r: SignedIn) {
+		// Someone else signing in on this page (an invite opened while signed in): end the
+		// old session first, so its player and queued progress don't carry over (review W2).
+		if (this.user && this.user.username !== r.user.username && (this.status === 'signed-in' || this.status === 'offline')) {
+			this.#end('signed-out');
+		}
 		this.#token = r.access_token;
 		this.#expires = Date.now() + r.expires_in * 1000;
 		this.user = r.user;

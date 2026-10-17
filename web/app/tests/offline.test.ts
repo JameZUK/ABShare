@@ -150,3 +150,24 @@ describe('playing from stored pieces', () => {
 		db.close();
 	});
 });
+
+test('a flush stops if someone else signs in part-way (review W2)', async () => {
+	await sync.record(A, 'position', 1_000);
+	await sync.record(B, 'position', 2_000);
+	fake.session.status = 'signed-in';
+	fake.post.mockImplementationOnce(async () => {
+		fake.session.user = { username: 'bob' }; // another person signs in on this page
+		return { result: 'accepted' };
+	});
+	await sync.flush();
+	expect(fake.post).toHaveBeenCalledTimes(1);
+	fake.session.user = { username: 'ada' };
+});
+
+test('wiping a user’s data is not blocked by an open connection (review W3)', async () => {
+	await sync.record(A, 'position', 3_000);
+	await userDb(); // this page keeps its connection open
+	await dropDb('ada'); // as another tab's sign-out would
+	await closeUserDb();
+	expect(await sync.local(A)).toBeUndefined();
+});

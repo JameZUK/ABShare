@@ -7,6 +7,7 @@
 	import { updates } from '$lib/pwa/update.svelte';
 	import { downloads } from '$lib/offline/downloads.svelte';
 	import { sync } from '$lib/offline/sync.svelte';
+	import { settings } from '$lib/settings.svelte';
 	import { lastBook, player } from '$lib/player/player.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import MiniPlayer from '$lib/components/MiniPlayer.svelte';
@@ -34,7 +35,8 @@
 		const user = session.user?.username;
 		if (!ready || !user || restoredFor === user) return;
 		restoredFor = user;
-		void downloads.load();
+		settings.owner = user;
+		void downloads.finishWipes().then(() => downloads.load());
 		void sync.flush();
 		const id = lastBook();
 		if (id && !player.book) void restore(id);

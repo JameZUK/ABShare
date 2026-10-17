@@ -16,7 +16,7 @@ const htmlFiles = readdirSync(dir, { recursive: true })
 	.map((f) => join(dir, f));
 
 /** Inline <script> elements (no src attribute) and their bodies. */
-export const INLINE_SCRIPT = /<script(?![^>]*\bsrc=)([^>]*)>([\s\S]*?)<\/script>/gi;
+export const INLINE_SCRIPT = /<script(?![^>]*\ssrc=)([^>]*)>([\s\S]*?)<\/script>/gi;
 /** on*="…" event-handler attributes, which a strict CSP also blocks. */
 export const HANDLER_ATTR = /<[a-z][^>]*\s+on[a-z]+\s*=/i;
 

@@ -61,7 +61,8 @@ class Sync {
 	async flush() {
 		if (this.#flushing || session.status !== 'signed-in') return;
 		const dbp = userDb();
-		if (!dbp) return;
+		const owner = session.user?.username;
+		if (!dbp || !owner) return;
 		this.#flushing = true;
 		clearTimeout(this.#retry);
 		try {
@@ -69,6 +70,8 @@ class Sync {
 			const items = (await all<OutboxItem>(db, 'outbox')).sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
 			this.pending = items.length;
 			for (const it of items) {
+				// Never send one person's queue under another's session (review W2).
+				if (session.user?.username !== owner || session.status !== 'signed-in') return;
 				try {
 					await post(`v1/progress/${it.book}`, it.body, 'PUT');
 				} catch (e) {

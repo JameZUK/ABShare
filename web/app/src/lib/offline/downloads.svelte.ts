@@ -6,6 +6,7 @@ import type { BookDetail } from '$lib/api/types';
 import { streamUrl } from '$lib/player/rules';
 import { all, dropDb, get, PIECE, reqP, tx, type Download, type Quality } from './db';
 import { closeUserDb, userDb } from './userdb';
+import { settings } from '$lib/settings.svelte';
 
 /** A download without its blobs, for the UI. */
 export type DownloadInfo = Omit<Download, 'cover'>;
@@ -17,6 +18,28 @@ export interface StorageInfo {
 }
 
 const strip = ({ cover: _cover, ...rest }: Download): DownloadInfo => rest;
+
+const WIPES = 'abshare.pendingWipes';
+
+function pendingWipes(): string[] {
+	try {
+		const v = JSON.parse(localStorage.getItem(WIPES) ?? '[]');
+		return Array.isArray(v) ? v.filter((u): u is string => typeof u === 'string' && /^[a-z0-9][a-z0-9._-]{2,31}$/.test(u)) : [];
+	} catch {
+		return [];
+	}
+}
+
+function pendingWipe(user: string, on: boolean) {
+	try {
+		const set = new Set(pendingWipes());
+		if (on) set.add(user);
+		else set.delete(user);
+		localStorage.setItem(WIPES, JSON.stringify([...set]));
+	} catch {
+		/* best effort */
+	}
+}
 
 class Downloads {
 	list = $state<DownloadInfo[]>([]);
@@ -128,9 +151,23 @@ class Downloads {
 
 	/** Removes every download of the current user (sign-out with "Remove"). */
 	async removeAll(username: string) {
+		// Remembered until done, so a wipe interrupted (the app closed, another tab holding
+		// the database) is finished at the next start (review W3).
+		pendingWipe(username, true);
 		await closeUserDb();
 		await dropDb(username);
+		settings.forgetSpeeds(username);
+		pendingWipe(username, false);
 		this.list = [];
+	}
+
+	/** Finishes any wipe that didn't complete last time. */
+	async finishWipes() {
+		for (const u of pendingWipes()) {
+			await dropDb(u);
+			settings.forgetSpeeds(u);
+			pendingWipe(u, false);
+		}
 	}
 
 	async #set(id: string, change: Partial<Download>) {

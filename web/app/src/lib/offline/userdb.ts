@@ -10,7 +10,16 @@ export function userDb(): Promise<IDBDatabase> | null {
 	if (!user) return null;
 	if (cached?.user !== user) {
 		cached?.db.then((d) => d.close()).catch(() => {});
-		cached = { user, db: openDb(user) };
+		const db = openDb(user).then((d) => {
+			// Another tab deleting this database (a sign-out or revocation wipe) must not be
+			// blocked by this open connection (review W3).
+			d.onversionchange = () => {
+				d.close();
+				if (cached?.db === db) cached = null;
+			};
+			return d;
+		});
+		cached = { user, db };
 		cached.db.catch(() => {
 			cached = null;
 		});

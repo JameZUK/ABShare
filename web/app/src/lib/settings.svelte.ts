@@ -19,7 +19,9 @@ export const SPEEDS = [0.75, 0.9, 1, 1.1, 1.2, 1.3, 1.5, 1.75, 2, 2.5, 3];
 export const KBPS: SaverKbps[] = [48, 40, 32];
 
 const KEY = 'abshare.prefs';
-const SPEEDS_KEY = 'abshare.bookSpeeds';
+// Per person, so the next person on a shared device doesn't see which books were played
+// (review W5). Cleared with that person's downloads.
+const speedsKey = (user: string | undefined) => `abshare.bookSpeeds.${user ?? '-'}`;
 
 /** Saved preferences, checked: anything odd falls back to the default. */
 export function sanitise(v: unknown): Prefs {
@@ -61,19 +63,31 @@ class Settings {
 		save(KEY, this.prefs);
 	}
 
+	/** Whose per-book speeds are in use (set at sign-in). */
+	owner: string | undefined = undefined;
+
 	/** The speed for a book: its own if set, else the default. */
 	speedFor(book: string): number {
-		const v = load<Record<string, number>>(SPEEDS_KEY, {})[book];
+		const v = load<Record<string, number>>(speedsKey(this.owner), {})[book];
 		return SPEEDS.includes(v as number) ? (v as number) : this.prefs.speed;
 	}
 
 	setSpeedFor(book: string, speed: number) {
-		const m = load<Record<string, number>>(SPEEDS_KEY, {});
+		const m = load<Record<string, number>>(speedsKey(this.owner), {});
 		delete m[book];
 		m[book] = speed;
 		const keys = Object.keys(m);
 		for (const k of keys.slice(0, Math.max(0, keys.length - 200))) delete m[k];
-		save(SPEEDS_KEY, m);
+		save(speedsKey(this.owner), m);
+	}
+
+	forgetSpeeds(user: string) {
+		try {
+			localStorage.removeItem(speedsKey(user));
+			localStorage.removeItem('abshare.bookSpeeds');
+		} catch {
+			/* not essential */
+		}
 	}
 }
 

@@ -58,3 +58,9 @@ test('non-JavaScript inline script types are refused, not silently moved', () =>
 	const r = run('<script type="text/x-template">{{x}}</script>');
 	assert.equal(r.ok, false);
 });
+
+test('a data-src attribute is not mistaken for a real src (review W4)', () => {
+	const r = run('<html><body><script data-src="x">alert(1)</script></body></html>');
+	// Either moved out of the page or refused: never left inline.
+	assert.ok(!r.ok || !/<script data-src="x">alert/.test(r.html), r.html ?? r.out);
+});
