@@ -9,6 +9,20 @@ Started 2026-10-17. It covers:
 
 **Severity** reflects realistic exploitability for an invite-only service on the internet. Every Critical, High and Medium finding gets a fix with a regression test that fails before the fix.
 
+## Outcome (2026-10-17)
+
+- **All 4 High and 11 Medium findings are fixed.** Each fix has a regression test that fails without it. Every fix whose failure could be reproduced was shown to fail first (J1, J2, J6, P1, C1, C2, M3, A1, A2 and others).
+- **All Low findings are fixed except D1,** which is a firewall change on the test network.
+- **Pentest:** re-run against the fixed release image behind nginx, 74 checks pass. The one remaining item is informational.
+- **No open Critical, High or Medium findings remain.** That meets the SPEC §11 Phase 6 gate.
+
+Before public exposure, still recommended:
+
+1. **An independent human review.** This review was AI-assisted (see above).
+2. **D1:** allow only the reverse proxy to reach ABShare's port.
+3. **Proxy config:** apply the updated nginx example to the real proxy (request buffering for everything except media).
+4. **Device gates:** complete those from Phases 3 and 4.
+
 **Status:** **Fixed** means fixed with a test. **Open** means still to fix. **Accepted** is explained in the row.
 
 ## High
