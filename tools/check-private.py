@@ -11,6 +11,7 @@ usage:
   tools/check-private.py all        # the whole history
 """
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -32,7 +33,18 @@ else:
     text = subprocess.run(["git", "log", "--all", "-p", "--format=%an %ae %cn %ce%n%B"], cwd=root, capture_output=True, text=True).stdout
 
 low = text.lower()
-hits = sorted({p for p in patterns if p in low})
+
+
+def found(p):
+    # Plain words ("Tide") match whole words only, so "riptides" or "lockfileVersion"-style
+    # identifiers are not hits;
+    # anything with digits or punctuation (addresses, ASINs, paths) matches anywhere.
+    if re.fullmatch(r"[a-z ]+", p):
+        return re.search(r"(?<![a-z0-9])" + re.escape(p) + r"(?![a-z0-9])", low) is not None
+    return p in low
+
+
+hits = sorted({p for p in patterns if found(p)})
 if hits:
     print("check-private: refusing, private strings found:", file=sys.stderr)
     for h in hits[:50]:

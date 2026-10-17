@@ -118,6 +118,12 @@ fn cookie_value(r: &Response, name: &str) -> String {
 
 /// Enrols a user with password + TOTP; returns (seed, access token, refresh cookie, recovery codes).
 async fn enrol(t: &T, username: &str) -> (Vec<u8>, String, String, Vec<String>) {
+    let (seed, access, refresh, codes, _) = enrol_with_media(t, username).await;
+    (seed, access, refresh, codes)
+}
+
+/// As [`enrol`], plus the media cookie.
+async fn enrol_with_media(t: &T, username: &str) -> (Vec<u8>, String, String, Vec<String>, String) {
     let tok = invite(t, Role::Listener);
     let r = send(t, "POST", "/v1/auth/enrol/start", Some(json!({"token": tok, "username": username})), &[]).await;
     assert_eq!(r.status(), StatusCode::OK);
@@ -137,10 +143,11 @@ async fn enrol(t: &T, username: &str) -> (Vec<u8>, String, String, Vec<String>) 
     let r = send(t, "POST", "/v1/auth/enrol/finish", Some(json!({"enrol": enrol, "device_name": "Laptop"})), &[]).await;
     assert_eq!(r.status(), StatusCode::OK);
     let refresh = cookie_value(&r, "abshare_refresh");
+    let media = cookie_value(&r, "abshare_media");
     let v = json_of(r).await;
     let codes =
         v["recovery_codes"].as_array().expect("codes").iter().map(|c| c.as_str().unwrap_or("").to_owned()).collect();
-    (seed, v["access_token"].as_str().expect("access").to_owned(), refresh, codes)
+    (seed, v["access_token"].as_str().expect("access").to_owned(), refresh, codes, media)
 }
 
 fn reset_totp_step(t: &T, username: &str) {
@@ -672,4 +679,325 @@ async fn the_audit_log_records_and_verifies() {
         "{events:?}"
     );
     assert!(crate::auth::audit::verify(&c, &t.st.audit_key).is_ok());
+}
+
+// ---------------------------------------------------------------- media
+
+const BOOK: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaa";
+const KIDS_BOOK: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbb";
+const ESCAPE_BOOK: &str = "cccccccccccccccccccccccccc";
+const MULTI_BOOK: &str = "dddddddddddddddddddddddddd";
+const COVER: &str = "0123456789abcdef";
+
+struct M {
+    t: T,
+    dir: std::path::PathBuf,
+}
+
+impl Drop for M {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// A router with media enabled over a scratch library: one plain book, one in a library the
+/// user can't see, one whose part is a symlink out of the root, and one needing a copy.
+fn setup_media() -> M {
+    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("abshare-media-test-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let (lib, kids, data) = (dir.join("lib"), dir.join("kids"), dir.join("data"));
+    for d in [&lib, &kids, &data] {
+        std::fs::create_dir_all(d).expect("mkdir");
+    }
+    let audio: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(lib.join("book.mp3"), &audio).expect("write");
+    std::fs::write(lib.join("part1.mp3"), &audio).expect("write");
+    std::fs::write(kids.join("kids.mp3"), &audio).expect("write");
+    std::fs::write(dir.join("secret.mp3"), b"outside the library").expect("write");
+    std::os::unix::fs::symlink(dir.join("secret.mp3"), lib.join("escape.mp3")).expect("symlink");
+    let cover_dir = data.join("covers").join(BOOK);
+    std::fs::create_dir_all(&cover_dir).expect("mkdir");
+    std::fs::write(cover_dir.join(format!("{COVER}-320.jpg")), b"jpeg").expect("write");
+
+    let conn = crate::db::open(std::path::Path::new(":memory:")).expect("db");
+    let rows = [
+        (BOOK, 1, "book.mp3", 0, Some(COVER)),
+        (KIDS_BOOK, 2, "kids.mp3", 0, None),
+        (ESCAPE_BOOK, 1, "escape.mp3", 0, None),
+        (MULTI_BOOK, 1, "part1.mp3", 1, None),
+    ];
+    conn.execute(
+        "INSERT INTO library (id, name, root) VALUES (1, 'Audiobooks', ?1), (2, 'Kids', ?2)",
+        [lib.to_string_lossy(), kids.to_string_lossy()],
+    )
+    .expect("libraries");
+    for (id, library, part, copy, cover) in rows {
+        conn.execute(
+            "INSERT INTO book (id, library_id, folder, meta, duration_ms, needs_copy, cover, updated_at)
+             VALUES (?1, ?2, '', '{\"title\":\"A Book\"}', 3600000, ?3, ?4, 1)",
+            rusqlite::params![id, library, copy, cover],
+        )
+        .expect("book");
+        conn.execute("INSERT INTO book_part (book_id, ord, rel_path) VALUES (?1, 0, ?2)", [id, part]).expect("part");
+    }
+    let mut st = AppState::new(
+        conn,
+        &Secret::for_tests([5; 32]),
+        ORIGIN,
+        vec!["10.0.0.10".parse().expect("ip")],
+        Hasher::for_tests(),
+    )
+    .expect("state");
+    let ff = crate::config::Ffmpeg {
+        // Never run here: the tests stay off the transcode paths.
+        ffmpeg: "/nonexistent/ffmpeg".into(),
+        ffprobe: "/nonexistent/ffprobe".into(),
+        jail: "/nonexistent/jail".into(),
+        libs: vec![],
+        jobs: 1,
+    };
+    let roots = [("Audiobooks".to_owned(), lib), ("Kids".to_owned(), kids)].into_iter().collect();
+    st.media = Some(Arc::new(crate::media::Media::new(ff, data, roots)));
+    let st = Arc::new(st);
+    M { t: T { app: router(st.clone()), st }, dir }
+}
+
+/// A listener who can see only the "Audiobooks" library; returns (access token, media cookie).
+async fn listener(m: &M) -> (String, String) {
+    let (_, access, _, _, media) = enrol_with_media(&m.t, "joe").await;
+    let c = m.t.st.db.0.lock().expect("db");
+    c.execute("UPDATE user SET libraries = '[\"Audiobooks\"]' WHERE username = 'joe'", []).expect("perms");
+    (access, media)
+}
+
+async fn body_of(r: Response) -> Vec<u8> {
+    axum::body::to_bytes(r.into_body(), 1 << 20).await.expect("body").to_vec()
+}
+
+#[tokio::test]
+async fn media_needs_a_valid_cookie_or_token() {
+    let m = setup_media();
+    let (access, media) = listener(&m).await;
+    let uri = format!("/v1/media/{BOOK}");
+    for extra in [vec![], vec![("cookie", "abshare_media=forged")], vec![("authorization", "Bearer forged")]] {
+        let r = send(&m.t, "GET", &uri, None, &extra).await;
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "{extra:?}");
+    }
+    // The refresh cookie is not a media credential, and neither is the access token as a cookie.
+    let r = send(&m.t, "GET", &uri, None, &[("cookie", &format!("abshare_media={access}"))]).await;
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+    let r = send(&m.t, "GET", &uri, None, &[("cookie", &format!("abshare_media={media}"))]).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let h = r.headers().clone();
+    assert_eq!(h["content-type"], "audio/mpeg");
+    assert_eq!(h["cache-control"], "private, no-store");
+    assert_eq!(h["content-length"], "1000");
+    assert_eq!(body_of(r).await.len(), 1000);
+    let r = send(&m.t, "GET", &uri, None, &[("authorization", &format!("Bearer {access}"))]).await;
+    assert_eq!(r.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn media_ranges_are_exact_and_bad_ones_refused() {
+    let m = setup_media();
+    let (access, _) = listener(&m).await;
+    let auth = format!("Bearer {access}");
+    let uri = format!("/v1/media/{BOOK}");
+    let r = send(&m.t, "GET", &uri, None, &[("authorization", &auth), ("range", "bytes=10-19")]).await;
+    assert_eq!(r.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(r.headers()["content-range"], "bytes 10-19/1000");
+    let expected: Vec<u8> = (10..20u8).collect();
+    assert_eq!(body_of(r).await, expected);
+    let r = send(&m.t, "GET", &uri, None, &[("authorization", &auth), ("range", "bytes=-5")]).await;
+    assert_eq!(r.headers()["content-range"], "bytes 995-999/1000");
+    assert_eq!(body_of(r).await.len(), 5);
+    let r = send(&m.t, "GET", &uri, None, &[("authorization", &auth), ("range", "bytes=990-5000")]).await;
+    assert_eq!(r.headers()["content-range"], "bytes 990-999/1000");
+    let r = send(&m.t, "GET", &uri, None, &[("authorization", &auth), ("range", "bytes=1000-")]).await;
+    assert_eq!(r.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(r.headers()["content-range"], "bytes */1000");
+}
+
+#[tokio::test]
+async fn media_outside_the_users_libraries_or_root_is_not_found() {
+    let m = setup_media();
+    let (access, _) = listener(&m).await;
+    let auth = format!("Bearer {access}");
+    for uri in [
+        format!("/v1/media/{KIDS_BOOK}"),
+        format!("/v1/media/{ESCAPE_BOOK}"),
+        "/v1/media/eeeeeeeeeeeeeeeeeeeeeeeeee".to_owned(),
+        "/v1/media/..%2f..%2fetc%2fpasswd".to_owned(),
+        "/v1/media/AAAAAAAAAAAAAAAAAAAAAAAAAA".to_owned(),
+        format!("/v1/media/covers/{KIDS_BOOK}/{COVER}"),
+        format!("/v1/media/covers/{BOOK}/fedcba9876543210"),
+        format!("/v1/media/covers/{BOOK}/{COVER}?size=321"),
+    ] {
+        let r = send(&m.t, "GET", &uri, None, &[("authorization", &auth)]).await;
+        assert_eq!(r.status(), StatusCode::NOT_FOUND, "{uri}");
+        assert!(!body_of(r).await.windows(7).any(|w| w == b"outside"), "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn media_qualities_are_validated_and_copies_report_preparing() {
+    let m = setup_media();
+    let (access, _) = listener(&m).await;
+    let auth = format!("Bearer {access}");
+    for q in ["64", "abc", "-1", "48.0"] {
+        let r = send(&m.t, "GET", &format!("/v1/media/{BOOK}?q={q}"), None, &[("authorization", &auth)]).await;
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "{q}");
+    }
+    let r = send(&m.t, "GET", &format!("/v1/media/{BOOK}?q=48&x=1"), None, &[("authorization", &auth)]).await;
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST, "unknown parameters are refused");
+    let r = send(&m.t, "GET", &format!("/v1/media/{MULTI_BOOK}"), None, &[("authorization", &auth)]).await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    assert_eq!(json_of(r).await["error"], "preparing");
+    let r = send(&m.t, "GET", &format!("/v1/media/{BOOK}/state"), None, &[("authorization", &auth)]).await;
+    assert_eq!(json_of(r).await["ready"], true);
+}
+
+#[tokio::test]
+async fn covers_are_served_immutable_to_permitted_users() {
+    let m = setup_media();
+    let (_, media) = listener(&m).await;
+    let r = send(
+        &m.t,
+        "GET",
+        &format!("/v1/media/covers/{BOOK}/{COVER}"),
+        None,
+        &[("cookie", &format!("abshare_media={media}"))],
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(r.headers()["content-type"], "image/jpeg");
+    assert_eq!(r.headers()["cache-control"], "private, max-age=31536000, immutable");
+    assert_eq!(body_of(r).await, b"jpeg");
+}
+
+#[tokio::test]
+async fn the_web_app_is_served_with_safe_caching() {
+    let m = setup_media();
+    let web = m.dir.join("web");
+    std::fs::create_dir_all(web.join("_app/immutable")).expect("mkdir");
+    std::fs::write(web.join("index.html"), "<!doctype html>").expect("write");
+    std::fs::write(web.join("_app/immutable/app-1a2b.js"), "x").expect("write");
+    std::fs::write(m.dir.join("private.txt"), "nope").expect("write");
+    let mut st = AppState::new(
+        crate::db::open(std::path::Path::new(":memory:")).expect("db"),
+        &Secret::for_tests([5; 32]),
+        ORIGIN,
+        vec![],
+        Hasher::for_tests(),
+    )
+    .expect("state");
+    st.web_dir = Some(web);
+    let t = T { app: router(Arc::new(st)), st: m.t.st.clone() };
+    let r = send(&t, "GET", "/", None, &[]).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(r.headers()["cache-control"], "no-cache");
+    assert!(r.headers().contains_key("content-security-policy"));
+    let r = send(&t, "GET", "/_app/immutable/app-1a2b.js", None, &[]).await;
+    assert_eq!(r.headers()["cache-control"], "public, max-age=31536000, immutable");
+    assert_eq!(r.headers()["content-type"], "text/javascript; charset=utf-8");
+    for bad in ["/../private.txt", "/%2e%2e/private.txt", "/.hidden", "/v1/nope", "/missing.js"] {
+        let r = send(&t, "GET", bad, None, &[]).await;
+        assert_eq!(r.status(), StatusCode::NOT_FOUND, "{bad}");
+    }
+    let r = send(&t, "POST", "/", None, &[]).await;
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+}
+
+// ---------------------------------------------------------------- library, bookmarks, progress
+
+async fn get_json(t: &T, uri: &str, access: &str) -> (StatusCode, Value) {
+    let r = send(t, "GET", uri, None, &[("authorization", &format!("Bearer {access}"))]).await;
+    (r.status(), json_of(r).await)
+}
+
+#[tokio::test]
+async fn the_library_shows_only_permitted_books() {
+    let m = setup_media();
+    let (access, _) = listener(&m).await;
+    let (s, v) = get_json(&m.t, "/v1/libraries", &access).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["libraries"], json!([{ "id": 1, "name": "Audiobooks" }]));
+    let (_, v) = get_json(&m.t, "/v1/books", &access).await;
+    let ids: Vec<&str> = v["items"].as_array().expect("items").iter().filter_map(|b| b["id"].as_str()).collect();
+    assert_eq!(v["total"], 3);
+    assert!(!ids.contains(&KIDS_BOOK), "{ids:?}");
+    assert_eq!(get_json(&m.t, &format!("/v1/books/{BOOK}"), &access).await.0, StatusCode::OK);
+    for uri in [format!("/v1/books/{KIDS_BOOK}"), format!("/v1/books/{KIDS_BOOK}/bookmarks"), "/v1/books/nope".into()] {
+        assert_eq!(get_json(&m.t, &uri, &access).await.0, StatusCode::NOT_FOUND, "{uri}");
+    }
+    for uri in ["/v1/books?cursor=x", "/v1/books?bogus=1"] {
+        assert_eq!(get_json(&m.t, uri, &access).await.0, StatusCode::BAD_REQUEST, "{uri}");
+    }
+    assert_eq!(get_json(&m.t, "/v1/books", "forged").await.0, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn bookmarks_belong_to_their_owner() {
+    let m = setup_media();
+    let (joe, _) = listener(&m).await;
+    let (_, amy, _, _) = enrol(&m.t, "amy").await;
+    let auth = |a: &str| format!("Bearer {a}");
+    let uri = format!("/v1/books/{BOOK}/bookmarks");
+    let r = send(
+        &m.t,
+        "POST",
+        &uri,
+        Some(json!({"position_ms": 99_999_999_999u64, "note": "a <b>note</b>"})),
+        &[("authorization", &auth(&joe))],
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let id = json_of(r).await["id"].as_i64().expect("id");
+    let (_, v) = get_json(&m.t, &uri, &joe).await;
+    assert_eq!(v["bookmarks"][0]["position_ms"], 3_600_000, "positions are clamped to the book");
+    assert_eq!(get_json(&m.t, &uri, &amy).await.1["bookmarks"], json!([]));
+    let b = format!("/v1/bookmarks/{id}");
+    let r = send(&m.t, "PATCH", &b, Some(json!({"note": "mine now"})), &[("authorization", &auth(&amy))]).await;
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    let r = send(&m.t, "DELETE", &b, None, &[("authorization", &auth(&amy))]).await;
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    let r = send(&m.t, "DELETE", &b, None, &[("authorization", &auth(&joe))]).await;
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn progress_is_idempotent_validated_and_private() {
+    let m = setup_media();
+    let (joe, _) = listener(&m).await;
+    let (_, amy, _, _) = enrol(&m.t, "amy").await;
+    let put = |book: &str, body: Value, who: &str| {
+        let (uri, auth) = (format!("/v1/progress/{book}"), format!("Bearer {who}"));
+        let t = &m.t;
+        async move { send(t, "PUT", &uri, Some(body), &[("authorization", &auth)]).await }
+    };
+    let t0 = super::now() * 1000;
+    let ev = json!({"key": "k-00000001", "event_time_ms": t0, "action": "position", "position_ms": 60_000});
+    let r = put(BOOK, ev.clone(), &joe).await;
+    let st = r.status();
+    assert_eq!(st, StatusCode::OK, "{}", String::from_utf8_lossy(&body_of(r).await));
+    assert_eq!(json_of(r).await["result"], "accepted");
+    assert_eq!(json_of(put(BOOK, ev, &joe).await).await["result"], "duplicate");
+    let older = json!({"key": "k-00000002", "event_time_ms": t0 - 500, "action": "position", "position_ms": 1});
+    assert_eq!(json_of(put(BOOK, older, &joe).await).await["result"], "stale");
+    for bad in [
+        json!({"key": "short", "event_time_ms": t0, "action": "position", "position_ms": 1}),
+        json!({"key": "k-0000000%", "event_time_ms": t0, "action": "position", "position_ms": 1}),
+        json!({"key": "k-00000003", "event_time_ms": t0, "action": "teleport"}),
+        json!({"key": "k-00000003", "event_time_ms": t0, "action": "position"}),
+    ] {
+        assert_eq!(put(BOOK, bad.clone(), &joe).await.status(), StatusCode::BAD_REQUEST, "{bad}");
+    }
+    let kids = json!({"key": "k-00000004", "event_time_ms": t0 + 1, "action": "finished"});
+    assert_eq!(put(KIDS_BOOK, kids, &joe).await.status(), StatusCode::NOT_FOUND);
+    let (_, v) = get_json(&m.t, "/v1/progress", &joe).await;
+    assert_eq!(v["items"][0]["book"], BOOK);
+    assert_eq!(v["items"][0]["position_ms"], 60_000);
+    assert_eq!(get_json(&m.t, "/v1/progress", &amy).await.1["items"], json!([]));
 }

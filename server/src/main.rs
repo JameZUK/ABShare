@@ -10,6 +10,8 @@ mod config;
 mod covers;
 mod db;
 mod http;
+mod library;
+mod media;
 mod probe;
 mod scan;
 mod secret;
@@ -113,7 +115,18 @@ async fn run() -> Result<(), String> {
                     p.parse::<std::net::IpAddr>().map_err(|_| format!("trusted_proxies: {p} is not an IP address"))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            let state = http::AppState::new(conn, &secret, &cfg.public_origin, trusted, auth::crypto::Hasher::new())?;
+            let mut state =
+                http::AppState::new(conn, &secret, &cfg.public_origin, trusted, auth::crypto::Hasher::new())?;
+            let roots = cfg.libraries.iter().map(|l| (l.name.clone(), l.path.clone())).collect();
+            let ff = config::Ffmpeg {
+                ffmpeg: cfg.ffmpeg.ffmpeg.clone(),
+                ffprobe: cfg.ffmpeg.ffprobe.clone(),
+                jail: cfg.ffmpeg.jail.clone(),
+                libs: cfg.ffmpeg.libs.clone(),
+                jobs: cfg.ffmpeg.jobs,
+            };
+            state.web_dir = cfg.web_dir.clone();
+            state.media = Some(std::sync::Arc::new(media::Media::new(ff, cfg.data_dir.clone(), roots)));
             let app = http::router(std::sync::Arc::new(state));
             let listener =
                 tokio::net::TcpListener::bind(&cfg.listen).await.map_err(|e| format!("bind {}: {e}", cfg.listen))?;

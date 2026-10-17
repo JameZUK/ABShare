@@ -3,8 +3,11 @@
 
 pub mod auth_routes;
 pub mod guard;
+pub mod library_routes;
 pub mod me_routes;
+pub mod media_routes;
 pub mod passkeys;
+pub mod web;
 
 use crate::auth::crypto::{Hasher, SeedBox};
 use crate::auth::sessions::{CHALLENGE_TTL, Ceremonies, ENROL_TTL, Session, Sessions};
@@ -106,6 +109,10 @@ pub struct AppState {
     pub passkey_add: Ceremonies<(i64, webauthn_rs::prelude::PasskeyRegistration)>,
     pub totp_add: Ceremonies<(i64, Vec<u8>)>,
     pub anon_limit: RateLimit,
+    pub progress_limit: RateLimit<(i64, String)>,
+    pub media: Option<Arc<crate::media::Media>>,
+    pub web_dir: Option<std::path::PathBuf>,
+    pub catalog: tokio::sync::RwLock<(std::sync::Arc<crate::library::Catalog>, i64)>,
     pub guard: Arc<GuardConfig>,
     pub issuer: String,
 }
@@ -144,9 +151,31 @@ impl AppState {
             passkey_add: Ceremonies::new(CHALLENGE_TTL),
             totp_add: Ceremonies::new(ENROL_TTL),
             anon_limit: RateLimit::new(30),
+            progress_limit: RateLimit::new(12),
+            media: None,
+            web_dir: None,
+            catalog: tokio::sync::RwLock::new((std::sync::Arc::new(crate::library::Catalog::default()), 0)),
             guard: Arc::new(GuardConfig { trusted, host: host_header, origin: clean_origin }),
             issuer: "ABShare".into(),
         })
+    }
+
+    /// The catalogue view, reloaded when the database has changed (checked at most every 5 s).
+    pub async fn catalog(&self) -> Result<Arc<crate::library::Catalog>, ApiError> {
+        {
+            let g = self.catalog.read().await;
+            if now() - g.1 < 5 && g.1 != 0 {
+                return Ok(g.0.clone());
+            }
+        }
+        let current = self.catalog.read().await.0.stamp;
+        let stamp = self.db.run(|c| crate::library::stamp(c)).await?;
+        let mut g = self.catalog.write().await;
+        if stamp != current || g.1 == 0 {
+            g.0 = Arc::new(self.db.run(|c| crate::library::load(c)).await?);
+        }
+        g.1 = now();
+        Ok(g.0.clone())
     }
 
     /// Writes an audit entry; failures to audit are logged but never block the request.
@@ -292,7 +321,9 @@ pub fn router(state: State) -> Router {
             auth_routes::routes(state.clone()).layer(axum::middleware::from_fn_with_state(g.clone(), guard::csrf)),
         )
         .nest("/v1/me", me_routes::routes())
-        .fallback(|| async { ApiError::not_found() })
+        .nest("/v1", library_routes::routes())
+        .nest("/v1/media", media_routes::routes())
+        .fallback(web::fallback)
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
         .layer(axum::middleware::from_fn_with_state(g, guard::front))
         .with_state(state)

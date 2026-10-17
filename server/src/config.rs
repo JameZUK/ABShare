@@ -14,6 +14,9 @@ pub struct Config {
     pub public_origin: String,
     #[serde(default)]
     pub trusted_proxies: Vec<String>,
+    /// The built PWA (`web/app/build`). Without it only the API is served.
+    #[serde(default)]
+    pub web_dir: Option<PathBuf>,
     pub ffmpeg: Ffmpeg,
     #[serde(default)]
     pub cache: Cache,

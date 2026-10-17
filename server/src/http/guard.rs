@@ -117,18 +117,18 @@ pub fn headers_on(mut r: Response) -> Response {
     r
 }
 
-/// A sliding-window counter per address, for unauthenticated routes (bounded memory).
-pub struct RateLimit {
+/// A sliding-window counter per key (an address, or a device and book), bounded in memory.
+pub struct RateLimit<K = IpAddr> {
     per_minute: usize,
-    hits: Mutex<HashMap<IpAddr, VecDeque<i64>>>,
+    hits: Mutex<HashMap<K, VecDeque<i64>>>,
 }
 
-impl RateLimit {
+impl<K: std::hash::Hash + Eq> RateLimit<K> {
     pub fn new(per_minute: usize) -> Self {
         Self { per_minute, hits: Mutex::new(HashMap::new()) }
     }
 
-    pub fn allow(&self, ip: IpAddr, now: i64) -> bool {
+    pub fn allow(&self, ip: K, now: i64) -> bool {
         let Ok(mut m) = self.hits.lock() else { return false };
         if m.len() > 10_000 {
             m.retain(|_, q| q.back().is_some_and(|&t| t > now - 60));

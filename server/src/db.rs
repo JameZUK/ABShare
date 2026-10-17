@@ -145,6 +145,37 @@ pub const MIGRATIONS: &[&str] = &[
         mac BLOB NOT NULL
     );
     CREATE TABLE audit_anchor (id INTEGER PRIMARY KEY CHECK (id = 1), mac BLOB NOT NULL);",
+    // 4: listening (SPEC 5.6): when books arrived, progress, idempotency keys, bookmarks.
+    "ALTER TABLE book ADD COLUMN added_at INTEGER;
+    UPDATE book SET added_at = updated_at WHERE added_at IS NULL;
+    CREATE TABLE progress (
+        user_id INTEGER NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+        book_id TEXT NOT NULL,
+        position_ms INTEGER NOT NULL,
+        duration_ms INTEGER NOT NULL,
+        finished INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        received_at INTEGER NOT NULL,
+        device_id INTEGER,
+        PRIMARY KEY (user_id, book_id)
+    );
+    CREATE INDEX progress_recent ON progress(user_id, received_at);
+    CREATE TABLE progress_key (
+        user_id INTEGER NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+        key TEXT NOT NULL,
+        at INTEGER NOT NULL,
+        PRIMARY KEY (user_id, key)
+    );
+    CREATE TABLE bookmark (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+        book_id TEXT NOT NULL,
+        position_ms INTEGER NOT NULL,
+        note TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX bookmark_user_book ON bookmark(user_id, book_id);",
 ];
 
 pub fn sql_err(e: rusqlite::Error) -> String {

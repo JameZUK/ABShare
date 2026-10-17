@@ -93,6 +93,27 @@ pub fn clean_paragraphs(s: &str, max: usize) -> String {
     out
 }
 
+/// Folds text for searching: lower case, accents removed (é → e), whitespace collapsed.
+pub fn fold(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut space = false;
+    for c in cap_input(s).nfkd() {
+        if unicode_normalization::char::is_combining_mark(c) || is_invisible(c) {
+            continue;
+        }
+        if c.is_whitespace() || c.is_control() {
+            space = !out.is_empty();
+            continue;
+        }
+        if space {
+            out.push(' ');
+            space = false;
+        }
+        out.extend(c.to_lowercase());
+    }
+    out
+}
+
 /// Removes words that look like filesystem paths, `file:` URLs or private network
 /// addresses from free text (SPEC §4.4). Ordinary prose and public URLs are left alone.
 pub fn scrub_free_text(s: &str) -> String {
@@ -251,6 +272,13 @@ mod tests {
         assert_eq!(clean_line("  The\tLong\n  Way  ", 100), "The Long Way");
         // NFC: e + combining acute becomes é.
         assert_eq!(clean_line("Cafe\u{301}", 100), "Café");
+    }
+
+    #[test]
+    fn folding_ignores_case_accents_and_spacing() {
+        assert_eq!(fold("  Café  CRÈME\tBrûlée "), "cafe creme brulee");
+        assert_eq!(fold("Ångström"), fold("angstrom"));
+        assert_eq!(fold("ﬁne"), "fine");
     }
 
     #[test]

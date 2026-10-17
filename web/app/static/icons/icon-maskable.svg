@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>ABShare</title>
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#060606"/><stop offset="1" stop-color="#1e1e1e"/></linearGradient></defs>
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <g fill="none" stroke="#fbe7c6" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"
+     transform="translate(256 256) scale(0.68) translate(-262 -266)">
+    <path d="M206 176 C176 156 130 152 86 162 V356 C130 346 176 350 206 370"/>
+    <path d="M206 176 C236 156 282 152 326 162 V356 C282 346 236 350 206 370"/>
+    <line x1="206" y1="176" x2="206" y2="370"/>
+    <g stroke-width="15" opacity="0.55">
+      <line x1="122" y1="214" x2="172" y2="219"/>
+      <line x1="122" y1="254" x2="172" y2="259"/>
+      <line x1="122" y1="294" x2="160" y2="298"/>
+    </g>
+    <path d="M368 222 A60 60 0 0 1 368 310" opacity="0.95"/>
+    <path d="M400 190 A104 104 0 0 1 400 342" opacity="0.7"/>
+    <path d="M432 158 A148 148 0 0 1 432 374" opacity="0.45"/>
+  </g>
+</svg>

@@ -162,8 +162,8 @@ impl Catalogue {
         }
         for b in books {
             tx.execute(
-                "INSERT INTO book (id, library_id, folder, meta, duration_ms, needs_copy, cover, cover_src, missing_since, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?9, NULL, ?8)
+                "INSERT INTO book (id, library_id, folder, meta, duration_ms, needs_copy, cover, cover_src, missing_since, updated_at, added_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?9, NULL, ?8, ?8)
                  ON CONFLICT(id) DO UPDATE SET library_id = excluded.library_id, folder = excluded.folder,
                  meta = excluded.meta, duration_ms = excluded.duration_ms, needs_copy = excluded.needs_copy,
                  cover = excluded.cover, cover_src = excluded.cover_src, missing_since = NULL,
