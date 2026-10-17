@@ -9,5 +9,8 @@ rust-version.workspace = true
 [lib]
 name = "abshare_core"
 
+[dependencies]
+unicode-normalization = "0.1.26"
+
 [lints]
 workspace = true
