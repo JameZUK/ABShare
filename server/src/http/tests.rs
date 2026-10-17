@@ -1774,3 +1774,30 @@ async fn strangers_cannot_hold_the_owners_device_out_of_password_sign_in() {
     assert_eq!(r.status(), StatusCode::OK);
     assert!(json_of(r).await["challenge"].is_string());
 }
+
+#[tokio::test]
+async fn series_never_list_books_from_libraries_the_user_cannot_see() {
+    let m = setup_media();
+    let (access, _) = listener(&m).await;
+    let gid = "gggggggggggggggggggggggggg";
+    {
+        let c = m.t.st.db.0.lock().expect("db");
+        c.execute(
+            "INSERT INTO grp (id, library_id, name, qualifier, kind) VALUES (?1, 1, 'Mixed', NULL, 'series')",
+            [gid],
+        )
+        .expect("grp");
+        for (i, b) in [BOOK, KIDS_BOOK].iter().enumerate() {
+            c.execute(
+                "INSERT INTO grp_member (grp_id, ord, book_id, extra) VALUES (?1, ?2, ?3, 0)",
+                rusqlite::params![gid, i as i64, b],
+            )
+            .expect("member");
+        }
+    }
+    m.t.st.invalidate_catalog().await;
+    let (s, v) = get_json(&m.t, &format!("/v1/groups/{gid}"), &access).await;
+    assert_eq!(s, StatusCode::OK);
+    let ids: Vec<&str> = v["items"].as_array().expect("items").iter().filter_map(|b| b["id"].as_str()).collect();
+    assert_eq!(ids, [BOOK], "the hidden library's book is not listed");
+}

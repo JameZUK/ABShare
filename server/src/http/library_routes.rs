@@ -203,7 +203,12 @@ async fn books(S(st): S<State>, Authed(s): Authed, Query(q): Query<BooksQuery>) 
         && shelf.is_none()
     {
         for g in &shows {
-            let first = g.members.first().and_then(|(id, _)| cat.by_id.get(id)).map(|&i| &cat.books[i]);
+            let first = g
+                .members
+                .iter()
+                .filter_map(|(id, _)| cat.by_id.get(id))
+                .map(|&i| &cat.books[i])
+                .find(|b| ok.contains(&b.library_id));
             out.push(json!({ "type": "show", "id": g.id, "title": g.name, "episodes": g.members.iter().filter(|m| !m.1).count(), "cover": first.map_or(Value::Null, cover_url) }));
         }
         if q.sort.as_deref().is_none_or(|s| s == "title") {
@@ -312,6 +317,8 @@ async fn group(S(st): S<State>, Authed(s): Authed, Path(id): Path<String>) -> Re
         .members
         .iter()
         .filter_map(|(bid, extra)| cat.by_id.get(bid).map(|&i| (&cat.books[i], *extra)))
+        // Only books from libraries this user may see (review H8).
+        .filter(|(b, _)| ok.contains(&b.library_id))
         .map(|(b, extra)| {
             let mut v = summary(b, prog.get(&b.id));
             v["extra"] = json!(extra);

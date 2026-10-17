@@ -3,7 +3,7 @@
 
 use crate::probe::ProbeRecord;
 use abshare_core::chapters::Chapter;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -158,6 +158,17 @@ impl Catalogue {
 
     /// Replaces the library's books, groups and problems in one transaction. Books that
     /// disappeared are kept but marked missing (progress and bookmarks survive a remount).
+    /// IDs of present books that belong to libraries other than `lib`.
+    pub fn ids_elsewhere(&self, lib: i64) -> Result<HashSet<String>, String> {
+        let mut st = self
+            .conn
+            .prepare("SELECT id FROM book WHERE library_id != ?1 AND missing_since IS NULL")
+            .map_err(sql_err)?;
+        st.query_map(params![lib], |r| r.get(0)).map_err(sql_err)?.collect::<Result<_, _>>().map_err(sql_err)
+    }
+
+    /// Returns (books written, books now missing, books whose audio changed: their playable
+    /// copies and data-saver segments are stale).
     pub fn replace_library(
         &mut self,
         lib: i64,
@@ -165,8 +176,9 @@ impl Catalogue {
         groups: &[GroupRow],
         problems: &[ProblemRow],
         now: i64,
-    ) -> Result<(usize, usize), String> {
+    ) -> Result<(usize, usize, Vec<String>), String> {
         let tx = self.conn.transaction().map_err(sql_err)?;
+        let mut changed = Vec::new();
         let present: HashSet<&str> = books.iter().map(|b| b.id.as_str()).collect();
         let existing: Vec<String> = {
             let mut st =
@@ -179,6 +191,27 @@ impl Catalogue {
                 tx.execute("UPDATE book SET missing_since = ?2 WHERE id = ?1", params![id, now]).map_err(sql_err)?;
         }
         for b in books {
+            // The audio this book is made from, before this scan: parts and length.
+            let before: Option<(i64, i64)> = tx
+                .query_row("SELECT duration_ms, library_id FROM book WHERE id = ?1", params![b.id], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .optional()
+                .map_err(sql_err)?;
+            if let Some((dur, was_lib)) = before {
+                let parts: Vec<String> = {
+                    let mut st = tx
+                        .prepare("SELECT rel_path FROM book_part WHERE book_id = ?1 ORDER BY ord")
+                        .map_err(sql_err)?;
+                    st.query_map(params![b.id], |r| r.get(0))
+                        .map_err(sql_err)?
+                        .collect::<Result<_, _>>()
+                        .map_err(sql_err)?
+                };
+                if dur != to_i64(b.duration_ms) || was_lib != lib || parts != b.parts {
+                    changed.push(b.id.clone());
+                }
+            }
             tx.execute(
                 "INSERT INTO book (id, library_id, folder, meta, duration_ms, needs_copy, cover, cover_src, missing_since, updated_at, added_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?9, NULL, ?8, ?8)
@@ -230,7 +263,7 @@ impl Catalogue {
             .map_err(sql_err)?;
         }
         tx.commit().map_err(sql_err)?;
-        Ok((books.len(), gone))
+        Ok((books.len(), gone, changed))
     }
 }
 
@@ -281,13 +314,37 @@ mod tests {
         assert_eq!(c.forget_files_not_in(lib, &keep).expect("forget"), 1);
     }
 
+    /// Review M2: a book's caches are invalidated when its audio changes, and an ID held in
+    /// one library is visible to the scan of another (so an ASIN can't take it over).
+    #[test]
+    fn changed_audio_is_reported_and_ids_elsewhere_are_known() {
+        let mut c = Catalogue::open(Path::new(":memory:")).expect("open");
+        let a = c.library_id("A", "/srv/a").expect("lib");
+        let b = c.library_id("B", "/srv/b").expect("lib");
+        c.replace_library(a, &[book("aaa")], &[], &[], 10).expect("first");
+        let (_, _, changed) = c.replace_library(a, &[book("aaa")], &[], &[], 20).expect("same");
+        assert!(changed.is_empty());
+        let mut longer = book("aaa");
+        longer.duration_ms = 2000;
+        let (_, _, changed) = c.replace_library(a, &[longer], &[], &[], 30).expect("longer");
+        assert_eq!(changed, ["aaa"]);
+        let mut more_parts = book("aaa");
+        more_parts.duration_ms = 2000;
+        more_parts.parts.push("F/b.m4b".into());
+        let (_, _, changed) = c.replace_library(a, &[more_parts], &[], &[], 40).expect("parts");
+        assert_eq!(changed, ["aaa"]);
+        assert_eq!(c.ids_elsewhere(b).expect("elsewhere"), HashSet::from(["aaa".to_owned()]));
+        assert!(c.ids_elsewhere(a).expect("elsewhere").is_empty());
+    }
+
     #[test]
     fn books_that_disappear_are_marked_missing_not_deleted() {
         let mut c = Catalogue::open(Path::new(":memory:")).expect("open");
         let lib = c.library_id("A", "/srv/a").expect("lib");
         c.replace_library(lib, &[book("aaa"), book("bbb")], &[], &[], 10).expect("first");
-        let (n, gone) = c.replace_library(lib, &[book("aaa")], &[], &[], 20).expect("second");
+        let (n, gone, changed) = c.replace_library(lib, &[book("aaa")], &[], &[], 20).expect("second");
         assert_eq!((n, gone), (1, 1));
+        assert!(changed.is_empty(), "same audio: caches stay");
         let missing: Option<i64> =
             c.conn.query_row("SELECT missing_since FROM book WHERE id = 'bbb'", [], |r| r.get(0)).expect("row");
         assert_eq!(missing, Some(20));

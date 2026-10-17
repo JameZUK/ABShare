@@ -30,7 +30,7 @@ Started 2026-10-17. It covers:
 | A2 | **Strangers can keep a username throttled** from fresh /64s, using the shared allowance. Separately, flooding the lockout table evicts a username's soft lock. | **Fixed:** a browser with a live sign-in for the account skips the shared allowance; locked or recently failed entries are never evicted, and a full table refuses new entries (fail closed); username keys are bounded; tests. |
 | H2 | **Search can burn CPU.** `q` is unbounded in words, and work is done for every word and every book. | **Fixed:** 200 characters and 8 distinct words at most; test. |
 | M1 | **Symlink races in library files.** They are re-opened by path, following symlinks, after the check: sidecar text, cover sidecars, original streaming and ffmpeg inputs. | **Fixed:** library files are opened with `openat2(RESOLVE_BENEATH, NO_SYMLINKS)` relative to the root and used by descriptor (originals, sidecar text with a size cap, cover sidecars); the jail opens `--read` inputs with no link anywhere in the path; configured roots are resolved once at start; tests. |
-| M2 | **Book IDs from ASINs are global.** A book in another library can take over the ID (and its caches). Caches also aren't invalidated when a book's parts change, which can panic the slice in a segment. | Open |
+| M2 | **Book IDs from ASINs are global.** A book in another library can take over the ID (and its caches). Caches also aren't invalidated when a book's parts change, which can panic the slice in a segment. | **Fixed:** an ASIN ID already held by a book in another library falls back to the folder ID (reported); a book whose parts, length or library change has its playable copy and segments deleted; tests. |
 | M3 | **Data saver without a Range header encodes the whole book.** Read-ahead tasks are unbounded. | **Fixed:** no Range is treated as `bytes=0-` and capped; at most 4 read-aheads at once; a stale short segment ends the response instead of panicking; test. |
 | C3 | **Quadratic tag merge in ffprobe parsing.** 80k × 80k tags stall a thread for 34 s. | **Fixed:** linear, bounded merge; timing test. |
 | C4 | **Book IDs in flat folders move** when albums are added (`dir#n`), and `X#0` can collide. | Open |
@@ -49,7 +49,7 @@ Started 2026-10-17. It covers:
 | H5 | The rate-limit map scans everything when full. | Open |
 | H6 | No per-user storage caps (bookmarks), and edited bookmark positions aren't clamped. | Open |
 | H7 | The revocation sync window can miss a commit at the boundary. | Open |
-| H8 | Group and show listings don't filter members by library permission. | Open |
+| H8 | Group and show listings don't filter members by library permission. | **Fixed:** group and show-tile members are filtered by permitted libraries; test. |
 | H9 | Promoting a user to admin from the users screen skips the second confirmation that invites need. | Open |
 | H10 | The cover route's own CSP is overwritten by the global one. | Open |
 | M4 | Cache "pinned" uses mtime, so new encodes can overrun `max_gib`. `jobs/` isn't cleaned, and lock entries leak. | Open |

@@ -117,6 +117,8 @@ pub async fn scan_library(
     let id_key = secret.derive(purpose::BOOK_ID);
     let previous_covers = cat.covers(lib_id)?;
     let mut asin_seen: HashSet<String> = HashSet::new();
+    // IDs held by books in other libraries: an ASIN can't take one over (review M2).
+    let elsewhere = cat.ids_elsewhere(lib_id)?;
     let overrides = cat.overrides()?;
     let mut metas: Vec<BookMeta> = Vec::new();
     let mut rows: Vec<BookRow> = Vec::new();
@@ -129,13 +131,26 @@ pub async fn scan_library(
         let mut meta = book_meta(&first.tags, folder_name, first.file_name(), &side, plan.parts.len() > 1);
         let parts: Vec<&ProbedFile> = plan.parts.iter().map(|&i| &files[i]).collect();
         let chapters = chapters::for_parts(&parts);
+        let path_id = || book_id(&id_key, &BookKey::Path { library: lib_no, folder: &plan.key });
         let id = match meta.asin.as_deref() {
-            Some(a) if asin_seen.insert(a.to_owned()) => book_id(&id_key, &BookKey::Asin(a)),
+            Some(a) if asin_seen.insert(a.to_owned()) => {
+                let by_asin = book_id(&id_key, &BookKey::Asin(a));
+                if elsewhere.contains(&by_asin) {
+                    rep.problems.push((
+                        plan.key.clone(),
+                        "duplicate ASIN",
+                        format!("{a} is already used by a book in another library"),
+                    ));
+                    path_id()
+                } else {
+                    by_asin
+                }
+            }
             Some(a) => {
                 rep.problems.push((plan.key.clone(), "duplicate ASIN", format!("{a} is also used by another folder")));
-                book_id(&id_key, &BookKey::Path { library: lib_no, folder: &plan.key })
+                path_id()
             }
-            None => book_id(&id_key, &BookKey::Path { library: lib_no, folder: &plan.key }),
+            None => path_id(),
         };
         // An admin's corrections replace what the tags say (and so regroup series).
         if let Some(o) = overrides.get(&id) {
@@ -218,8 +233,14 @@ pub async fn scan_library(
     rep.books = rows.len();
     let problems: Vec<ProblemRow> =
         rep.problems.iter().map(|(p, k, d)| ProblemRow { rel_path: p.clone(), kind: k, detail: d.clone() }).collect();
-    let (_, gone) = cat.replace_library(lib_id, &rows, &groups, &problems, now())?;
+    let (_, gone, changed) = cat.replace_library(lib_id, &rows, &groups, &problems, now())?;
     rep.missing = gone;
+    // A book's audio changed: its playable copy and data-saver segments were made from the
+    // old files (stale audio, and a layout that no longer matches, review M2).
+    for id in changed.iter().filter(|id| abshare_core::ids::is_valid_id(id)) {
+        let _ = std::fs::remove_file(cfg.data_dir.join("copies").join(format!("{id}.m4b")));
+        let _ = std::fs::remove_dir_all(cfg.data_dir.join("saver").join(id));
+    }
     Ok(rep)
 }
 
