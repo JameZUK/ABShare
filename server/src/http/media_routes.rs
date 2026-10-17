@@ -90,30 +90,50 @@ async fn resolve_with_perms(st: &State, s: &Session, id: &str) -> Result<(Book, 
         .map(|(_, n)| n.clone())
         .ok_or_else(ApiError::not_found)?;
     let root = m.roots.get(&lib_name).cloned().ok_or_else(ApiError::not_found)?;
-    let bid = book.id.clone();
-    let rels: Vec<String> = st
+    let (bid, lib_id) = (book.id.clone(), book.library_id);
+    // Each part with what the scan recorded about it: its size and probed container.
+    let rels: Vec<(String, Option<i64>, Option<String>)> = st
         .db
         .run(move |c| {
             let mut q = c
-                .prepare("SELECT rel_path FROM book_part WHERE book_id = ?1 ORDER BY ord")
+                .prepare(
+                    "SELECT bp.rel_path, f.size, f.probe FROM book_part bp
+                     LEFT JOIN file f ON f.library_id = ?2 AND f.rel_path = bp.rel_path
+                     WHERE bp.book_id = ?1 ORDER BY bp.ord",
+                )
                 .map_err(crate::db::sql_err)?;
-            let r = q.query_map([&bid], |r| r.get(0)).map_err(crate::db::sql_err)?;
+            let r = q
+                .query_map(rusqlite::params![&bid, lib_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .map_err(crate::db::sql_err)?;
             r.collect::<Result<_, _>>().map_err(crate::db::sql_err)
         })
         .await?;
+    let container = rels
+        .first()
+        .and_then(|(_, _, p)| p.as_deref())
+        .and_then(|p| serde_json::from_str::<crate::probe::ProbeRecord>(p).ok().map(|r| r.container));
     let mut parts = Vec::new();
-    for rel in rels {
+    let mut sizes = Vec::new();
+    for (rel, size, _) in rels {
         let p = root.join(&rel);
         // Re-checked at open time too; this rejects anything that escapes the root early.
         if open_inside(&root, &p).is_err() {
             return Err(ApiError::not_found());
         }
         parts.push(p);
+        sizes.push(size.and_then(|s| u64::try_from(s).ok()));
     }
     if parts.is_empty() {
         return Err(ApiError::not_found());
     }
-    let src = Source { book_id: book.id.clone(), parts, duration_ms: book.duration_ms, needs_copy: book.needs_copy };
+    let src = Source {
+        book_id: book.id.clone(),
+        parts,
+        duration_ms: book.duration_ms,
+        needs_copy: book.needs_copy,
+        sizes,
+        container,
+    };
     Ok((book, src, perms))
 }
 
@@ -252,12 +272,11 @@ async fn stream(
 }
 
 async fn serve_file(src: &Source, file: &PathBuf, range_h: Option<&str>, m: &Media) -> Result<Response, ApiError> {
-    let ctype = match file.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
-        Some("m4b" | "m4a" | "mp4") => "audio/mp4",
-        Some("mp3") => "audio/mpeg",
-        Some("ogg" | "oga" | "opus") => "audio/ogg",
-        Some("flac") => "audio/flac",
-        _ => "application/octet-stream",
+    // From the probed container, never the file name. A playable copy is always MP4.
+    let ctype = if src.needs_copy {
+        "audio/mp4"
+    } else {
+        src.container.as_deref().map_or("application/octet-stream", abshare_core::ffprobe::audio_content_type)
     };
     let f = if src.needs_copy {
         std::fs::OpenOptions::new().read(true).open(file).map_err(|_| ApiError::not_found())?
@@ -267,6 +286,16 @@ async fn serve_file(src: &Source, file: &PathBuf, range_h: Option<&str>, m: &Med
     };
     let md = f.metadata().map_err(ApiError::internal)?;
     let len = md.len();
+    // The file must still be the one the scan recorded: if it changed or was swapped since,
+    // refuse it and ask the scanner to look again.
+    if !src.needs_copy && src.sizes.first().copied().flatten().is_some_and(|s| s != len) {
+        let _ = tokio::fs::write(m.data_dir.join("scan-requested"), b"1").await;
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "changed",
+            "This book has changed on disk. It will be back after the next library scan.",
+        ));
+    }
     let mtime =
         md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
     if len == 0 {

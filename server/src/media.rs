@@ -48,6 +48,10 @@ pub struct Source {
     pub parts: Vec<PathBuf>,
     pub duration_ms: u64,
     pub needs_copy: bool,
+    /// Each part's size when it was scanned (`None` if the scan record is missing).
+    pub sizes: Vec<Option<u64>>,
+    /// The first part's container as probed (for `Content-Type`).
+    pub container: Option<String>,
 }
 
 pub fn bitrate_for(kbps: u64) -> Option<Bitrate> {

@@ -695,7 +695,8 @@ The checks run in this order:
 - No `Range` header, or one that isn't usable: `200` with the whole file. That includes multiple ranges, a header over 256 characters, or a unit other than `bytes`.
 - A single range (`bytes=A-B`, `bytes=A-` or `bytes=-N`): `206` with `Content-Range`.
 - A range that starts past the end, or `bytes=-0`: `416` with `Content-Range: bytes */<length>`.
-- `Content-Type` is chosen by file extension: `audio/mp4` (m4b, m4a, mp4), `audio/mpeg`, `audio/ogg`, `audio/flac`, otherwise `application/octet-stream`.
+- `Content-Type` comes from the container the scan probed, never the file name: `audio/mp4`, `audio/mpeg`, `audio/ogg`, `audio/flac` or `audio/wav`, otherwise `application/octet-stream`. A playable copy is `audio/mp4`.
+- The file must still be the size the scan recorded. If it has changed on disk, the answer is `409 changed` and a rescan is requested.
 - `ETag` is `"<length hex>-<mtime hex>"`. Conditional requests (`If-None-Match`, `If-Range`) aren't supported.
 
 **Data saver** (`q=32|40|48`): a virtual constant-bitrate MP3 (MPEG-2 Layer III, 24 kHz, mono, no ID3 or Xing header). The server makes it on demand in 60-second segments and caches them.
@@ -706,7 +707,7 @@ The checks run in this order:
 - `Content-Type: audio/mpeg`; `ETag: "s<kbps>-<length hex>"`.
 - A range starting past the end is `416`.
 
-Errors: `400`, `403 not_permitted`, `404`, `409 preparing`, `416`, `422 unplayable`.
+Errors: `400`, `403 not_permitted`, `404`, `409 preparing`, `409 changed`, `416`, `422 unplayable`.
 
 #### `GET /v1/media/{id}/state`
 

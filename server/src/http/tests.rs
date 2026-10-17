@@ -777,6 +777,25 @@ impl Drop for M {
 
 /// A router with media enabled over a scratch library: one plain book, one in a library the
 /// user can't see, one whose part is a symlink out of the root, and one needing a copy.
+/// A scan record for a file of the given container.
+fn probe_json(container: &str) -> String {
+    serde_json::to_string(&crate::probe::ProbeRecord {
+        container: container.into(),
+        codec: "mp3".into(),
+        profile: String::new(),
+        duration_ms: 3_600_000,
+        bitrate: 64_000,
+        sample_rate: 44_100,
+        channels: 2,
+        tags: vec![],
+        chapters: vec![],
+        has_cover: false,
+        decodes: true,
+        problem: None,
+    })
+    .expect("probe json")
+}
+
 fn setup_media() -> M {
     static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -823,6 +842,12 @@ fn setup_media() -> M {
         )
         .expect("book");
         conn.execute("INSERT INTO book_part (book_id, ord, rel_path) VALUES (?1, 0, ?2)", [id, part]).expect("part");
+        // What a scan records: the size and the probed container.
+        conn.execute(
+            "INSERT OR IGNORE INTO file (library_id, rel_path, size, mtime_ns, probe, probed_at) VALUES (?1, ?2, 1000, 0, ?3, 1)",
+            rusqlite::params![library, part, probe_json("mp3")],
+        )
+        .expect("file");
     }
     let mut st = AppState::new(
         conn,
@@ -2486,4 +2511,34 @@ async fn the_demo_library_scans_streams_downloads_and_syncs() {
 
     set_tree_writable(&dir, true);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn the_content_type_comes_from_the_probe_and_a_changed_file_is_refused() {
+    let m = setup_media();
+    let (_, media) = listener(&m).await;
+    let cookie = format!("abshare_media={media}");
+    // The scan probed book.mp3 as Ogg: the name doesn't decide what it is served as.
+    {
+        let c = m.t.st.db.0.lock().expect("db");
+        c.execute("UPDATE file SET probe = ?1 WHERE rel_path = 'book.mp3'", [probe_json("ogg")]).expect("probe");
+    }
+    let r = send(&m.t, "GET", &format!("/v1/media/{BOOK}"), None, &[("cookie", &cookie), ("range", "bytes=0-9")]).await;
+    assert_eq!(r.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(r.headers()["content-type"], "audio/ogg");
+    // A container the app doesn't serve as audio is opaque bytes.
+    {
+        let c = m.t.st.db.0.lock().expect("db");
+        c.execute("UPDATE file SET probe = ?1 WHERE rel_path = 'book.mp3'", [probe_json("html")]).expect("probe");
+    }
+    let r = send(&m.t, "GET", &format!("/v1/media/{BOOK}"), None, &[("cookie", &cookie), ("range", "bytes=0-9")]).await;
+    assert_eq!(r.headers()["content-type"], "application/octet-stream");
+    // The file changed since the scan (another size): refused, and a rescan is requested.
+    let trigger = m.dir.join("data").join("scan-requested");
+    let _ = std::fs::remove_file(&trigger);
+    std::fs::write(m.dir.join("lib").join("book.mp3"), vec![7u8; 1500]).expect("rewrite");
+    let r = send(&m.t, "GET", &format!("/v1/media/{BOOK}"), None, &[("cookie", &cookie), ("range", "bytes=0-9")]).await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    assert_eq!(json_of(r).await["error"], "changed");
+    assert!(trigger.exists(), "a rescan is requested");
 }

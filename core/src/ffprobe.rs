@@ -141,6 +141,25 @@ pub fn parse_ffprobe(json: &[u8]) -> Result<ProbeRecord, String> {
 }
 
 /// Turns a stored record into the type `core` works with.
+/// The `Content-Type` to serve a file with, from the container ffprobe found (its
+/// comma-separated `format_name`), never from the file name.
+pub fn audio_content_type(container: &str) -> &'static str {
+    let has = |name: &str| container.split(',').any(|c| c.trim() == name);
+    if has("mov") || has("mp4") || has("m4a") {
+        "audio/mp4"
+    } else if has("mp3") {
+        "audio/mpeg"
+    } else if has("ogg") {
+        "audio/ogg"
+    } else if has("flac") {
+        "audio/flac"
+    } else if has("wav") {
+        "audio/wav"
+    } else {
+        "application/octet-stream"
+    }
+}
+
 pub fn to_probed(rel: &str, size: u64, r: &ProbeRecord) -> ProbedFile {
     let container = match r.container.split(',').next().unwrap_or("") {
         "mov" => Container::Mp4,
@@ -179,6 +198,24 @@ pub fn to_probed(rel: &str, size: u64, r: &ProbeRecord) -> ProbedFile {
             .collect(),
         has_cover: r.has_cover,
         decodes: r.decodes,
+    }
+}
+
+#[cfg(test)]
+mod content_type_tests {
+    use super::audio_content_type as ct;
+
+    #[test]
+    fn the_content_type_comes_from_the_probed_container() {
+        assert_eq!(ct("mov,mp4,m4a,3gp,3g2,mj2"), "audio/mp4");
+        assert_eq!(ct("mp3"), "audio/mpeg");
+        assert_eq!(ct("ogg"), "audio/ogg");
+        assert_eq!(ct("flac"), "audio/flac");
+        assert_eq!(ct("wav"), "audio/wav");
+        // Whole names only, and anything else is served as opaque bytes.
+        assert_eq!(ct("mp3x"), "application/octet-stream");
+        assert_eq!(ct("html"), "application/octet-stream");
+        assert_eq!(ct(""), "application/octet-stream");
     }
 }
 

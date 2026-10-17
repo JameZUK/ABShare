@@ -12,14 +12,14 @@ Started 2026-10-17. It covers:
 ## Outcome (2026-10-17)
 
 - **All 4 High and 11 Medium findings are fixed.** Each fix has a regression test that fails without it. Every fix whose failure could be reproduced was shown to fail first (J1, J2, J6, P1, C1, C2, M3, A1, A2 and others).
-- **All Low findings are fixed except D1,** which is a firewall change on the test network.
+- **All Low findings are fixed,** D1 (a firewall change on the test network) included.
 - **Pentest:** re-run against the fixed release image behind nginx, 74 checks pass. The one remaining item is informational.
 - **No open Critical, High or Medium findings remain.** That meets the SPEC §11 Phase 6 gate.
 
 Before public exposure, still recommended:
 
 1. **An independent human review.** This review was AI-assisted (see above).
-2. **D1:** allow only the reverse proxy to reach ABShare's port.
+2. ~~**D1:** allow only the reverse proxy to reach ABShare's port.~~ **Done.**
 3. ~~**Proxy config:** apply the updated nginx example to the real proxy (request buffering for everything except media).~~ **Done**, on the test deployment's proxy.
 4. **Device gates:** complete those from Phases 3 and 4.
 
@@ -76,7 +76,7 @@ Before public exposure, still recommended:
 | W3 | The revocation wipe can be blocked by another tab's open database. | **Fixed:** connections close on `versionchange`; an unfinished wipe is completed at the next start; test. |
 | W4 | Gaps in the HTML-injection source scan and the boot externaliser. | **Fixed:** more patterns banned (`+=`, by name, `Object.assign`, `*HTMLUnsafe`, `writeln`), `static/` scanned, dynamic `href`/`src` must start with a safe literal, and the externaliser matches `\ssrc=`; tests. |
 | W5 | Per-book speeds and the last user survive sign-out with "Remove downloads". | **Fixed:** speeds stored per person and removed with that person's downloads. |
-| D1 | Test deployment: ABShare's port is reachable from the whole LAN, not only from the reverse proxy. The server refuses such requests (403: not a trusted proxy, no TLS), but the network should allow only the proxy. | Open: a firewall change on the test network. |
+| D1 | Test deployment: ABShare's port is reachable from the whole LAN, not only from the reverse proxy. The server refuses such requests (403: not a trusted proxy, no TLS), but the network should allow only the proxy. | **Fixed** (2026-10-17): a packet filter on the ABShare host drops connections to the port from anywhere but the proxy, re-applied whenever Docker starts. Checked from another LAN host (no answer) and through the proxy (works). |
 
 ## Informational
 

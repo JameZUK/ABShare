@@ -42,7 +42,7 @@ and [docs/security/asvs.md](docs/security/asvs.md).
 The Phase 6 security review is done (SPEC §11): five focused code reviews and a black-box
 penetration test of the release image behind nginx with TLS. It found 4 high, 11 medium and
 about 25 low-severity issues. All are fixed, each with a regression test that fails without
-the fix, except one low finding about a test network's firewall. No critical, high or medium
+the fix (one low finding was a firewall change on the test network, now made). No critical, high or medium
 findings are open. The findings and fixes are in
 [docs/security/review-phase6.md](docs/security/review-phase6.md).
 
