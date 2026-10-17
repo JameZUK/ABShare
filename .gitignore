@@ -16,6 +16,8 @@ dev/local.*
 *.key
 abshare.toml
 !deploy/abshare.example.toml
+# The CI deploy test's config: placeholders only.
+!deploy/ci/abshare.toml
 
 # tool output
 .playwright-mcp/

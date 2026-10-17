@@ -1,0 +1,13 @@
+listen = "0.0.0.0:8743"
+data_dir = "/data"
+public_origin = "https://books.example.com"
+trusted_proxies = ["10.89.0.10"]
+web_dir = "/usr/share/abshare/web"
+[ffmpeg]
+ffmpeg = "/usr/bin/ffmpeg"
+ffprobe = "/usr/bin/ffprobe"
+jail = "/usr/local/bin/abshare-jail"
+libs = ["/usr/lib", "/etc/ld.so.cache"]
+[[library]]
+name = "Audiobooks"
+path = "/library"
