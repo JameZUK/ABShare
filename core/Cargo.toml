@@ -1,0 +1,13 @@
+[package]
+name = "abshare-core"
+description = "ABShare core: pure logic, no I/O"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "abshare_core"
+
+[lints]
+workspace = true

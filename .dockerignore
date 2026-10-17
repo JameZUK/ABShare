@@ -1,0 +1,7 @@
+target
+dev
+.git
+.env*
+*.token
+.claude
+.playwright-mcp

@@ -1,0 +1,18 @@
+[package]
+name = "abshare-saver-spike"
+description = "Phase 0(f) spike: serves one book as a data-saver virtual MP3 for device tests. LAN only, no auth."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+abshare-core = { path = "../../core" }
+axum = "0.8.9"
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "fs", "process", "sync", "time", "io-util", "signal"] }
+tokio-util = { version = "0.7", features = ["io"] }
+futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true

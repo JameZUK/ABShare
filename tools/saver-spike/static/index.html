@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Data saver spike</title>
+<link rel="stylesheet" href="app.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<h1>Data saver spike</h1>
+<p class="note">Phase 0(f) test page. LAN only. Lock the screen while playing to test background playback.</p>
+<div class="row">
+  <label><input type="radio" name="src" value="media" checked> Data saver (32 kb/s MP3)</label>
+  <label><input type="radio" name="src" value="original"> Original</label>
+</div>
+<audio id="player" controls preload="metadata"></audio>
+<div class="row">
+  <button id="back">−30 s</button>
+  <button id="play">Play / pause</button>
+  <button id="fwd">+30 s</button>
+</div>
+<div class="row">
+  <button data-frac="0.25">25 %</button>
+  <button data-frac="0.5">50 %</button>
+  <button data-frac="0.9">90 %</button>
+  <button data-frac="0.999">End</button>
+  <button id="random">Random</button>
+</div>
+<p id="status">Not started</p>
+<h2>Events</h2>
+<ol id="log" reversed></ol>
+</body>
+</html>
