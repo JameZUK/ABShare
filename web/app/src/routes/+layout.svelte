@@ -4,7 +4,7 @@
 	import { api, session } from '$lib/api/session.svelte';
 	import type { BookDetail } from '$lib/api/types';
 	import { appearance } from '$lib/theme/appearance.svelte';
-	import { updates } from '$lib/pwa/update.svelte';
+	import { cookiesBlocked, updates } from '$lib/pwa/update.svelte';
 	import { downloads } from '$lib/offline/downloads.svelte';
 	import { sync } from '$lib/offline/sync.svelte';
 	import { settings } from '$lib/settings.svelte';
@@ -68,6 +68,9 @@
 	];
 </script>
 
+{#if cookiesBlocked()}
+	<p class="banner" role="alert">ABShare needs cookies to keep you signed in and to play books. Allow cookies and site data for this site in your browser’s settings, then reload.</p>
+{/if}
 {#if inviting}
 	{@render children()}
 {:else if session.status === 'starting'}

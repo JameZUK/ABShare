@@ -7,6 +7,7 @@ import { sync } from '$lib/offline/sync.svelte';
 import { settings, type SaverKbps } from '$lib/settings.svelte';
 import { chapterAt, nextTarget, previousTarget } from './chapters';
 import { autoRewindMs, chooseQuality, fadeVolume, streamUrl } from './rules';
+import { swContainer } from '$lib/pwa/update.svelte';
 
 export type Source = 'original' | SaverKbps | 'device';
 export type Sleep = { kind: 'off' } | { kind: 'time'; remainingMs: number } | { kind: 'chapter' };
@@ -143,7 +144,7 @@ class Player {
 		clearTimeout(this.#prepareTimer);
 		this.preparing = false;
 		let src: string;
-		if (downloads.playable(book.id) && session.user && navigator.serviceWorker?.controller) {
+		if (downloads.playable(book.id) && session.user && swContainer()?.controller) {
 			this.source = 'device';
 			src = `offline/${session.user.username}/${book.id}`;
 		} else {
