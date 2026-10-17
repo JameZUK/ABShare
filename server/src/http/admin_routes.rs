@@ -25,6 +25,7 @@ pub fn routes() -> Router<State> {
         .route("/invites", get(invites).post(create_invite))
         .route("/invites/{id}", delete(revoke_invite))
         .route("/audit", get(audit_log))
+        .route("/diagnostics", get(diagnostics))
         .route("/library", get(library))
         .route("/library/scan", post(request_scan))
         .route("/status", get(status))
@@ -420,6 +421,11 @@ async fn revoke_invite(
 struct AuditQuery {
     before: Option<i64>,
     limit: Option<i64>,
+}
+
+/// Start-up reports from browsers that were left with a blank page (newest first).
+async fn diagnostics(S(st): S<State>, Admin(_): Admin) -> Json<Value> {
+    Json(json!({ "reports": super::diag_routes::recent(&st) }))
 }
 
 async fn audit_log(S(st): S<State>, Admin(_): Admin, Query(q): Query<AuditQuery>) -> Result<Json<Value>, ApiError> {

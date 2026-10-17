@@ -22,7 +22,8 @@ Examples use `https://books.example.com` as the public origin, `10.0.0.10` as th
 | `/v1/me/…` | Your profile, devices and sign-in methods | bearer (step-up for changes to sign-in methods) |
 | `/v1/libraries`, `/v1/books…`, `/v1/genres`, `/v1/groups…`, `/v1/home`, `/v1/progress…`, `/v1/bookmarks/…` | Browsing, progress and bookmarks | bearer |
 | `GET /v1/media/…` | Audio, the preparation state, saved files and covers | media cookie or bearer |
-| `/v1/admin/…` | Users, invites, audit log, library, status, book corrections | bearer, admin role, step-up for changes |
+| `/v1/admin/…` | Users, invites, audit log, library, status, book corrections, start-up reports | bearer, admin role, step-up for changes |
+| `POST /v1/diag` | A start-up report from a blank page | none; CSRF check; rate-limited |
 | `GET /healthz` | Liveness | none |
 | anything else | The built web app (static files) | none |
 
@@ -876,6 +877,23 @@ Corrections are stored in the database and applied over the tags. The library it
 This is the only place the version is shown.
 
 ---
+
+#### `GET /v1/admin/diagnostics`
+
+- **Response:** `{"reports": [{"at", "addr", "lines": [...]}]}`, newest first: the start-up reports below, at most 50, kept in memory only.
+- **Errors:** `401`; `403` for non-admins.
+
+### Start-up reports
+
+#### `POST /v1/diag`
+
+Sent by `static/diag.js` when the app is left showing a blank page, or when the address has `?diag`. Anonymous (nobody can be signed in when the app didn't start), so it is kept narrow:
+
+- **Auth:** none, but the CSRF check applies: `X-ABShare-Client: 1` and the exact `Origin`, so only the app's own pages can send one (`403 csrf` otherwise).
+- **Body:** `{"lines": ["…"]}`, 1 to 40 lines. Each line is cleaned (control, bidi and invisible characters removed) and capped at 300 characters. Bodies over 16 KiB get `413`.
+- **Limits:** 5 a minute per address (IPv6 by /64; `429` beyond). Reports are kept in memory only, the newest 50, and also written to the server log as one JSON-escaped line.
+- **Response:** `204`.
+- **Errors:** `400` (no lines, or more than 40), `403`, `413`, `422` (unknown fields), `429`.
 
 ## 7. Health and the web app
 

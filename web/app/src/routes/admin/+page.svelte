@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { adminApi, type Status } from '$lib/api/admin';
+	import { adminApi, type DiagReport, type Status } from '$lib/api/admin';
 	import { messageOf } from '$lib/api/http';
 	import { session } from '$lib/api/session.svelte';
 	import { bytes } from '$lib/format';
@@ -7,10 +7,14 @@
 	import Icon from '$lib/components/Icon.svelte';
 
 	let st = $state<Status | null>(null);
+	let reports = $state<DiagReport[]>([]);
 	let error = $state('');
 	$effect(() => {
-		if (session.status === 'signed-in' && session.user?.role === 'admin') adminApi.status().then((s) => (st = s)).catch((e) => (error = messageOf(e)));
+		if (session.status !== 'signed-in' || session.user?.role !== 'admin') return;
+		adminApi.status().then((s) => (st = s)).catch((e) => (error = messageOf(e)));
+		adminApi.diagnostics().then((r) => (reports = r)).catch(() => (reports = []));
 	});
+	const when = (at: number) => new Date(at * 1000).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
 </script>
 
 <AdminShell title="Admin">
@@ -33,6 +37,18 @@
 			<div><dt>Transcode cache</dt><dd>{bytes(st.cache_bytes)}</dd></div>
 			<div><dt>Version</dt><dd>{st.version}</dd></div>
 		</dl>
+	{/if}
+	{#if reports.length}
+		<section class="reports">
+			<h2>Start-up reports ({reports.length})</h2>
+			<p class="muted">Sent by browsers that were left with a blank page. Kept in memory until the server restarts.</p>
+			{#each reports as r (r.at + r.addr + r.lines.length)}
+				<details>
+					<summary>{when(r.at)} · {r.addr}</summary>
+					<pre>{r.lines.join('\n')}</pre>
+				</details>
+			{/each}
+		</section>
 	{/if}
 </AdminShell>
 
@@ -66,6 +82,22 @@
 	}
 	dt {
 		color: var(--fg-muted);
+		font-size: 0.85rem;
+	}
+	.reports {
+		margin-top: 1.5rem;
+	}
+	.reports summary {
+		cursor: pointer;
+		padding: 0.5rem 0;
+		min-height: 44px;
+	}
+	.reports pre {
+		white-space: pre-wrap;
+		word-break: break-word;
+		background: var(--bg-sunken);
+		padding: 0.75rem;
+		border-radius: var(--radius-sm);
 		font-size: 0.85rem;
 	}
 	dd {

@@ -65,6 +65,13 @@ export interface Status {
 	warnings: string[];
 }
 
+/** A start-up report from a browser left with a blank page (static/diag.js). */
+export interface DiagReport {
+	at: number;
+	addr: string;
+	lines: string[];
+}
+
 export const adminApi = {
 	users: () => api<{ users: AdminUser[] }>('v1/admin/users').then((r) => r.users),
 	editUser: (id: number, change: Partial<{ display_name: string; role: string; disabled: boolean; libraries: Libraries; offline: boolean; save_files: boolean }>) =>
@@ -82,6 +89,7 @@ export const adminApi = {
 	library: () => api<LibraryView>('v1/admin/library'),
 	scan: () => api('v1/admin/library/scan', { method: 'POST' }),
 	status: () => api<Status>('v1/admin/status'),
+	diagnostics: () => api<{ reports: DiagReport[] }>('v1/admin/diagnostics').then((r) => r.reports),
 };
 
 /** "Every library" or the names. */

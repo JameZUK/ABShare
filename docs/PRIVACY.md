@@ -16,6 +16,11 @@ the app loads nothing from other websites.
   when that changed; your bookmarks and their notes.
 - **The audit log:** security events (sign-ins, failed attempts, account changes, admin
   actions) with time, account, device and IP address. Kept for at most a year.
+- **Start-up reports:** if the app is left showing a blank page (or the address has
+  `?diag`), the browser sends a short text report: the error, browser user agent, screen
+  size, colours and whether cookies are allowed, with the IP address it came from. Reports are
+  kept in memory only (the newest 50, gone when the server restarts) and written to the
+  server log. No account is involved.
 
 Admins can see the account list, devices, permissions and the audit log. They can't see your
 password, authenticator secret or recovery codes.

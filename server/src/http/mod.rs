@@ -3,6 +3,7 @@
 
 pub mod admin_routes;
 pub mod auth_routes;
+pub mod diag_routes;
 pub mod guard;
 pub mod library_routes;
 pub mod me_routes;
@@ -138,6 +139,9 @@ pub struct AppState {
     /// Keyed like the lockout: IPv4 exactly, IPv6 by /64 (one subscriber's allocation).
     pub anon_limit: RateLimit<abshare_core::auth::lockout::AddrKey>,
     pub progress_limit: RateLimit<(i64, String)>,
+    /// Start-up reports from blank pages: rate-limited per address, kept in memory only.
+    pub diag_limit: RateLimit<abshare_core::auth::lockout::AddrKey>,
+    pub diag: Mutex<std::collections::VecDeque<diag_routes::DiagReport>>,
     pub media: Option<Arc<crate::media::Media>>,
     pub web_dir: Option<std::path::PathBuf>,
     pub catalog: tokio::sync::RwLock<(std::sync::Arc<crate::library::Catalog>, i64)>,
@@ -185,6 +189,8 @@ impl AppState {
             totp_add: Ceremonies::new(ENROL_TTL),
             anon_limit: RateLimit::new(30),
             progress_limit: RateLimit::new(12),
+            diag_limit: RateLimit::new(diag_routes::PER_MINUTE),
+            diag: Mutex::new(std::collections::VecDeque::new()),
             media: None,
             web_dir: None,
             catalog: tokio::sync::RwLock::new((std::sync::Arc::new(crate::library::Catalog::default()), 0)),
@@ -436,6 +442,7 @@ pub fn router(state: State) -> Router {
             "/v1/auth",
             auth_routes::routes(state.clone()).layer(axum::middleware::from_fn_with_state(g.clone(), guard::csrf)),
         )
+        .nest("/v1/diag", diag_routes::routes().layer(axum::middleware::from_fn_with_state(g.clone(), guard::csrf)))
         .nest("/v1/me", me_routes::routes())
         .nest("/v1", library_routes::routes())
         .nest("/v1/media", media_routes::routes())
