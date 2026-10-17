@@ -61,12 +61,33 @@ impl Drop for Scratch {
     }
 }
 
+/// Whether the jail can run here: Landlock active with ABI 6 or later (Linux 6.12). Hosted CI
+/// runners may have older kernels; there the tests skip unless ABSHARE_REQUIRE_LANDLOCK is set
+/// (as it is on development machines and the deployment target).
 fn landlock_available() -> bool {
-    let ok = std::fs::read_to_string("/sys/kernel/security/lsm").is_ok_and(|s| s.split(',').any(|m| m == "landlock"));
-    if !ok && std::env::var_os("ABSHARE_REQUIRE_LANDLOCK").is_some() {
-        panic!("ABSHARE_REQUIRE_LANDLOCK is set but Landlock is not active");
+    let active =
+        std::fs::read_to_string("/sys/kernel/security/lsm").is_ok_and(|s| s.split(',').any(|m| m == "landlock"));
+    let jail_runs = active
+        && Command::new(JAIL)
+            .args([
+                "--lib",
+                "/usr/lib",
+                "--lib",
+                "/lib64",
+                "--lib",
+                "/lib",
+                "--lib",
+                "/etc/ld.so.cache",
+                "--",
+                PROBE,
+                "env",
+            ])
+            .output()
+            .is_ok_and(|o| o.status.success());
+    if !jail_runs && std::env::var_os("ABSHARE_REQUIRE_LANDLOCK").is_some() {
+        panic!("ABSHARE_REQUIRE_LANDLOCK is set but the jail cannot run (Landlock ABI 6+ needed)");
     }
-    ok
+    jail_runs
 }
 
 fn out(o: &Output) -> String {

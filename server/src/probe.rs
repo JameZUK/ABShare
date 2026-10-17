@@ -140,5 +140,4 @@ mod tests {
         assert!(!container_matches("mp3", "mov,mp4"));
         assert!(!container_matches("txt", "mp3"));
     }
-
 }
