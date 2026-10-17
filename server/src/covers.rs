@@ -21,21 +21,27 @@ pub fn exists(data_dir: &Path, book_id: &str, hash: &str) -> bool {
 }
 
 pub enum Source {
-    Embedded { file: PathBuf, ext: String },
-    Sidecar(PathBuf),
+    Embedded {
+        file: PathBuf,
+        ext: String,
+    },
+    /// An image file beside the book, opened safely inside its library root.
+    Sidecar {
+        root: PathBuf,
+        rel: String,
+    },
 }
 
 /// Makes the thumbnails for one book. Returns the cover hash (part of each thumbnail's
 /// immutable URL). Thumbnails that already exist for the same source are reused.
 pub async fn make(ff: &Ffmpeg, data_dir: &Path, book_id: &str, src: Source) -> Result<String, String> {
     let bytes = match src {
-        Source::Sidecar(p) => {
-            let meta = std::fs::symlink_metadata(&p).map_err(|e| e.to_string())?;
-            if !meta.is_file() || meta.len() as usize > MAX_SOURCE {
-                return Err("cover image missing or too large".into());
-            }
-            tokio::fs::read(&p).await.map_err(|e| e.to_string())?
-        }
+        Source::Sidecar { root, rel } => tokio::task::spawn_blocking(move || {
+            crate::media::read_inside(&root, &rel, MAX_SOURCE as u64)
+                .map_err(|_| "cover image missing or too large".to_owned())
+        })
+        .await
+        .map_err(|e| e.to_string())??,
         Source::Embedded { file, ext } => extract(ff, data_dir, &file, &ext).await?,
     };
     let hash: String = Sha256::digest(&bytes).iter().take(8).map(|b| format!("{b:02x}")).collect();

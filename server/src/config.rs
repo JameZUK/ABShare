@@ -81,6 +81,18 @@ impl Config {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let c: Self = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
         c.validate()?;
+        let mut c = c;
+        // The configured roots are trusted, but may be reached through links (systemd's
+        // StateDirectory is one). Resolve them once, so that paths built beneath them contain
+        // no links: the jail refuses any link in an input's path (review M1).
+        if let Ok(p) = c.data_dir.canonicalize() {
+            c.data_dir = p;
+        }
+        for l in &mut c.libraries {
+            if let Ok(p) = l.path.canonicalize() {
+                l.path = p;
+            }
+        }
         Ok(c)
     }
 

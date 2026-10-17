@@ -318,3 +318,26 @@ fn forking_is_refused_but_threads_work() {
         Some("ok")
     );
 }
+
+/// An input path with a symbolic link anywhere in it is refused: a file swapped for a link
+/// after the server checked it can't widen what ffmpeg may read (review M1).
+#[test]
+fn an_input_reached_through_a_symlink_is_refused() {
+    need_landlock!();
+    let s = Scratch::new();
+    std::os::unix::fs::symlink(s.root.join("secret/key"), s.root.join("input/link.m4b")).expect("link");
+    std::os::unix::fs::symlink(s.root.join("secret"), s.root.join("linkdir")).expect("link");
+    for input in [s.p("input/link.m4b"), s.p("linkdir/key")] {
+        let o = Command::new(JAIL)
+            .args(["--read", &input, "--write", &s.p("job"), "--lib", "/usr/lib", "--", PROBE, "read", &input])
+            .output()
+            .expect("run");
+        assert!(
+            !o.status.success() && !String::from_utf8_lossy(&o.stdout).contains("ok"),
+            "{input}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+    }
+    // A plain input still works.
+    assert_eq!(out(&s.run(&["read", &s.p("input/book.m4b")])), "ok");
+}

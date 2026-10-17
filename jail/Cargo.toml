@@ -14,7 +14,7 @@ path = "src/main.rs"
 [dependencies]
 landlock = "0.4.7"
 seccompiler = "0.5.0"
-rustix = { version = "1.1.5", features = ["process"] }
+rustix = { version = "1.1.5", features = ["process", "fs"] }
 libc = "0.2"
 
 # Test helper for the escape tests (tests/escape.rs); not installed.

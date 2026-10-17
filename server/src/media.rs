@@ -5,7 +5,7 @@ use crate::config::Ffmpeg;
 use crate::tools::{Limits, demuxer_for, run_jailed};
 use abshare_core::saver::{Bitrate, Layout, Profile, SAMPLE_RATE, SegmentWindow, samples_from_ms};
 use std::collections::{HashMap, HashSet};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -73,22 +73,42 @@ fn secs(samples: u64) -> String {
 /// Opens a library file for reading without following symlinks, refusing anything that
 /// isn't a regular file inside `root`.
 pub fn open_inside(root: &Path, path: &Path) -> Result<std::fs::File, String> {
-    let root = root.canonicalize().map_err(|e| e.to_string())?;
-    let canon = path.canonicalize().map_err(|e| e.to_string())?;
-    if !canon.starts_with(&root) {
+    // Lexically inside the root, with no `..`; then opened relative to the root with no
+    // symbolic link anywhere and no escape, in one system call, so a path swapped after it
+    // was checked can't lead elsewhere (review M1). Non-blocking, so a FIFO can't hang us.
+    let rel = path.strip_prefix(root).map_err(|_| "path outside the library")?;
+    if rel.as_os_str().is_empty() || rel.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
         return Err("path outside the library".into());
     }
-    let f = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(&canon)
+    use rustix::fs::{Mode, OFlags, ResolveFlags};
+    let dir = rustix::fs::open(root, OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC, Mode::empty())
         .map_err(|e| e.to_string())?;
+    let how = ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS;
+    let flags = OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::NOCTTY;
+    let fd = rustix::fs::openat2(&dir, rel, flags, Mode::empty(), how).map_err(|e| e.to_string())?;
+    let f = std::fs::File::from(fd);
     let m = f.metadata().map_err(|e| e.to_string())?;
     if !m.is_file() {
         return Err("not a regular file".into());
     }
     let _ = m.ino();
     Ok(f)
+}
+
+/// Reads a small file inside a library root (sidecar text, cover images) safely: opened as
+/// [`open_inside`] does, and at most `max` bytes.
+pub fn read_inside(root: &Path, rel: &str, max: u64) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let f = open_inside(root, &root.join(rel))?;
+    if f.metadata().map_err(|e| e.to_string())?.len() > max {
+        return Err("file too large".into());
+    }
+    let mut out = Vec::new();
+    f.take(max + 1).read_to_end(&mut out).map_err(|e| e.to_string())?;
+    if out.len() as u64 > max {
+        return Err("file too large".into());
+    }
+    Ok(out)
 }
 
 fn unix_now() -> i64 {
@@ -764,7 +784,15 @@ mod tests {
         assert!(open_inside(&root, &root.join("a.m4b")).is_ok());
         assert!(open_inside(&root, &root.join("../secret")).is_err());
         assert!(open_inside(&root, &root.join("link.m4b")).is_err());
-        assert!(open_inside(&root, &root).is_err(), "a directory");
+        assert!(open_inside(&root, &root).is_err(), "the root itself");
+        // A directory swapped for a link to somewhere else is refused (review M1).
+        std::fs::create_dir_all(base.join("elsewhere")).expect("mkdir");
+        std::fs::write(base.join("elsewhere/b.m4b"), b"x").expect("w");
+        std::os::unix::fs::symlink(base.join("elsewhere"), root.join("dir")).expect("link");
+        assert!(open_inside(&root, &root.join("dir/b.m4b")).is_err(), "a link in the middle of the path");
+        assert!(read_inside(&root, "dir/b.m4b", 10).is_err());
+        assert_eq!(read_inside(&root, "a.m4b", 10).expect("read"), b"x");
+        assert!(read_inside(&root, "a.m4b", 0).is_err(), "too large");
         let _ = std::fs::remove_dir_all(&base);
     }
 

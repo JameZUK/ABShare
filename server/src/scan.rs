@@ -148,7 +148,8 @@ pub async fn scan_library(
                 ext: first.file_name().rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default(),
             })
         } else {
-            cover_sidecar(&w.extras, first.dir()).map(|p| covers::Source::Sidecar(lib.path.join(p)))
+            cover_sidecar(&w.extras, first.dir())
+                .map(|p| covers::Source::Sidecar { root: lib.path.clone(), rel: p.to_owned() })
         };
         let cover_src = src.as_ref().map(|s| fingerprint(s, &lib.path, &records));
         let reuse = previous_covers
@@ -242,7 +243,12 @@ fn nearby<'a>(extras: &'a BTreeMap<String, DirExtras>, dir: &str) -> Vec<&'a Dir
 fn sidecars(root: &Path, extras: &BTreeMap<String, DirExtras>, dir: &str) -> Sidecars {
     let mut s = Sidecars::default();
     for rel in nearby(extras, dir).iter().flat_map(|x| x.texts.iter()).take(8) {
-        let Ok(text) = std::fs::read_to_string(root.join(rel)) else { continue };
+        // Opened safely and size-capped: a sidecar swapped for a link to a secret or to
+        // /dev/zero after the walk is refused (review M1).
+        let Some(text) = crate::media::read_inside(root, rel, 256 * 1024).ok().and_then(|b| String::from_utf8(b).ok())
+        else {
+            continue;
+        };
         let name = rel.rsplit('/').next().unwrap_or("").to_ascii_lowercase();
         match name.as_str() {
             "desc.txt" | "description.txt" => s.desc = Some(text),
@@ -273,10 +279,11 @@ fn fingerprint(src: &covers::Source, root: &Path, records: &HashMap<String, crat
             let (size, mtime) = records.get(&rel).map_or((0, 0), |r| (r.size, r.mtime_ns));
             format!("embedded:{rel}:{size}:{mtime}")
         }
-        covers::Source::Sidecar(p) => {
-            let m = std::fs::symlink_metadata(p).ok();
+        covers::Source::Sidecar { root: r, rel } => {
+            let m = std::fs::symlink_metadata(r.join(rel)).ok();
             let (size, mtime) = m.map_or((0, 0), |m| (m.len(), std::os::unix::fs::MetadataExt::mtime(&m)));
-            format!("sidecar:{}:{size}:{mtime}", p.strip_prefix(root).unwrap_or(p).display())
+            let _ = root;
+            format!("sidecar:{rel}:{size}:{mtime}")
         }
     }
 }
