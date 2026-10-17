@@ -63,5 +63,5 @@ Store-bought audiobooks may come as xHE-AAC (USAC, AAC object type 42). FFmpeg r
 ## Still open
 
 - A logged 2 h locked-screen session (data saver and original).
-- The data-saver bitrate choice (32, 40 or 48 kb/s).
+- ~~The data-saver bitrate choice~~: 48 kb/s default, 32 and 40 selectable (owner, 2026-10-17).
 - An offline test of a complete 1+ GB download on iOS. This is expected to work with option B, which never builds one large object.
