@@ -51,7 +51,7 @@
 </script>
 
 <Sheet bind:open title="Confirm it’s you">
-	<p>For your security, confirm before changing how you sign in.</p>
+	<p>For your security, confirm it’s you before making this change.</p>
 	{#if me?.factors.passkeys && passkeysSupported()}
 		<button class="btn wide" onclick={withPasskey} disabled={busy}>Use a passkey</button>
 	{/if}

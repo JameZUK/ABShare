@@ -1,6 +1,6 @@
 //! `abshare admin …` (SPEC §5.8): bootstrap and recovery from the command line, working on
-//! the database directly. A running server notices revocations at the next refresh (access
-//! tokens live at most 15 minutes).
+//! the database directly. A running server applies revocations within 30 seconds
+//! (`http::spawn_revocation_sync`).
 
 use crate::auth::audit;
 use crate::auth::crypto::new_token;

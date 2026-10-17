@@ -124,7 +124,12 @@ async fn enrol(t: &T, username: &str) -> (Vec<u8>, String, String, Vec<String>) 
 
 /// As [`enrol`], plus the media cookie.
 async fn enrol_with_media(t: &T, username: &str) -> (Vec<u8>, String, String, Vec<String>, String) {
-    let tok = invite(t, Role::Listener);
+    enrol_role(t, username, Role::Listener).await
+}
+
+/// Enrols with password + TOTP in the given role.
+async fn enrol_role(t: &T, username: &str, role: Role) -> (Vec<u8>, String, String, Vec<String>, String) {
+    let tok = invite(t, role);
     let r = send(t, "POST", "/v1/auth/enrol/start", Some(json!({"token": tok, "username": username})), &[]).await;
     assert_eq!(r.status(), StatusCode::OK);
     let enrol = json_of(r).await["enrol"].as_str().expect("enrol").to_owned();
@@ -1402,4 +1407,168 @@ async fn passkey_enrolment_refuses_a_credential_from_another_site() {
     // Nothing was enrolled, so finishing is refused.
     let r = send(&t, "POST", "/v1/auth/enrol/finish", Some(json!({"enrol": enrol, "device_name": "Phone"})), &[]).await;
     assert!(r.status().is_client_error());
+}
+
+// ---------------------------------------------------------------- admin
+
+/// An admin, stepped up; returns (seed, access token).
+async fn admin(t: &T, username: &str) -> (Vec<u8>, String) {
+    let (seed, access, ..) = enrol_role(t, username, Role::Admin).await;
+    reset_totp_step(t, username);
+    let r = send(
+        t,
+        "POST",
+        "/v1/auth/step-up/totp",
+        Some(json!({"password": "correct horse battery", "code": code(&seed, 0)})),
+        &[("authorization", &format!("Bearer {access}"))],
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    (seed, access)
+}
+
+async fn as_user(t: &T, method: &str, uri: &str, body: Option<Value>, access: &str) -> Response {
+    send(t, method, uri, body, &[("authorization", &format!("Bearer {access}"))]).await
+}
+
+#[tokio::test]
+async fn admin_routes_refuse_listeners_and_strangers() {
+    let t = setup();
+    let (_, listener, ..) = enrol(&t, "lis").await;
+    for (m, uri) in [
+        ("GET", "/v1/admin/users"),
+        ("GET", "/v1/admin/users/1"),
+        ("PATCH", "/v1/admin/users/1"),
+        ("POST", "/v1/admin/users/1/reset"),
+        ("POST", "/v1/admin/users/1/sign-out"),
+        ("GET", "/v1/admin/invites"),
+        ("POST", "/v1/admin/invites"),
+        ("DELETE", "/v1/admin/invites/1"),
+        ("GET", "/v1/admin/audit"),
+        ("GET", "/v1/admin/library"),
+        ("POST", "/v1/admin/library/scan"),
+        ("GET", "/v1/admin/status"),
+    ] {
+        let body = matches!(m, "PATCH" | "POST").then(|| json!({}));
+        assert_eq!(as_user(&t, m, uri, body.clone(), &listener).await.status(), StatusCode::FORBIDDEN, "{m} {uri}");
+        assert_eq!(send(&t, m, uri, body, &[]).await.status(), StatusCode::UNAUTHORIZED, "{m} {uri}");
+    }
+}
+
+#[tokio::test]
+async fn admin_changes_need_step_up() {
+    let t = setup();
+    let (_, access, ..) = enrol_role(&t, "adm", Role::Admin).await;
+    assert_eq!(as_user(&t, "GET", "/v1/admin/users", None, &access).await.status(), StatusCode::OK);
+    let r = as_user(&t, "POST", "/v1/admin/invites", Some(json!({})), &access).await;
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    assert_eq!(json_of(r).await["error"], "step_up_required");
+}
+
+#[tokio::test]
+async fn invites_from_the_admin_screen_work_once_and_can_be_revoked() {
+    let t = setup();
+    let (_, a) = admin(&t, "boss").await;
+    // Inviting an admin needs a second confirmation; bad expiry is refused.
+    let r = as_user(&t, "POST", "/v1/admin/invites", Some(json!({"role": "admin"})), &a).await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    for hours in [0, 169, -5] {
+        let r = as_user(&t, "POST", "/v1/admin/invites", Some(json!({"expires_hours": hours})), &a).await;
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "{hours}");
+    }
+    let r = as_user(&t, "POST", "/v1/admin/invites", Some(json!({"bogus": 1})), &a).await;
+    assert_eq!(r.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let r = as_user(
+        &t,
+        "POST",
+        "/v1/admin/invites",
+        Some(json!({"display_name": "Kim", "libraries": ["Audiobooks"], "offline": false, "expires_hours": 24})),
+        &a,
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let link = json_of(r).await["link"].as_str().expect("link").to_owned();
+    assert!(link.starts_with(&format!("{ORIGIN}/#/invite/")));
+    let token = link.rsplit('/').next().expect("token").to_owned();
+    let r = as_user(&t, "GET", "/v1/admin/invites", None, &a).await;
+    let list = json_of(r).await["invites"].as_array().expect("invites").clone();
+    assert_eq!(list.len(), 1);
+    assert_eq!((list[0]["display_name"].clone(), list[0]["offline"].clone()), (json!("Kim"), json!(false)));
+    // Revoked: the link stops working.
+    let id = list[0]["id"].as_i64().expect("id");
+    assert_eq!(
+        as_user(&t, "DELETE", &format!("/v1/admin/invites/{id}"), None, &a).await.status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        as_user(&t, "DELETE", &format!("/v1/admin/invites/{id}"), None, &a).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    let r = send(&t, "POST", "/v1/auth/enrol/start", Some(json!({"token": token, "username": "kim"})), &[]).await;
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    // The audit log records it, and its chain verifies.
+    let r = as_user(&t, "GET", "/v1/admin/audit", None, &a).await;
+    let v = json_of(r).await;
+    assert_eq!(v["chain"]["intact"], true);
+    let events: Vec<&str> =
+        v["entries"].as_array().expect("entries").iter().filter_map(|e| e["event"].as_str()).collect();
+    assert!(events.contains(&"invite.created") && events.contains(&"invite.revoked"), "{events:?}");
+}
+
+#[tokio::test]
+async fn disabling_a_user_signs_them_out_at_once_and_admins_cannot_lock_themselves_out() {
+    let t = setup();
+    let (_, a) = admin(&t, "chief").await;
+    let (_, victim, refresh, ..) = enrol(&t, "max").await;
+    let r = as_user(&t, "GET", "/v1/admin/users", None, &a).await;
+    let users = json_of(r).await["users"].as_array().expect("users").clone();
+    let id = |name: &str| users.iter().find(|u| u["username"] == name).expect("user")["id"].as_i64().expect("id");
+    let (max, chief) = (id("max"), id("chief"));
+    let r = as_user(&t, "PATCH", &format!("/v1/admin/users/{max}"), Some(json!({"disabled": true})), &a).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(json_of(r).await["disabled"], true);
+    assert_eq!(
+        as_user(&t, "GET", "/v1/me", None, &victim).await.status(),
+        StatusCode::UNAUTHORIZED,
+        "signed out at once"
+    );
+    let r = send(&t, "POST", "/v1/auth/refresh", None, &[("cookie", &format!("abshare_refresh={refresh}"))]).await;
+    assert_eq!(json_of(r).await["error"], "device_revoked");
+    // Self-protection: an admin can't disable or demote themselves.
+    for change in [json!({"disabled": true}), json!({"role": "listener"})] {
+        let r = as_user(&t, "PATCH", &format!("/v1/admin/users/{chief}"), Some(change.clone()), &a).await;
+        assert_eq!(r.status(), StatusCode::CONFLICT, "{change}");
+    }
+    // Bad values are refused.
+    for bad in [json!({"role": "root"}), json!({"libraries": "everything"}), json!({"display_name": "   "})] {
+        let r = as_user(&t, "PATCH", &format!("/v1/admin/users/{max}"), Some(bad.clone()), &a).await;
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "{bad}");
+    }
+    assert_eq!(
+        as_user(&t, "PATCH", "/v1/admin/users/9999", Some(json!({"offline": false})), &a).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    // A reset link for the user.
+    let r = as_user(&t, "POST", &format!("/v1/admin/users/{max}/reset"), None, &a).await;
+    assert!(json_of(r).await["link"].as_str().is_some_and(|l| l.contains("/#/invite/")));
+}
+
+#[tokio::test]
+async fn admin_status_and_library_views_answer() {
+    let m = setup_media();
+    let (_, a) = admin(&m.t, "ops").await;
+    let r = as_user(&m.t, "GET", "/v1/admin/status", None, &a).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let v = json_of(r).await;
+    assert_eq!(v["admins"], 1);
+    assert!(
+        v["warnings"].as_array().expect("warnings").iter().any(|w| w.as_str().unwrap_or("").contains("Only one admin"))
+    );
+    let r = as_user(&m.t, "GET", "/v1/admin/library", None, &a).await;
+    let v = json_of(r).await;
+    assert_eq!(v["libraries"].as_array().expect("libs").len(), 2);
+    assert_eq!(v["scan_requested"], false);
+    assert_eq!(as_user(&m.t, "POST", "/v1/admin/library/scan", None, &a).await.status(), StatusCode::ACCEPTED);
+    let r = as_user(&m.t, "GET", "/v1/admin/library", None, &a).await;
+    assert_eq!(json_of(r).await["scan_requested"], true);
 }

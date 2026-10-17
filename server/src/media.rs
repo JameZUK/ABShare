@@ -91,6 +91,19 @@ fn unix_now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
+/// Bytes used by the transcode cache (data-saver segments and playable copies).
+pub fn cache_usage(data_dir: &Path) -> u64 {
+    let mut total = 0;
+    for sub in ["saver", "copies"] {
+        let Ok(rd) = std::fs::read_dir(data_dir.join(sub)) else { continue };
+        for ent in rd.flatten() {
+            let Ok(m) = ent.metadata() else { continue };
+            total += if m.is_dir() { dir_usage(&ent.path()).0 } else { m.len() };
+        }
+    }
+    total
+}
+
 /// Total size and newest modification time of the files under `dir` (one level of
 /// subdirectories: `saver/<book>/k<kbps>/<segment>.mp3`).
 fn dir_usage(dir: &Path) -> (u64, i64) {

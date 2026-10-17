@@ -302,6 +302,27 @@ fn meta_json(m: &BookMeta) -> String {
     .to_string()
 }
 
+/// One library's scan, for `last-scan.json` (shown to admins).
+pub fn summary_json(rep: &Report) -> serde_json::Value {
+    let mut kinds: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for (_, k, _) in &rep.problems {
+        *kinds.entry(k).or_default() += 1;
+    }
+    serde_json::json!({
+        "library": rep.library, "files": rep.files, "probed": rep.probed, "books": rep.books,
+        "needs_copy": rep.needs_copy, "missing": rep.missing, "groups": rep.groups, "shows": rep.shows,
+        "covers": rep.covers, "problems": kinds,
+    })
+}
+
+/// Records the finished scan in the data directory, atomically.
+pub fn write_last_scan(data_dir: &std::path::Path, libraries: &[serde_json::Value], took: f64) -> Result<(), String> {
+    let v = serde_json::json!({ "at": now(), "took_seconds": (took * 10.0).round() / 10.0, "libraries": libraries });
+    let tmp = data_dir.join("last-scan.json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec(&v).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, data_dir.join("last-scan.json")).map_err(|e| e.to_string())
+}
+
 pub fn print(rep: &Report, show_problems: bool) {
     println!(
         "{}: {} files ({} probed now) → {} books ({} need a playable copy), {} series/shows ({} shows), {} covers, {} missing since last scan, {} problems",

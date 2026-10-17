@@ -64,6 +64,6 @@ This review reads the Phase 2 code against ASVS and records what holds, how it i
 
 1. ~~**Breached-password list** not bundled yet (V6).~~ **Done (2026-10-17):** 46,146 common leaked passwords of 12+ characters, stored as SHA-256 prefixes (`core/data/`), refused at enrolment and password change.
 2. ~~**Passkey HTTP tests**~~ **Done (2026-10-17):** a software authenticator in the test suite (P-256, "none" attestation) drives enrolment and sign-in end to end, and proves forged signatures, phishing origins, replays, cross-challenge assertions, unknown keys and other-site registrations are refused.
-3. **Admin web routes** (invites, users, permissions) and the last-admin rule are CLI-only for now. Phase 5.
-4. **CLI operations don't reach a running server's memory:** a CLI revoke takes effect at the next refresh (at most 15 minutes for access tokens). An online admin socket comes in Phase 5.
+3. ~~**Admin web routes**~~ **Done (2026-10-17):** `/v1/admin/*` (admin role re-checked against the database on every request, step-up for every change, admins can't disable or demote themselves, inviting an admin needs a second confirmation) with negative tests, and the admin screens.
+4. ~~**CLI operations don't reach a running server's memory.**~~ **Done (2026-10-17):** the server applies devices revoked and users disabled from the CLI within 30 seconds.
 5. **The listener-optional 2FA setting** (D2) isn't implemented; 2FA is always required. This is stricter than the spec, so it's not a weakness.

@@ -1,6 +1,7 @@
 //! The HTTP server (SPEC §5.1, §6): a hardened serve loop (header timeout, connection caps),
 //! the request guard, and the `/v1` API.
 
+pub mod admin_routes;
 pub mod auth_routes;
 pub mod guard;
 pub mod library_routes;
@@ -206,6 +207,46 @@ impl AppState {
     }
 }
 
+/// Applies revocations made outside this process (the `abshare admin` CLI) to the live
+/// sessions within 30 seconds: devices revoked and users disabled since the last look.
+pub fn spawn_revocation_sync(st: State) {
+    tokio::spawn(async move {
+        let mut since = now();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            let from = since;
+            since = now();
+            let r = st
+                .db
+                .run(move |c| {
+                    let mut q =
+                        c.prepare("SELECT id FROM device WHERE revoked_at >= ?1").map_err(crate::db::sql_err)?;
+                    let devices: Vec<i64> = q
+                        .query_map([from], |r| r.get(0))
+                        .map_err(crate::db::sql_err)?
+                        .collect::<Result<_, _>>()
+                        .map_err(crate::db::sql_err)?;
+                    let mut q = c.prepare("SELECT id FROM user WHERE disabled_at >= ?1").map_err(crate::db::sql_err)?;
+                    let users: Vec<i64> = q
+                        .query_map([from], |r| r.get(0))
+                        .map_err(crate::db::sql_err)?
+                        .collect::<Result<_, _>>()
+                        .map_err(crate::db::sql_err)?;
+                    Ok((devices, users))
+                })
+                .await;
+            if let Ok((devices, users)) = r {
+                for d in devices {
+                    st.sessions.revoke_device(d);
+                }
+                for u in users {
+                    st.sessions.revoke_user(u);
+                }
+            }
+        }
+    });
+}
+
 /// API errors: a stable code and a message safe to show. Internal details are logged with a
 /// correlation ID, never sent.
 #[derive(Debug)]
@@ -323,6 +364,7 @@ pub fn router(state: State) -> Router {
         .nest("/v1/me", me_routes::routes())
         .nest("/v1", library_routes::routes())
         .nest("/v1/media", media_routes::routes())
+        .nest("/v1/admin", admin_routes::routes())
         .fallback(web::fallback)
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
         .layer(axum::middleware::from_fn_with_state(g, guard::front))
