@@ -5,6 +5,7 @@
 use super::{ApiError, Authed, State, now};
 use crate::auth::store;
 use crate::library::{Book, Catalog, allowed};
+use abshare_core::genre::{Kind, Shelf};
 use abshare_core::ids::is_valid_id;
 use abshare_core::progress::{self, Action, Event, Outcome, Progress};
 use abshare_core::text::{clean_paragraphs, fold};
@@ -25,6 +26,7 @@ pub fn routes() -> Router<State> {
         .route("/books/{id}", get(book))
         .route("/books/{id}/bookmarks", get(list_bookmarks).post(add_bookmark))
         .route("/bookmarks/{id}", patch(edit_bookmark).delete(delete_bookmark))
+        .route("/genres", get(genres))
         .route("/groups", get(groups))
         .route("/groups/{id}", get(group))
         .route("/home", get(home))
@@ -110,6 +112,8 @@ struct BooksQuery {
     author: Option<String>,
     narrator: Option<String>,
     genre: Option<String>,
+    /// A genre shelf id (`science-fiction`, `biography`…), or `fiction` / `non-fiction`.
+    shelf: Option<String>,
     status: Option<String>,
     sort: Option<String>,
     cursor: Option<String>,
@@ -122,6 +126,12 @@ async fn books(S(st): S<State>, Authed(s): Authed, Query(q): Query<BooksQuery>) 
     let limit = q.limit.unwrap_or(50).clamp(1, 100);
     let offset: usize =
         q.cursor.as_deref().map(|c| c.parse().map_err(|_| ApiError::bad("Bad cursor."))).transpose()?.unwrap_or(0);
+    let shelf = match q.shelf.as_deref() {
+        None => None,
+        Some("fiction") => Some(ShelfFilter::Kind(Kind::Fiction)),
+        Some("non-fiction") => Some(ShelfFilter::Kind(Kind::NonFiction)),
+        Some(id) => Some(ShelfFilter::One(Shelf::from_id(id).ok_or_else(|| ApiError::bad("Unknown genre."))?)),
+    };
     let needle = q.q.as_deref().map(fold).filter(|s| !s.is_empty());
     let (fa, fnar, fg) = (q.author.as_deref().map(fold), q.narrator.as_deref().map(fold), q.genre.as_deref().map(fold));
     // Episodes of shows are collapsed into one tile per show (unless searching).
@@ -148,6 +158,11 @@ async fn books(S(st): S<State>, Authed(s): Authed, Query(q): Query<BooksQuery>) 
         .filter(|b| fnar.as_ref().is_none_or(|a| b.narrators.iter().any(|x| fold(x) == *a)))
         .filter(|b| fg.as_ref().is_none_or(|g| b.genres.iter().any(|x| fold(x) == *g)))
         .filter(|b| status_ok(b))
+        .filter(|b| match shelf {
+            None => true,
+            Some(ShelfFilter::One(x)) => b.shelves.contains(&x),
+            Some(ShelfFilter::Kind(k)) => b.shelves.iter().any(|x| x.kind() == k),
+        })
         .collect();
     match q.sort.as_deref().unwrap_or("title") {
         "added" => items.sort_by_key(|b| std::cmp::Reverse(b.added_at)),
@@ -163,7 +178,14 @@ async fn books(S(st): S<State>, Authed(s): Authed, Query(q): Query<BooksQuery>) 
         _ => return Err(ApiError::bad("Unknown sort.")),
     }
     let mut out: Vec<Value> = items.iter().map(|b| summary(b, prog.get(&b.id))).collect();
-    if needle.is_none() && q.library.is_none() && fa.is_none() && fnar.is_none() && fg.is_none() && q.status.is_none() {
+    if needle.is_none()
+        && q.library.is_none()
+        && fa.is_none()
+        && fnar.is_none()
+        && fg.is_none()
+        && q.status.is_none()
+        && shelf.is_none()
+    {
         for g in &shows {
             let first = g.members.first().and_then(|(id, _)| cat.by_id.get(id)).map(|&i| &cat.books[i]);
             out.push(json!({ "type": "show", "id": g.id, "title": g.name, "episodes": g.members.iter().filter(|m| !m.1).count(), "cover": first.map_or(Value::Null, cover_url) }));
@@ -211,11 +233,44 @@ async fn book(S(st): S<State>, Authed(s): Authed, Path(id): Path<String>) -> Res
         .collect();
     Ok(Json(json!({
         "id": b.id, "title": b.title, "subtitle": b.meta["subtitle"], "authors": b.meta["authors"], "narrators": b.meta["narrators"],
-        "series": b.meta["series"], "description": b.meta["description"], "genres": b.genres, "year": b.meta["year"],
+        "series": b.meta["series"], "description": b.meta["description"], "genres": b.genres,
+        "shelves": b.shelves.iter().map(|sh| json!({ "id": sh.id(), "name": sh.name() })).collect::<Vec<_>>(), "year": b.meta["year"],
         "publisher": b.meta["publisher"], "language": b.meta["language"], "duration_ms": b.duration_ms, "cover": cover_url(&b),
         "added_at": b.added_at, "chapters": chapters, "progress": prog, "bookmarks": marks, "groups": groups,
         "media": { "original": format!("media/{}", b.id), "preparing": b.needs_copy },
     })))
+}
+
+#[derive(Clone, Copy)]
+enum ShelfFilter {
+    One(Shelf),
+    Kind(Kind),
+}
+
+/// `GET /v1/genres`: the genre shelves with how many of the caller's books are on each.
+async fn genres(S(st): S<State>, Authed(s): Authed) -> Result<Json<Value>, ApiError> {
+    let (cat, ok) = view(&st, &s).await?;
+    let mut counts: HashMap<Shelf, usize> = HashMap::new();
+    let mut unshelved = 0;
+    for b in cat.books.iter().filter(|b| ok.contains(&b.library_id)) {
+        if b.shelves.is_empty() {
+            unshelved += 1;
+        }
+        for sh in &b.shelves {
+            *counts.entry(*sh).or_default() += 1;
+        }
+    }
+    let kind = |k: Kind| match k {
+        Kind::Fiction => "fiction",
+        Kind::NonFiction => "non-fiction",
+        Kind::Other => "other",
+    };
+    let list: Vec<Value> = Shelf::ALL
+        .iter()
+        .filter_map(|sh| counts.get(sh).map(|n| (sh, n)))
+        .map(|(sh, n)| json!({ "id": sh.id(), "name": sh.name(), "kind": kind(sh.kind()), "count": n }))
+        .collect();
+    Ok(Json(json!({ "genres": list, "unshelved": unshelved })))
 }
 
 async fn groups(S(st): S<State>, Authed(s): Authed) -> Result<Json<Value>, ApiError> {

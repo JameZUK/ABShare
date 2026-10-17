@@ -60,7 +60,7 @@
 
 	const TABS = [
 		{ href: '#/', label: 'Home', icon: 'home', match: (h: string) => h === '' || h === '#/' },
-		{ href: '#/library', label: 'Library', icon: 'library', match: (h: string) => h.startsWith('#/library') || h.startsWith('#/group') },
+		{ href: '#/library', label: 'Library', icon: 'library', match: (h: string) => h.startsWith('#/library') || h.startsWith('#/group') || h.startsWith('#/genre') },
 		{ href: '#/downloads', label: 'Downloads', icon: 'downloaded', match: (h: string) => h.startsWith('#/downloads') },
 		{ href: '#/settings', label: 'Settings', icon: 'settings', match: (h: string) => h.startsWith('#/settings') },
 	];

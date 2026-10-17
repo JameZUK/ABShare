@@ -113,6 +113,9 @@
 				{/if}
 				{#if book.authors?.length}<p>By {names(book.authors)}</p>{/if}
 				{#if book.narrators?.length}<p class="muted">Read by {names(book.narrators)}</p>{/if}
+				{#if book.shelves?.length}
+					<p class="genres">{#each book.shelves as g (g.id)}<a href="#/genre/{g.id}">{g.name}</a>{/each}</p>
+				{/if}
 				<p class="muted">
 					{duration(book.duration_ms)}
 					{#if book.progress?.finished}· Finished{:else if position > 0}· {timeLeft(book.duration_ms, position)}{/if}
@@ -291,5 +294,18 @@
 	}
 	.danger {
 		color: var(--danger);
+	}
+	.genres {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.4rem;
+	}
+	.genres a {
+		padding: 0.15rem 0.7rem;
+		border-radius: 999px;
+		background: var(--accent-soft);
+		color: var(--accent-soft-fg);
+		text-decoration: none;
+		font-size: 0.85rem;
 	}
 </style>

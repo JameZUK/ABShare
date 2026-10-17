@@ -7,6 +7,7 @@ pub mod assemble;
 pub mod auth;
 pub mod chapters;
 pub mod ffprobe;
+pub mod genre;
 pub mod ids;
 pub mod metadata;
 pub mod model;

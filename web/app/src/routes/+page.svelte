@@ -6,6 +6,7 @@
 	import type { BookSummary, Home } from '$lib/api/types';
 	import { downloads } from '$lib/offline/downloads.svelte';
 	import Shelf from '$lib/components/Shelf.svelte';
+	import GenreChips from '$lib/components/GenreChips.svelte';
 
 	let home = $state<Home | null>(null);
 	let error = $state('');
@@ -39,6 +40,7 @@
 
 <main class="page">
 	<h1>{greeting}</h1>
+	{#if session.status === 'signed-in'}<GenreChips />{/if}
 	{#if error}<p class="error" role="alert">{error}</p>{/if}
 	{#if home}
 		<Shelf title="Continue listening" tiles={home.continue} wide />

@@ -765,21 +765,28 @@ fn setup_media() -> M {
 
     let conn = crate::db::open(std::path::Path::new(":memory:")).expect("db");
     let rows = [
-        (BOOK, 1, "book.mp3", 0, Some(COVER)),
-        (KIDS_BOOK, 2, "kids.mp3", 0, None),
-        (ESCAPE_BOOK, 1, "escape.mp3", 0, None),
-        (MULTI_BOOK, 1, "part1.mp3", 1, None),
+        (BOOK, 1, "book.mp3", 0, Some(COVER), r#"{"title":"A Book","genres":["Hard Science Fiction","Adventure"]}"#),
+        (
+            KIDS_BOOK,
+            2,
+            "kids.mp3",
+            0,
+            None,
+            r#"{"title":"A Book","genres":["Biographies & Memoirs","Science Fiction"]}"#,
+        ),
+        (ESCAPE_BOOK, 1, "escape.mp3", 0, None, r#"{"title":"A Book"}"#),
+        (MULTI_BOOK, 1, "part1.mp3", 1, None, r#"{"title":"A Book","genres":["Biographies & Memoirs"]}"#),
     ];
     conn.execute(
         "INSERT INTO library (id, name, root) VALUES (1, 'Audiobooks', ?1), (2, 'Kids', ?2)",
         [lib.to_string_lossy(), kids.to_string_lossy()],
     )
     .expect("libraries");
-    for (id, library, part, copy, cover) in rows {
+    for (id, library, part, copy, cover, meta) in rows {
         conn.execute(
             "INSERT INTO book (id, library_id, folder, meta, duration_ms, needs_copy, cover, updated_at)
-             VALUES (?1, ?2, '', '{\"title\":\"A Book\"}', 3600000, ?3, ?4, 1)",
-            rusqlite::params![id, library, copy, cover],
+             VALUES (?1, ?2, '', ?5, 3600000, ?3, ?4, 1)",
+            rusqlite::params![id, library, copy, cover, meta],
         )
         .expect("book");
         conn.execute("INSERT INTO book_part (book_id, ord, rel_path) VALUES (?1, 0, ?2)", [id, part]).expect("part");
@@ -1082,4 +1089,42 @@ async fn saving_files_and_downloading_follow_the_account_permissions() {
     let r = get(format!("/v1/media/{BOOK}?dl=1")).await;
     assert_eq!(r.status(), StatusCode::FORBIDDEN);
     assert_eq!(get(format!("/v1/media/{BOOK}")).await.status(), StatusCode::OK, "streaming is unaffected");
+}
+
+#[tokio::test]
+async fn genre_shelves_count_and_filter_only_permitted_books() {
+    let m = setup_media();
+    let (access, _) = listener(&m).await;
+    let (_, v) = get_json(&m.t, "/v1/genres", &access).await;
+    // The hidden library's book (biography + science fiction) is not counted.
+    assert_eq!(
+        v["genres"],
+        json!([
+            { "id": "science-fiction", "name": "Science Fiction", "kind": "fiction", "count": 1 },
+            { "id": "biography", "name": "Biography & Memoir", "kind": "non-fiction", "count": 1 },
+        ])
+    );
+    assert_eq!(v["unshelved"], 1);
+    let ids = |v: &Value| {
+        v["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .map(|b| b["id"].as_str().unwrap_or("").to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ids(&get_json(&m.t, "/v1/books?shelf=science-fiction", &access).await.1), [BOOK]);
+    assert_eq!(ids(&get_json(&m.t, "/v1/books?shelf=non-fiction", &access).await.1), [MULTI_BOOK]);
+    assert_eq!(ids(&get_json(&m.t, "/v1/books?shelf=fiction", &access).await.1), [BOOK]);
+    assert_eq!(ids(&get_json(&m.t, "/v1/books?shelf=biography", &access).await.1), [MULTI_BOOK]);
+    for bad in ["nope", "", "Science-Fiction", "../x"] {
+        assert_eq!(
+            get_json(&m.t, &format!("/v1/books?shelf={bad}"), &access).await.0,
+            StatusCode::BAD_REQUEST,
+            "{bad}"
+        );
+    }
+    let (_, b) = get_json(&m.t, &format!("/v1/books/{BOOK}"), &access).await;
+    assert_eq!(b["shelves"], json!([{ "id": "science-fiction", "name": "Science Fiction" }]));
+    assert_eq!(get_json(&m.t, "/v1/genres", "forged").await.0, StatusCode::UNAUTHORIZED);
 }

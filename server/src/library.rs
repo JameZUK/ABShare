@@ -2,6 +2,7 @@
 //! database changes (scans run as a separate process), with folded search keys.
 
 use crate::db::sql_err;
+use abshare_core::genre::{Shelf, shelves};
 use abshare_core::text::fold;
 use rusqlite::Connection;
 use serde_json::Value;
@@ -16,6 +17,8 @@ pub struct Book {
     pub narrators: Vec<String>,
     pub series: Option<(String, Option<String>, u32)>,
     pub genres: Vec<String>,
+    /// The genre shelves the tags put the book on.
+    pub shelves: Vec<Shelf>,
     pub duration_ms: u64,
     pub cover: Option<String>,
     pub added_at: i64,
@@ -137,6 +140,7 @@ pub fn load(c: &Connection) -> Result<Catalog, String> {
             authors,
             narrators,
             series,
+            shelves: shelves(&genres),
             genres,
             duration_ms: duration.max(0) as u64,
             cover,

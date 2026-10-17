@@ -65,6 +65,8 @@ export interface BookDetail {
 	series: { name: string; position?: string | null } | null;
 	description: string | null;
 	genres: string[];
+	/** Genre shelves (core::genre), linking to `#/genre/{id}`. */
+	shelves?: { id: string; name: string }[];
 	year: number | string | null;
 	publisher: string | null;
 	language: string | null;
