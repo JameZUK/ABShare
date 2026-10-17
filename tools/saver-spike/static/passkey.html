@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Passkey spike</title>
+<link rel="stylesheet" href="app.css">
+<script src="passkey.js" defer></script>
+</head>
+<body>
+<h1>Passkey spike</h1>
+<p class="note">Phase 0(e). Creates a passkey for this test site and signs in with it. Nothing is kept: the server forgets everything when it restarts. <a href="./">Back</a></p>
+<label class="scrub">Name for this passkey
+  <input id="name" type="text" maxlength="64" value="test" autocomplete="off">
+</label>
+<div class="row">
+  <button id="register">Create passkey</button>
+  <button id="login">Sign in with passkey</button>
+</div>
+<p id="result">Not tried yet.</p>
+<h2>Events</h2>
+<ol id="log" reversed></ol>
+</body>
+</html>

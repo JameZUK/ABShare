@@ -10,3 +10,9 @@ button { min-height: 44px; min-width: 64px; padding: 0 .9rem; font: inherit; bor
 label { display: flex; align-items: center; gap: .35rem; min-height: 44px; }
 #status { font-variant-numeric: tabular-nums; }
 #log { font: 13px/1.4 ui-monospace, monospace; color: var(--muted); padding-left: 2.5rem; }
+fieldset { border: 1px solid var(--line); border-radius: 10px; padding: .25rem .75rem .5rem; }
+legend { color: var(--muted); padding: 0 .25rem; }
+.scrub { display: block; margin: .75rem 0; }
+.scrub input[type=range] { width: 100%; min-height: 44px; }
+.scrub input[type=text] { display: block; width: 100%; min-height: 44px; font: inherit; margin-top: .25rem; box-sizing: border-box; padding: 0 .5rem; border: 1px solid var(--line); border-radius: 10px; background: transparent; color: inherit; }
+a { color: inherit; }

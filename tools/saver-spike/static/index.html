@@ -9,12 +9,19 @@
 </head>
 <body>
 <h1>Data saver spike</h1>
-<p class="note">Phase 0(f) test page. LAN only. Lock the screen while playing to test background playback.</p>
-<div class="row">
-  <label><input type="radio" name="src" value="media" checked> Data saver (32 kb/s MP3)</label>
+<p class="note">Phase 0 test page. LAN only. Other tests: <a href="offline.html">offline</a> · <a href="passkey.html">passkeys</a></p>
+<fieldset class="row">
+  <legend>Quality</legend>
+  <label><input type="radio" name="src" value="media?q=32" checked> 32 kb/s</label>
+  <label><input type="radio" name="src" value="media?q=40"> 40 kb/s</label>
+  <label><input type="radio" name="src" value="media?q=48"> 48 kb/s</label>
   <label><input type="radio" name="src" value="original"> Original</label>
-</div>
-<audio id="player" controls preload="metadata"></audio>
+</fieldset>
+<audio id="player" preload="metadata"></audio>
+<label class="scrub">Position (seeks when you let go)
+  <input id="scrub" type="range" min="0" max="1000" step="1" value="0">
+</label>
+<p id="status">Not started</p>
 <div class="row">
   <button id="back">−30 s</button>
   <button id="play">Play / pause</button>
@@ -27,7 +34,6 @@
   <button data-frac="0.999">End</button>
   <button id="random">Random</button>
 </div>
-<p id="status">Not started</p>
 <h2>Events</h2>
 <ol id="log" reversed></ol>
 </body>

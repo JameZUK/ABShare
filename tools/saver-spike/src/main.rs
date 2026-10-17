@@ -1,26 +1,37 @@
-//! Phase 0(f) spike (SPEC D23): serves ONE book as a data-saver virtual MP3, plus the
-//! original, to test seeking, lock-screen playback and segment cost on real devices.
+//! Phase 0 spike (SPEC §11): serves ONE book for device tests.
+//!
+//! - (f) data saver: the book as a virtual CBR MP3 at 32, 40 or 48 kb/s (D23), with the
+//!   read-ahead cap, plus the original for comparison;
+//! - (a) offline: a page that downloads the book into IndexedDB and plays it back from a
+//!   Blob URL or through a service worker (§8.3);
+//! - (e) passkeys: register and sign in with `webauthn-rs` (in memory only).
 //!
 //! This is a test tool. It has no authentication and must only be reachable on the LAN
 //! (behind a source-address allow-list). It does not ship.
 //!
 //! Every ffmpeg/ffprobe run goes through `abshare-jail`.
 
+mod passkey;
+
 use abshare_core::range::{self, RangeReply};
-use abshare_core::saver::{Layout, Profile, SAMPLE_RATE, SegmentWindow};
+use abshare_core::saver::{Bitrate, Layout, Profile, SAMPLE_RATE, SegmentWindow};
 use axum::Router;
 use axum::body::{Body, Bytes};
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::Semaphore;
+
+/// Most segments one data-saver response may make the server encode (SPEC D23).
+const MAX_SEGMENTS_PER_RESPONSE: u64 = 10;
 
 struct Opts {
     listen: String,
@@ -30,6 +41,7 @@ struct Opts {
     ffprobe: PathBuf,
     jail: PathBuf,
     libs: Vec<PathBuf>,
+    origin: String,
 }
 
 fn parse_opts() -> Result<Opts, String> {
@@ -41,6 +53,7 @@ fn parse_opts() -> Result<Opts, String> {
         ffprobe: "/usr/bin/ffprobe".into(),
         jail: "/usr/local/bin/abshare-jail".into(),
         libs: Vec::new(),
+        origin: "https://books.example.com".into(),
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -53,33 +66,49 @@ fn parse_opts() -> Result<Opts, String> {
             "--ffprobe" => o.ffprobe = v()?.into(),
             "--jail" => o.jail = v()?.into(),
             "--lib" => o.libs.push(v()?.into()),
+            "--origin" => o.origin = v()?,
             _ => return Err(format!("unknown option {a}")),
         }
     }
     if o.source.as_os_str().is_empty() || o.cache.as_os_str().is_empty() {
-        return Err("usage: abshare-saver-spike --source FILE --cache DIR [--listen ADDR] [--lib DIR]...".into());
+        return Err(
+            "usage: abshare-saver-spike --source FILE --cache DIR [--origin URL] [--listen ADDR] [--lib DIR]...".into(),
+        );
     }
     Ok(o)
 }
 
 struct SegStat {
+    kbps: u64,
     index: u64,
     millis: u128,
     prefetch: bool,
 }
 
-struct App {
-    o: Opts,
+/// One data-saver bitrate: its layout, cache directory and per-segment locks.
+struct Variant {
+    profile: Profile,
     layout: Layout,
-    demuxer: &'static str,
-    original_len: u64,
+    dir: PathBuf,
     etag: String,
     silent_frame: Vec<u8>,
+    locks: Mutex<HashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
+}
+
+struct App {
+    o: Opts,
+    variants: Vec<Variant>,
+    demuxer: &'static str,
+    original_len: u64,
     /// A listener waiting on a segment never queues behind prefetch (SPEC §5.4 fast lane).
     jobs: Semaphore,
     prefetch_jobs: Semaphore,
-    locks: Mutex<HashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
+    /// Bumped by every ranged media request. A request still waiting for the encoder when a
+    /// newer one arrives gives up (latest seek wins). The spike has one listener; the real
+    /// server keys this per device.
+    seek_generation: AtomicU64,
     stats: Mutex<Vec<SegStat>>,
+    passkeys: passkey::Store,
 }
 
 type Shared = Arc<App>;
@@ -103,36 +132,52 @@ async fn run() -> Result<(), String> {
         other => return Err(format!("unsupported container {other:?}")),
     };
     let samples = (duration * f64::from(SAMPLE_RATE)).round() as u64;
-    let layout = Profile::DEFAULT.layout(samples).map_err(|e| e.to_string())?;
-    let silent_frame = silent_frame(&o).await?;
-    let etag = format!("\"spike-{}-{}\"", meta.len(), layout.total_bytes());
-    eprintln!(
-        "source {:.1} h, {demuxer}; virtual MP3 {} bytes in {} segments",
-        duration / 3600.0,
-        layout.total_bytes(),
-        layout.segment_count()
-    );
+    let mut variants = Vec::new();
+    for bitrate in [Bitrate::K32, Bitrate::K40, Bitrate::K48] {
+        let profile = Profile::new(bitrate, 2_500).map_err(|e| e.to_string())?;
+        let layout = profile.layout(samples).map_err(|e| e.to_string())?;
+        let kbps = bitrate.bits_per_second() / 1000;
+        let dir = o.cache.join(format!("k{kbps}"));
+        tokio::fs::create_dir_all(&dir).await.map_err(|e| e.to_string())?;
+        let silent_frame = silent_frame(&o, bitrate).await?;
+        eprintln!("{kbps} kb/s: virtual MP3 {} bytes in {} segments", layout.total_bytes(), layout.segment_count());
+        variants.push(Variant {
+            profile,
+            layout,
+            dir,
+            etag: format!("\"spike-{kbps}-{}-{}\"", meta.len(), layout.total_bytes()),
+            silent_frame,
+            locks: Mutex::default(),
+        });
+    }
+    eprintln!("source {:.1} h, {demuxer}", duration / 3600.0);
+    let passkeys = passkey::Store::new(&o.origin)?;
     let listen = o.listen.clone();
     let app = Arc::new(App {
         o,
-        layout,
+        variants,
         demuxer,
         original_len: meta.len(),
-        etag,
-        silent_frame,
         jobs: Semaphore::new(1),
         prefetch_jobs: Semaphore::new(1),
-        locks: Mutex::default(),
+        seek_generation: AtomicU64::new(0),
         stats: Mutex::default(),
+        passkeys,
     });
     let router = Router::new()
-        .route("/", get(page))
-        .route("/app.js", get(script))
-        .route("/app.css", get(style))
+        .route("/", get(|| async { asset(Asset::Index) }))
+        .route("/app.js", get(|| async { asset(Asset::AppJs) }))
+        .route("/app.css", get(|| async { asset(Asset::Css) }))
+        .route("/offline.html", get(|| async { asset(Asset::Offline) }))
+        .route("/offline.js", get(|| async { asset(Asset::OfflineJs) }))
+        .route("/sw.js", get(|| async { asset(Asset::ServiceWorker) }))
+        .route("/passkey.html", get(|| async { asset(Asset::Passkey) }))
+        .route("/passkey.js", get(|| async { asset(Asset::PasskeyJs) }))
         .route("/media", get(media))
         .route("/original", get(original))
         .route("/stats", get(stats))
         .route("/log", post(client_log))
+        .merge(passkey::routes())
         .with_state(app);
     let listener = tokio::net::TcpListener::bind(&listen).await.map_err(|e| format!("bind {listen}: {e}"))?;
     eprintln!("listening on {listen} (LAN-only test tool, no auth)");
@@ -174,7 +219,7 @@ async fn probe(o: &Opts) -> Result<(f64, String), String> {
     let args =
         ["-v", "error", "-show_entries", "format=duration,format_name", "-of", "default=noprint_wrappers=1", &src]
             .map(s);
-    let out = jailed(o, &[s("--read"), src.clone(), s("--mem-mib"), s(512)], &o.ffprobe, &args).await?;
+    let out = jailed(o, &[s("--read"), src.clone(), s("--mem-mib"), s(2048)], &o.ffprobe, &args).await?;
     let text = String::from_utf8_lossy(&out);
     let field = |k: &str| text.lines().find_map(|l| l.strip_prefix(k)).map(str::to_owned);
     let duration = field("duration=").and_then(|d| d.parse::<f64>().ok()).ok_or("no duration")?;
@@ -182,37 +227,36 @@ async fn probe(o: &Opts) -> Result<(f64, String), String> {
     Ok((duration, format))
 }
 
-fn mp3_args() -> Vec<String> {
-    [
-        "-ac",
-        "1",
-        "-c:a",
-        "libmp3lame",
-        "-b:a",
-        "32k",
-        "-abr",
-        "0",
-        "-reservoir",
-        "0",
-        "-write_xing",
-        "0",
-        "-id3v2_version",
-        "0",
-        "-write_id3v1",
-        "0",
-        "-threads",
-        "1",
-        "-f",
-        "mp3",
-        "-y",
-    ]
-    .map(s)
-    .to_vec()
+fn mp3_args(bitrate: Bitrate) -> Vec<String> {
+    let kbps = format!("{}k", bitrate.bits_per_second() / 1000);
+    let mut v = ["-ac", "1", "-c:a", "libmp3lame", "-b:a"].map(s).to_vec();
+    v.push(kbps);
+    v.extend(
+        [
+            "-abr",
+            "0",
+            "-reservoir",
+            "0",
+            "-write_xing",
+            "0",
+            "-id3v2_version",
+            "0",
+            "-write_id3v1",
+            "0",
+            "-threads",
+            "1",
+            "-f",
+            "mp3",
+            "-y",
+        ]
+        .map(s),
+    );
+    v
 }
 
-/// One silent frame of the profile, used to pad a short last segment.
-async fn silent_frame(o: &Opts) -> Result<Vec<u8>, String> {
-    let job = o.cache.join("job-silent");
+/// One silent frame of a bitrate, used to pad a short last segment.
+async fn silent_frame(o: &Opts, bitrate: Bitrate) -> Result<Vec<u8>, String> {
+    let job = o.cache.join(format!("job-silent-{}", bitrate.bits_per_second()));
     let _ = tokio::fs::remove_dir_all(&job).await;
     tokio::fs::create_dir_all(&job).await.map_err(|e| e.to_string())?;
     let out = job.join("out.mp3");
@@ -220,14 +264,15 @@ async fn silent_frame(o: &Opts) -> Result<Vec<u8>, String> {
         ["-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono", "-t", "2"]
             .map(s)
             .to_vec();
-    args.extend(mp3_args());
+    args.extend(mp3_args(bitrate));
     args.push(out.to_string_lossy().into_owned());
-    jailed(o, &[s("--write"), job.to_string_lossy().into_owned()], &o.ffmpeg, &args).await?;
+    let jail_args = [s("--write"), job.to_string_lossy().into_owned(), s("--mem-mib"), s(2048)];
+    jailed(o, &jail_args, &o.ffmpeg, &args).await?;
     let bytes = tokio::fs::read(&out).await.map_err(|e| e.to_string())?;
     let _ = tokio::fs::remove_dir_all(&job).await;
-    let fb = Profile::DEFAULT.bitrate().frame_bytes() as usize;
+    let fb = bitrate.frame_bytes() as usize;
     let frame = bytes.get(20 * fb..21 * fb).ok_or("silence too short")?.to_vec();
-    if frame[..3] != Profile::DEFAULT.bitrate().header_prefix() {
+    if frame[..3] != bitrate.header_prefix() {
         return Err("silent frame has an unexpected header".into());
     }
     Ok(frame)
@@ -240,17 +285,24 @@ fn secs(samples: u64) -> String {
 }
 
 impl App {
-    fn seg_path(&self, i: u64) -> PathBuf {
-        self.o.cache.join(format!("seg-{i:06}.mp3"))
+    fn variant(&self, kbps: u64) -> Option<&Variant> {
+        self.variants.iter().find(|v| v.profile.bitrate().bits_per_second() == kbps * 1000)
     }
 
-    async fn segment(self: &Arc<Self>, i: u64, prefetch: bool) -> Result<Bytes, String> {
-        let path = self.seg_path(i);
+    async fn segment(
+        self: &Arc<Self>,
+        kbps: u64,
+        i: u64,
+        prefetch: bool,
+        generation: Option<u64>,
+    ) -> Result<Bytes, String> {
+        let v = self.variant(kbps).ok_or("no such bitrate")?;
+        let path = v.dir.join(format!("seg-{i:06}.mp3"));
         if let Ok(b) = tokio::fs::read(&path).await {
             return Ok(b.into());
         }
         let lock = {
-            let mut m = self.locks.lock().map_err(|_| "poisoned")?;
+            let mut m = v.locks.lock().map_err(|_| "poisoned")?;
             m.entry(i).or_default().clone()
         };
         let _guard = lock.lock().await;
@@ -259,20 +311,23 @@ impl App {
         }
         let lane = if prefetch { &self.prefetch_jobs } else { &self.jobs };
         let _permit = lane.acquire().await.map_err(|e| e.to_string())?;
+        if generation.is_some_and(|g| g != self.seek_generation.load(Ordering::SeqCst)) {
+            return Err(format!("superseded {kbps}k/{i}"));
+        }
         let started = Instant::now();
-        let window = self.layout.window(i).ok_or("no such segment")?;
-        let kept = self.encode(&window).await?;
+        let window = v.layout.window(i).ok_or("no such segment")?;
+        let kept = self.encode(v, &window).await?;
         let tmp = path.with_extension("tmp");
         tokio::fs::write(&tmp, &kept).await.map_err(|e| e.to_string())?;
         tokio::fs::rename(&tmp, &path).await.map_err(|e| e.to_string())?;
         if let Ok(mut st) = self.stats.lock() {
-            st.push(SegStat { index: i, millis: started.elapsed().as_millis(), prefetch });
+            st.push(SegStat { kbps, index: i, millis: started.elapsed().as_millis(), prefetch });
         }
         Ok(kept.into())
     }
 
-    async fn encode(&self, w: &SegmentWindow) -> Result<Vec<u8>, String> {
-        let job = self.o.cache.join(format!("job-{:06}", w.index));
+    async fn encode(&self, v: &Variant, w: &SegmentWindow) -> Result<Vec<u8>, String> {
+        let job = v.dir.join(format!("job-{:06}", w.index));
         let _ = tokio::fs::remove_dir_all(&job).await;
         tokio::fs::create_dir_all(&job).await.map_err(|e| e.to_string())?;
         let out = job.join("out.mp3");
@@ -301,7 +356,7 @@ impl App {
             s("-af"),
             format!("aresample={SAMPLE_RATE},asettb=1/{SAMPLE_RATE},{trim},asetpts=PTS-STARTPTS"),
         ]);
-        args.extend(mp3_args());
+        args.extend(mp3_args(v.profile.bitrate()));
         args.push(out.to_string_lossy().into_owned());
         let jail_args = [
             s("--read"),
@@ -320,21 +375,22 @@ impl App {
         let _ = tokio::fs::remove_dir_all(&job).await;
         result?;
         let bytes = bytes.map_err(|e| e.to_string())?;
-        let acc = self.layout.check_segment(w, &bytes).map_err(|e| format!("segment {}: {e}", w.index))?;
+        let acc = v.layout.check_segment(w, &bytes).map_err(|e| format!("segment {}: {e}", w.index))?;
         let mut kept = bytes[acc.start as usize..acc.end as usize].to_vec();
         for _ in 0..acc.pad_frames {
-            kept.extend_from_slice(&self.silent_frame);
+            kept.extend_from_slice(&v.silent_frame);
         }
         Ok(kept)
     }
 
-    fn prefetch(self: &Arc<Self>, after: u64) {
+    fn prefetch(self: &Arc<Self>, kbps: u64, after: u64) {
+        let Some(v) = self.variant(kbps) else { return };
         for i in after + 1..=after + 2 {
-            if i < self.layout.segment_count() && !self.seg_path(i).exists() {
+            if i < v.layout.segment_count() && !v.dir.join(format!("seg-{i:06}.mp3")).exists() {
                 let app = self.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = app.segment(i, true).await {
-                        eprintln!("prefetch {i}: {e}");
+                    if let Err(e) = app.segment(kbps, i, true, None).await {
+                        eprintln!("prefetch {kbps}k/{i}: {e}");
                     }
                 });
             }
@@ -360,17 +416,14 @@ fn unsatisfiable(len: u64) -> Response {
     r
 }
 
-fn ranged(
+fn reply_headers(
+    status: StatusCode,
     len: u64,
-    req: &HeaderMap,
+    start: u64,
+    end: u64,
     ctype: &'static str,
     etag: &str,
-) -> Result<(StatusCode, HeaderMap, u64, u64), Box<Response>> {
-    let (status, start, end) = match range::parse(range_header(req), len) {
-        RangeReply::Full => (StatusCode::OK, 0, len - 1),
-        RangeReply::Partial { start, end } => (StatusCode::PARTIAL_CONTENT, start, end),
-        RangeReply::Unsatisfiable => return Err(Box::new(unsatisfiable(len))),
-    };
+) -> Result<HeaderMap, Box<Response>> {
     let mut h = HeaderMap::new();
     base_headers(&mut h);
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static(ctype));
@@ -382,46 +435,79 @@ fn ranged(
     if status == StatusCode::PARTIAL_CONTENT {
         h.insert(header::CONTENT_RANGE, v(format!("bytes {start}-{end}/{len}"))?);
     }
-    Ok((status, h, start, end))
+    Ok(h)
 }
 
-async fn media(State(app): State<Shared>, req: HeaderMap) -> Response {
-    let len = app.layout.total_bytes();
-    let (status, headers, start, end) = match ranged(len, &req, "audio/mpeg", &app.etag) {
-        Ok(x) => x,
+#[derive(serde::Deserialize)]
+struct MediaQuery {
+    q: Option<u64>,
+}
+
+async fn media(State(app): State<Shared>, Query(mq): Query<MediaQuery>, req: HeaderMap) -> Response {
+    let kbps = mq.q.unwrap_or(32);
+    let Some(v) = app.variant(kbps) else { return StatusCode::NOT_FOUND.into_response() };
+    let layout = v.layout;
+    let etag = v.etag.clone();
+    let len = layout.total_bytes();
+    let (status, start, end) = match range::parse(range_header(&req), len) {
+        RangeReply::Full => (StatusCode::OK, 0, len - 1),
+        RangeReply::Partial { start, end } => {
+            // The read-ahead cap: never encode more than N segments for one response.
+            match layout.cap_range(start, end, MAX_SEGMENTS_PER_RESPONSE) {
+                Ok(end) => (StatusCode::PARTIAL_CONTENT, start, end),
+                Err(_) => return unsatisfiable(len),
+            }
+        }
+        RangeReply::Unsatisfiable => return unsatisfiable(len),
+    };
+    let headers = match reply_headers(status, len, start, end, "audio/mpeg", &etag) {
+        Ok(h) => h,
         Err(r) => return *r,
     };
-    let segs = match app.layout.segments_for(start, end) {
+    let segs = match layout.segments_for(start, end) {
         Ok(s) => s,
         Err(_) => return unsatisfiable(len),
     };
     let first = *segs.start();
+    let generation = if status == StatusCode::PARTIAL_CONTENT {
+        Some(app.seek_generation.fetch_add(1, Ordering::SeqCst) + 1)
+    } else {
+        None
+    };
     let stream = futures_util::stream::unfold((app, segs), move |(app, mut segs)| async move {
         let i = segs.next()?;
-        let off = app.layout.segment_offset(i);
-        let item = match app.segment(i, false).await {
+        let off = layout.segment_offset(i);
+        // Only the first segment of a response can be superseded; once it plays, keep going.
+        let g = if i == first { generation } else { None };
+        let item = match app.segment(kbps, i, false, g).await {
             Ok(bytes) => {
                 let lo = start.saturating_sub(off) as usize;
                 let hi = ((end + 1 - off) as usize).min(bytes.len());
-                app.prefetch(i);
+                app.prefetch(kbps, i);
                 Ok(bytes.slice(lo..hi))
             }
             Err(e) => {
-                eprintln!("segment {i}: {e}");
+                eprintln!("segment {kbps}k/{i}: {e}");
                 Err(std::io::Error::other(e))
             }
         };
         Some((item, (app, segs)))
     });
-    eprintln!("media {start}-{end} (segment {first}+)");
+    eprintln!("media {kbps}k {start}-{end} (segment {first}+)");
     (status, headers, Body::from_stream(stream)).into_response()
 }
 
 async fn original(State(app): State<Shared>, req: HeaderMap) -> Response {
     let ctype = if app.demuxer == "mov" { "audio/mp4" } else { "audio/mpeg" };
     let etag = format!("\"orig-{}\"", app.original_len);
-    let (status, headers, start, end) = match ranged(app.original_len, &req, ctype, &etag) {
-        Ok(x) => x,
+    let len = app.original_len;
+    let (status, start, end) = match range::parse(range_header(&req), len) {
+        RangeReply::Full => (StatusCode::OK, 0, len - 1),
+        RangeReply::Partial { start, end } => (StatusCode::PARTIAL_CONTENT, start, end),
+        RangeReply::Unsatisfiable => return unsatisfiable(len),
+    };
+    let headers = match reply_headers(status, len, start, end, ctype, &etag) {
+        Ok(h) => h,
         Err(r) => return *r,
     };
     let mut f = match tokio::fs::File::open(&app.o.source).await {
@@ -439,14 +525,24 @@ async fn stats(State(app): State<Shared>) -> Response {
     let st = app.stats.lock().map(|s| {
         let rows: Vec<String> = s
             .iter()
-            .map(|x| format!("{{\"segment\":{},\"ms\":{},\"prefetch\":{}}}", x.index, x.millis, x.prefetch))
+            .map(|x| {
+                format!(
+                    "{{\"kbps\":{},\"segment\":{},\"ms\":{},\"prefetch\":{}}}",
+                    x.kbps, x.index, x.millis, x.prefetch
+                )
+            })
             .collect();
         rows.join(",")
     });
+    let sizes: Vec<String> = app
+        .variants
+        .iter()
+        .map(|v| format!("\"{}\":{}", v.profile.bitrate().bits_per_second() / 1000, v.layout.total_bytes()))
+        .collect();
     let body = format!(
-        "{{\"total_bytes\":{},\"segments\":{},\"jobs\":[{}]}}",
-        app.layout.total_bytes(),
-        app.layout.segment_count(),
+        "{{\"total_bytes\":{{{}}},\"original_bytes\":{},\"jobs\":[{}]}}",
+        sizes.join(","),
+        app.original_len,
         st.unwrap_or_default()
     );
     let mut h = HeaderMap::new();
@@ -472,30 +568,43 @@ async fn client_log(State(app): State<Shared>, body: Bytes) -> StatusCode {
     if res.is_ok() { StatusCode::NO_CONTENT } else { StatusCode::INTERNAL_SERVER_ERROR }
 }
 
-fn static_file(body: &'static str, ctype: &'static str) -> Response {
+enum Asset {
+    Index,
+    AppJs,
+    Css,
+    Offline,
+    OfflineJs,
+    ServiceWorker,
+    Passkey,
+    PasskeyJs,
+}
+
+fn asset(a: Asset) -> Response {
+    let (body, ctype): (&'static str, &'static str) = match a {
+        Asset::Index => (include_str!("../static/index.html"), "text/html; charset=utf-8"),
+        Asset::AppJs => (include_str!("../static/app.js"), "text/javascript; charset=utf-8"),
+        Asset::Css => (include_str!("../static/app.css"), "text/css; charset=utf-8"),
+        Asset::Offline => (include_str!("../static/offline.html"), "text/html; charset=utf-8"),
+        Asset::OfflineJs => (include_str!("../static/offline.js"), "text/javascript; charset=utf-8"),
+        Asset::ServiceWorker => (include_str!("../static/sw.js"), "text/javascript; charset=utf-8"),
+        Asset::Passkey => (include_str!("../static/passkey.html"), "text/html; charset=utf-8"),
+        Asset::PasskeyJs => (include_str!("../static/passkey.js"), "text/javascript; charset=utf-8"),
+    };
     let mut h = HeaderMap::new();
     base_headers(&mut h);
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static(ctype));
     h.insert(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(
-            "default-src 'none'; script-src 'self'; style-src 'self'; media-src 'self'; connect-src 'self'; \
-             img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+            "default-src 'none'; script-src 'self'; style-src 'self'; media-src 'self' blob:; connect-src 'self'; \
+             worker-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
         ),
     );
+    h.insert(
+        "permissions-policy",
+        HeaderValue::from_static("publickey-credentials-get=(self), publickey-credentials-create=(self)"),
+    );
     (h, body).into_response()
-}
-
-async fn page() -> Response {
-    static_file(include_str!("../static/index.html"), "text/html; charset=utf-8")
-}
-
-async fn script() -> Response {
-    static_file(include_str!("../static/app.js"), "text/javascript; charset=utf-8")
-}
-
-async fn style() -> Response {
-    static_file(include_str!("../static/app.css"), "text/css; charset=utf-8")
 }
 
 #[cfg(test)]

@@ -1,11 +1,11 @@
-# Phase 0(f) data-saver spike image. A test tool: LAN only, no auth. Not the product image.
+# Phase 0 spike image (data saver, offline, passkeys). A test tool: LAN only, no auth. Not the product image.
 #
 # Build (from the repository root):  docker build -f deploy/spike/Dockerfile -t abshare-saver-spike:phase0 .
 #
 # Base images are tags here for the spike; the product image pins every base by digest.
 
 FROM rust:1.99-alpine AS build
-RUN apk add --no-cache musl-dev file
+RUN apk add --no-cache musl-dev file perl make linux-headers
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rustfmt.toml ./
 COPY core core

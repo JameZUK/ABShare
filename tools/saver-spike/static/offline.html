@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Offline spike</title>
+<link rel="stylesheet" href="app.css">
+<script src="offline.js" defer></script>
+</head>
+<body>
+<h1>Offline spike</h1>
+<p class="note">Phase 0(a). Downloads the test book into this browser's storage in 4 MiB pieces, then plays it with no network. On iPhone/iPad, use it from the Home Screen app. <a href="./">Back</a></p>
+<fieldset class="row">
+  <legend>What to download</legend>
+  <label><input type="radio" name="what" value="media?q=32" checked> Data saver 32 kb/s</label>
+  <label><input type="radio" name="what" value="original"> Original</label>
+</fieldset>
+<div class="row">
+  <button id="persist">Ask to keep storage</button>
+  <button id="start">Download / resume</button>
+  <button id="stop">Pause download</button>
+  <button id="remove">Remove</button>
+</div>
+<p id="storage">Storage: …</p>
+<p id="progress">Nothing downloaded yet.</p>
+<h2>Play offline</h2>
+<p class="note">Turn on flight mode first to prove it is offline. A = one Blob URL built from the pieces. B = a service worker answering the player's range requests from storage.</p>
+<div class="row">
+  <button id="playA">Play with A (Blob URL)</button>
+  <button id="playB">Play with B (service worker)</button>
+</div>
+<audio id="player" controls preload="metadata"></audio>
+<div class="row">
+  <button data-frac="0.1">10 %</button>
+  <button data-frac="0.5">50 %</button>
+  <button data-frac="0.95">95 %</button>
+</div>
+<p id="status"></p>
+<h2>Events</h2>
+<ol id="log" reversed></ol>
+</body>
+</html>

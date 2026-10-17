@@ -215,6 +215,20 @@ impl Layout {
         Ok(first / seg..=last / seg)
     }
 
+    /// Caps a requested range so one response never makes the server encode more than
+    /// `max_segments` segments (SPEC D23). Returns the last byte to send: at most `last`, and
+    /// at most the end of the `max_segments`-th segment counted from the one holding `first`.
+    /// A media element that gets a shorter 206 than it asked for simply asks again.
+    pub fn cap_range(&self, first: u64, last: u64, max_segments: u64) -> Result<u64, SaverError> {
+        let segs = self.segments_for(first, last)?;
+        let max_segments = max_segments.max(1);
+        let last_allowed_seg = segs.start().saturating_add(max_segments - 1);
+        if *segs.end() <= last_allowed_seg {
+            return Ok(last);
+        }
+        Ok(self.segment_offset(last_allowed_seg + 1) - 1)
+    }
+
     /// Byte offset of a segment's first byte in the virtual file.
     pub fn segment_offset(&self, index: u64) -> u64 {
         index * self.profile.segment_bytes()
@@ -524,6 +538,40 @@ mod tests {
                 *b = rng.next() as u8;
             }
             let _ = l.check_segment(&w, &buf);
+        }
+    }
+
+    #[test]
+    fn an_open_ended_range_is_capped_to_whole_segments() {
+        let l = Profile::DEFAULT.layout(85 * HOUR).expect("layout");
+        let seg = Profile::DEFAULT.segment_bytes();
+        let total = l.total_bytes();
+        // From the start of segment 100 to the end of the file: ten segments only.
+        assert_eq!(l.cap_range(100 * seg, total - 1, 10), Ok(110 * seg - 1));
+        // From the middle of segment 100: still ends at the end of segment 109.
+        assert_eq!(l.cap_range(100 * seg + 7, total - 1, 10), Ok(110 * seg - 1));
+        // A short range is left alone.
+        assert_eq!(l.cap_range(5, 95, 10), Ok(95));
+        // Near the end, the real end wins.
+        assert_eq!(l.cap_range(total - 10, total - 1, 10), Ok(total - 1));
+        // Zero is treated as one segment.
+        assert_eq!(l.cap_range(0, total - 1, 0), Ok(seg - 1));
+        assert_eq!(l.cap_range(total, total, 10), Err(SaverError::Unsatisfiable));
+    }
+
+    #[test]
+    fn capped_ranges_always_stay_inside_the_request() {
+        let mut rng = Rng(0xcafe);
+        for _ in 0..10_000 {
+            let l = Profile::DEFAULT.layout(1 + rng.below(90 * HOUR)).expect("layout");
+            let total = l.total_bytes();
+            let a = rng.below(total);
+            let b = a + rng.below(total - a);
+            let cap = 1 + rng.below(20);
+            let end = l.cap_range(a, b, cap).expect("cap");
+            assert!(end >= a && end <= b);
+            let segs = l.segments_for(a, end).expect("segs");
+            assert!(segs.end() - segs.start() < cap);
         }
     }
 

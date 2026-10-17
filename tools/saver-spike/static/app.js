@@ -1,12 +1,14 @@
-// Phase 0(f) test page: seeking, background playback and quality switching.
+// Phase 0(f) test page: seeking, background playback, quality switching.
 // Text only: nothing here builds HTML from strings.
 'use strict';
 
 const audio = document.getElementById('player');
 const log = document.getElementById('log');
 const status = document.getElementById('status');
+const scrub = document.getElementById('scrub');
 const ua = navigator.userAgent;
 let seekStarted = 0;
+let dragging = false;
 
 function fmt(t) {
   if (!isFinite(t)) return '–';
@@ -35,9 +37,11 @@ function setSource(keepTime) {
   if (wasPlaying) audio.play().catch((e) => note(`play refused: ${e.name}`));
 }
 
+// One seek per user action: the scrubber commits on release, buttons commit at once.
 function seekTo(t) {
+  if (!isFinite(audio.duration)) return;
   seekStarted = performance.now();
-  audio.currentTime = Math.max(0, Math.min(t, (audio.duration || 0) - 1));
+  audio.currentTime = Math.max(0, Math.min(t, audio.duration - 1));
 }
 
 for (const ev of ['loadedmetadata', 'playing', 'pause', 'waiting', 'stalled', 'ended', 'error']) {
@@ -54,7 +58,19 @@ audio.addEventListener('seeked', () => {
 });
 document.addEventListener('visibilitychange', () => note(`page ${document.visibilityState} @ ${fmt(audio.currentTime)}`));
 
+// Scrubber: shows position while playing; while dragging it only previews.
+scrub.addEventListener('input', () => {
+  dragging = true;
+  status.textContent = `→ ${fmt((scrub.value / 1000) * audio.duration)} (release to seek)`;
+});
+scrub.addEventListener('change', () => {
+  dragging = false;
+  seekTo((scrub.value / 1000) * audio.duration);
+});
+
 setInterval(() => {
+  if (dragging) return;
+  if (isFinite(audio.duration) && audio.duration > 0) scrub.value = Math.round((audio.currentTime / audio.duration) * 1000);
   const b = audio.buffered;
   const ranges = [];
   for (let i = 0; i < b.length; i++) ranges.push(`${fmt(b.start(i))}–${fmt(b.end(i))}`);
@@ -80,7 +96,7 @@ if ('mediaSession' in navigator) {
   set('pause', () => audio.pause());
   set('seekbackward', () => seekTo(audio.currentTime - 30));
   set('seekforward', () => seekTo(audio.currentTime + 30));
-  set('seekto', (d) => seekTo(d.seekTime));
+  set('seekto', (d) => { if (!d.fastSeek) seekTo(d.seekTime); });
   setInterval(() => {
     if (isFinite(audio.duration) && audio.duration > 0) {
       try {
