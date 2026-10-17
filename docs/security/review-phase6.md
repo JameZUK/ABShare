@@ -33,7 +33,7 @@ Started 2026-10-17. It covers:
 | M2 | **Book IDs from ASINs are global.** A book in another library can take over the ID (and its caches). Caches also aren't invalidated when a book's parts change, which can panic the slice in a segment. | **Fixed:** an ASIN ID already held by a book in another library falls back to the folder ID (reported); a book whose parts, length or library change has its playable copy and segments deleted; tests. |
 | M3 | **Data saver without a Range header encodes the whole book.** Read-ahead tasks are unbounded. | **Fixed:** no Range is treated as `bytes=0-` and capped; at most 4 read-aheads at once; a stale short segment ends the response instead of panicking; test. |
 | C3 | **Quadratic tag merge in ffprobe parsing.** 80k × 80k tags stall a thread for 34 s. | **Fixed:** linear, bounded merge; timing test. |
-| C4 | **Book IDs in flat folders move** when albums are added (`dir#n`), and `X#0` can collide. | Open |
+| C4 | **Book IDs in flat folders move** when albums are added (`dir#n`), and `X#0` can collide. | **Fixed:** groups in a shared folder are keyed by identity (ASIN or album) with a separator no walked path can contain; test. |
 
 ## Low
 

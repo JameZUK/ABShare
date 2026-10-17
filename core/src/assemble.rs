@@ -158,6 +158,11 @@ fn norm(s: &str) -> String {
     clean_line(s, 512).to_lowercase()
 }
 
+/// Separates a folder from a book's identity in the key of a book that shares its folder
+/// with others. A control character: the walker refuses those in names, so no real path can
+/// contain it (review C4).
+pub const KEY_SEP: char = '\u{1f}';
+
 /// What tells two files in one folder apart as different books.
 fn book_identity(f: &ProbedFile) -> String {
     if let Some(a) = f.tags.get(&["audible_asin", "asin"]) {
@@ -183,8 +188,10 @@ fn assemble_dir(files: &[ProbedFile], dir: &str, idx: Vec<usize>, out: &mut Asse
         }
     }
     let many = groups.len() > 1;
-    for (n, (_, members)) in groups.into_iter().enumerate() {
-        let key = if many { format!("{dir}#{n}") } else { dir.to_owned() };
+    for (identity, members) in groups {
+        // Keyed by what the book is (its ASIN or album), never by its position among the
+        // folder's books: adding an album must not move another book's key (review C4).
+        let key = if many { format!("{dir}{KEY_SEP}{identity}") } else { dir.to_owned() };
         if let Some(book) = group_to_book(files, key, members, out) {
             out.books.push(book);
         }
@@ -343,6 +350,33 @@ pub(crate) mod tests {
     }
 
     const H: u64 = 3_600_000;
+
+    /// Review C4: a book's key in a shared folder depends on what it is, not on its position
+    /// among the folder's books, so adding an album can't move progress to another book; and
+    /// no real folder name can collide with a key.
+    #[test]
+    fn keys_in_a_shared_folder_are_stable_and_cannot_collide() {
+        let two = vec![file("Mix/b.m4b", H, &[("album", "Bravo")]), file("Mix/c.m4b", H, &[("album", "Charlie")])];
+        let keys = |fs: &[ProbedFile]| {
+            let a = assemble(fs);
+            let mut k: Vec<(String, String)> =
+                a.books.iter().map(|b| (fs[b.parts[0]].file_name().to_owned(), b.key.clone())).collect();
+            k.sort();
+            k
+        };
+        let before = keys(&two);
+        let mut three = two.clone();
+        three.insert(0, file("Mix/a.m4b", H, &[("album", "Alpha")]));
+        let after = keys(&three);
+        for (name, key) in &before {
+            assert!(after.contains(&(name.clone(), key.clone())), "{name} kept its key {key:?}");
+        }
+        // The separator never appears in a walked path (control characters are refused there).
+        for (_, k) in &after {
+            assert!(k.starts_with("Mix") && k.contains(KEY_SEP), "{k:?}");
+        }
+        assert!(!after.iter().any(|(_, k)| k == "Mix#0" || k == "Mix#1"));
+    }
 
     #[test]
     fn one_file_per_folder_is_one_book() {

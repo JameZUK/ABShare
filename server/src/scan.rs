@@ -124,7 +124,7 @@ pub async fn scan_library(
     let mut rows: Vec<BookRow> = Vec::new();
     for plan in &asm.books {
         let first = &files[plan.parts[0]];
-        let folder_path = plan.key.split('#').next().unwrap_or(&plan.key).to_owned();
+        let folder_path = plan.key.split(abshare_core::assemble::KEY_SEP).next().unwrap_or(&plan.key).to_owned();
         let loose = plan.parts.len() == 1 && first.dir().is_empty();
         let folder_name = if loose { None } else { folder_path.rsplit('/').next() };
         let side = sidecars(&lib.path, &w.extras, first.dir());
