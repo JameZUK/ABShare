@@ -110,12 +110,14 @@ pub async fn test_ffmpeg() -> Option<Ffmpeg> {
         jobs: 1,
     };
     let limits = Limits { mem_mib: 2048, cpu_secs: 10, fsize_mib: 1, wall: Duration::from_secs(20), stdout_cap: 4096 };
-    let ok = ff.jail.exists()
-        && run_jailed(&ff, &[], None, &ff.ffmpeg, &["-hide_banner".into(), "-version".into()], &limits)
-            .await
-            .is_ok_and(|o| o.success);
+    let run = run_jailed(&ff, &[], None, &ff.ffmpeg, &["-hide_banner".into(), "-version".into()], &limits).await;
+    let ok = ff.jail.exists() && run.as_ref().is_ok_and(|o| o.success);
     if !ok && std::env::var_os("ABSHARE_REQUIRE_LANDLOCK").is_some() {
-        panic!("ABSHARE_REQUIRE_LANDLOCK is set but the jailed ffmpeg cannot run");
+        let why = match &run {
+            Ok(o) => o.stderr.trim().to_owned(),
+            Err(e) => e.clone(),
+        };
+        panic!("ABSHARE_REQUIRE_LANDLOCK is set but the jailed ffmpeg cannot run ({}): {why}", ff.jail.display());
     }
     ok.then_some(ff)
 }

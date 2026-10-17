@@ -67,25 +67,28 @@ impl Drop for Scratch {
 fn landlock_available() -> bool {
     let active =
         std::fs::read_to_string("/sys/kernel/security/lsm").is_ok_and(|s| s.split(',').any(|m| m == "landlock"));
-    let jail_runs = active
-        && Command::new(JAIL)
-            .args([
-                "--lib",
-                "/usr/lib",
-                "--lib",
-                "/lib64",
-                "--lib",
-                "/lib",
-                "--lib",
-                "/etc/ld.so.cache",
-                "--",
-                PROBE,
-                "env",
-            ])
-            .output()
-            .is_ok_and(|o| o.status.success());
+    let probe = Command::new(JAIL)
+        .args([
+            "--lib",
+            "/usr/lib",
+            "--lib",
+            "/lib64",
+            "--lib",
+            "/lib",
+            "--lib",
+            "/etc/ld.so.cache",
+            "--",
+            PROBE,
+            "env",
+        ])
+        .output();
+    let jail_runs = active && probe.as_ref().is_ok_and(|o| o.status.success());
     if !jail_runs && std::env::var_os("ABSHARE_REQUIRE_LANDLOCK").is_some() {
-        panic!("ABSHARE_REQUIRE_LANDLOCK is set but the jail cannot run (Landlock ABI 6+ needed)");
+        let why = match &probe {
+            Ok(o) => format!("{}: {}", o.status, String::from_utf8_lossy(&o.stderr).trim()),
+            Err(e) => e.to_string(),
+        };
+        panic!("ABSHARE_REQUIRE_LANDLOCK is set but the jail cannot run (Landlock active: {active}): {why}");
     }
     jail_runs
 }
