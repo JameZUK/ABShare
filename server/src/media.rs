@@ -31,6 +31,8 @@ pub struct Media {
     silent: Mutex<HashMap<u64, Vec<u8>>>,
     /// Cache key (`saver/<book>` or `copies/<book>.m4b`) → when it was last served.
     used: Mutex<HashMap<String, i64>>,
+    /// Read-ahead tasks running now (bounded, so download loops can't queue unbounded work).
+    read_aheads: Arc<AtomicU64>,
     /// Whether the jail starts here (checked once, on first ask).
     sandbox: tokio::sync::OnceCell<bool>,
 }
@@ -144,6 +146,7 @@ impl Media {
             silent: Mutex::default(),
             used: Mutex::default(),
             sandbox: tokio::sync::OnceCell::new(),
+            read_aheads: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -478,12 +481,18 @@ impl Media {
     /// Starts encoding the span after a download's current one in the background, so it is
     /// ready (or nearly) when the next piece is asked for.
     pub fn read_ahead(self: &Arc<Self>, file: PathBuf, book: String, layout: Layout, first: u64, count: u64) {
+        const MAX_READ_AHEADS: u64 = 4;
         if first >= layout.segment_count() {
+            return;
+        }
+        if self.read_aheads.fetch_add(1, Ordering::SeqCst) >= MAX_READ_AHEADS {
+            self.read_aheads.fetch_sub(1, Ordering::SeqCst);
             return;
         }
         let me = self.clone();
         tokio::spawn(async move {
             let _ = me.fill_span(&file, &book, &layout, first, count).await;
+            me.read_aheads.fetch_sub(1, Ordering::SeqCst);
         });
     }
 

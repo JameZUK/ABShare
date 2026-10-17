@@ -97,15 +97,20 @@ pub fn parse_ffprobe(json: &[u8]) -> Result<ProbeRecord, String> {
         .iter()
         .any(|s| s.codec_type == "video" && s.disposition.get("attached_pic").copied().unwrap_or(0) == 1);
     let duration_ms = format.duration.as_deref().and_then(secs_to_ms).unwrap_or(0);
-    let mut tags: Vec<(String, String)> = format.tags.into_iter().collect();
-    // Some containers carry tags on the audio stream instead.
-    for (k, v) in &audio.tags {
-        if !tags.iter().any(|(tk, _)| tk.eq_ignore_ascii_case(k)) {
+    // Format tags first, then the audio stream's (some containers carry them there). Bounded
+    // and de-duplicated in linear time: a file with huge tag maps can't stall the scanner
+    // (review C3).
+    let ok = |(k, v): &(&String, &String)| k.len() <= 64 && v.len() <= 64 * 1024;
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut tags: Vec<(String, String)> = Vec::new();
+    for (k, v) in format.tags.iter().chain(audio.tags.iter()).filter(|kv| ok(kv)) {
+        if tags.len() >= Tags::MAX {
+            break;
+        }
+        if seen.insert(k.to_ascii_lowercase()) {
             tags.push((k.clone(), v.clone()));
         }
     }
-    tags.retain(|(k, v)| k.len() <= 64 && v.len() <= 64 * 1024);
-    tags.truncate(Tags::MAX);
     let mut chapters: Vec<(u64, u64, String)> = out
         .chapters
         .iter()
@@ -180,6 +185,20 @@ pub fn to_probed(rel: &str, size: u64, r: &ProbeRecord) -> ProbedFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn huge_tag_maps_are_merged_in_linear_time() {
+        let n = 80_000;
+        let fmt: String = (0..n).map(|i| format!("\"f{i}\":\"v\"")).collect::<Vec<_>>().join(",");
+        let st: String = (0..n).map(|i| format!("\"s{i}\":\"v\"")).collect::<Vec<_>>().join(",");
+        let json = format!(
+            r#"{{"format":{{"format_name":"mp3","duration":"10","tags":{{{fmt}}}}},"streams":[{{"codec_type":"audio","codec_name":"mp3","tags":{{{st}}}}}]}}"#
+        );
+        let t = std::time::Instant::now();
+        let r = parse_ffprobe(json.as_bytes()).expect("parse");
+        assert!(t.elapsed() < std::time::Duration::from_secs(3), "took {:?}", t.elapsed());
+        assert_eq!(r.tags.len(), Tags::MAX);
+    }
 
     const SAMPLE: &str = r#"{
       "streams": [

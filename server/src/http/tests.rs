@@ -1702,3 +1702,41 @@ async fn a_request_body_that_never_arrives_times_out() {
     assert!(String::from_utf8_lossy(&buf[..n]).starts_with("HTTP/1.1 408"), "{}", String::from_utf8_lossy(&buf[..n]));
     assert!(started.elapsed() >= super::BODY_TIMEOUT - std::time::Duration::from_secs(1));
 }
+
+#[tokio::test]
+async fn data_saver_without_a_range_is_capped_like_any_other_request() {
+    // An hour-long book is 60 segments; one request may make the server encode at most 10.
+    let m = setup_media();
+    let (access, _) = listener(&m).await;
+    for range in [None, Some("bytes=0-"), Some("bytes=0-999999999")] {
+        let mut h = vec![("authorization".to_owned(), format!("Bearer {access}"))];
+        if let Some(r) = range {
+            h.push(("range".to_owned(), r.to_owned()));
+        }
+        let hs: Vec<(&str, &str)> = h.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        let r = send(&m.t, "GET", &format!("/v1/media/{BOOK}?q=48"), None, &hs).await;
+        assert_eq!(r.status(), StatusCode::PARTIAL_CONTENT, "{range:?}");
+        let cr = r.headers()["content-range"].to_str().expect("cr").to_owned();
+        let end: u64 = cr.trim_start_matches("bytes 0-").split('/').next().expect("end").parse().expect("num");
+        assert_eq!(end + 1, 10 * 2_500 * 144, "{range:?}: {cr}");
+    }
+}
+
+#[tokio::test]
+async fn searches_are_bounded() {
+    let m = setup_media();
+    let (access, _) = listener(&m).await;
+    let long = "a".repeat(201);
+    let many = "a b c d e f g h i";
+    let flood = "a ".repeat(4000);
+    for q in [long.as_str(), many, flood.trim()] {
+        let r = get_json(&m.t, &format!("/v1/books?q={}", q.replace(' ', "%20")), &access).await;
+        assert_eq!(r.0, StatusCode::BAD_REQUEST, "{}", &q[..q.len().min(20)]);
+    }
+    // Repeated words count once; an ordinary search works.
+    assert_eq!(
+        get_json(&m.t, "/v1/books?q=book%20book%20book%20book%20book%20book%20book%20book%20book", &access).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(get_json(&m.t, "/v1/books?q=a%20book", &access).await.1["total"], 3);
+}

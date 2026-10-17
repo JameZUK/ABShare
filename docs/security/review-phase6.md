@@ -28,11 +28,11 @@ Started 2026-10-17. It covers:
 | P1 | **Anonymous rate limits keyed on the full IPv6 address.** Rotating through one /64 bypassed them. Found by the pentest and by two reviews. | **Fixed:** keyed like the lockout (/64); test. |
 | A1 | **Refresh-token reuse detection can be evaded, and a lost response wipes downloads.** Used tokens were deleted after 2 minutes, siblings issued in the grace window rotate forever, and a renewal response lost for more than 60 s is treated as theft. That revokes the device and wipes its downloads. | Open |
 | A2 | **Strangers can keep a username throttled** from fresh /64s, using the shared allowance. Separately, flooding the lockout table evicts a username's soft lock. | Open |
-| H2 | **Search can burn CPU.** `q` is unbounded in words, and work is done for every word and every book. | Open |
+| H2 | **Search can burn CPU.** `q` is unbounded in words, and work is done for every word and every book. | **Fixed:** 200 characters and 8 distinct words at most; test. |
 | M1 | **Symlink races in library files.** They are re-opened by path, following symlinks, after the check: sidecar text, cover sidecars, original streaming and ffmpeg inputs. | Open |
 | M2 | **Book IDs from ASINs are global.** A book in another library can take over the ID (and its caches). Caches also aren't invalidated when a book's parts change, which can panic the slice in a segment. | Open |
-| M3 | **Data saver without a Range header encodes the whole book.** Read-ahead tasks are unbounded. | Open |
-| C3 | **Quadratic tag merge in ffprobe parsing.** 80k × 80k tags stall a thread for 34 s. | Open |
+| M3 | **Data saver without a Range header encodes the whole book.** Read-ahead tasks are unbounded. | **Fixed:** no Range is treated as `bytes=0-` and capped; at most 4 read-aheads at once; a stale short segment ends the response instead of panicking; test. |
+| C3 | **Quadratic tag merge in ffprobe parsing.** 80k × 80k tags stall a thread for 34 s. | **Fixed:** linear, bounded merge; timing test. |
 | C4 | **Book IDs in flat folders move** when albums are added (`dir#n`), and `X#0` can collide. | Open |
 
 ## Low

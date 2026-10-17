@@ -132,7 +132,23 @@ async fn books(S(st): S<State>, Authed(s): Authed, Query(q): Query<BooksQuery>) 
         Some("non-fiction") => Some(ShelfFilter::Kind(Kind::NonFiction)),
         Some(id) => Some(ShelfFilter::One(Shelf::from_id(id).ok_or_else(|| ApiError::bad("Unknown genre."))?)),
     };
+    // Bounded work per request (review H2): at most 200 characters and 8 distinct words.
+    if q.q.as_deref().is_some_and(|s| s.chars().count() > 200) {
+        return Err(ApiError::bad("Searches are at most 200 characters."));
+    }
     let needle = q.q.as_deref().map(fold).filter(|s| !s.is_empty());
+    let words: Vec<String> = needle.as_deref().map_or_else(Vec::new, |n| {
+        let mut w: Vec<String> = Vec::new();
+        for x in n.split(' ').filter(|x| !x.is_empty()) {
+            if !w.iter().any(|y| y == x) {
+                w.push(x.to_owned());
+            }
+        }
+        w
+    });
+    if words.len() > 8 {
+        return Err(ApiError::bad("Searches are at most 8 words."));
+    }
     let (fa, fnar, fg) = (q.author.as_deref().map(fold), q.narrator.as_deref().map(fold), q.genre.as_deref().map(fold));
     // Episodes of shows are collapsed into one tile per show (unless searching).
     let shows: Vec<&crate::library::Group> =
@@ -153,7 +169,7 @@ async fn books(S(st): S<State>, Authed(s): Authed, Query(q): Query<BooksQuery>) 
         .iter()
         .filter(|b| ok.contains(&b.library_id) && q.library.is_none_or(|l| l == b.library_id))
         .filter(|b| !in_show.contains(b.id.as_str()))
-        .filter(|b| needle.as_ref().is_none_or(|n| n.split(' ').all(|w| b.search.contains(w))))
+        .filter(|b| words.iter().all(|w| b.search.contains(w.as_str())))
         .filter(|b| fa.as_ref().is_none_or(|a| b.authors.iter().any(|x| fold(x) == *a)))
         .filter(|b| fnar.as_ref().is_none_or(|a| b.narrators.iter().any(|x| fold(x) == *a)))
         .filter(|b| fg.as_ref().is_none_or(|g| b.genres.iter().any(|x| fold(x) == *g)))

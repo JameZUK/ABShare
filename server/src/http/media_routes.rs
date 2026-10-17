@@ -177,8 +177,14 @@ async fn stream(
             let bitrate = bitrate_for(kbps).ok_or_else(|| ApiError::bad("Unknown quality."))?;
             let layout = m.layout(src.duration_ms, bitrate).ok_or_else(ApiError::not_found)?;
             let len = layout.total_bytes();
-            let (status, start, end) = match range::parse(range_h, len) {
-                RangeReply::Full => (StatusCode::OK, 0, len - 1),
+            // No Range header is treated as `bytes=0-`: every data-saver answer is capped, so one
+            // request can never make the server encode a whole book (review M3, D23).
+            let parsed = match range::parse(range_h, len) {
+                RangeReply::Full => RangeReply::Partial { start: 0, end: len - 1 },
+                other => other,
+            };
+            let (status, start, end) = match parsed {
+                RangeReply::Full => return Ok(unsatisfiable(len)),
                 RangeReply::Partial { start, end } => match layout.cap_range(start, end, MAX_SEGMENTS_PER_RESPONSE) {
                     Ok(e) => (StatusCode::PARTIAL_CONTENT, start, e),
                     Err(_) => return Ok(unsatisfiable(len)),
@@ -207,7 +213,13 @@ async fn stream(
                             let lo = start.saturating_sub(off) as usize;
                             let hi = ((end + 1 - off) as usize).min(bytes.len());
                             m.prefetch(file.clone(), book.clone(), layout, i);
-                            Ok(bytes.slice(lo..hi))
+                            if lo > hi {
+                                // A cached segment shorter than the layout says (a stale cache):
+                                // end the response rather than panic.
+                                Err(std::io::Error::other("segment shorter than expected"))
+                            } else {
+                                Ok(bytes.slice(lo..hi))
+                            }
                         }
                         Err(e) => Err(std::io::Error::other(e)),
                     };
