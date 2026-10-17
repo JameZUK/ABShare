@@ -81,6 +81,8 @@ class Session {
 					return false;
 				}
 				if (e instanceof ApiError && e.status === 429) return this.#token !== null;
+				// session_reused (a copied or replayed sign-in) signs out but keeps downloads; only
+				// an explicit remote sign-out removes them.
 				if (e instanceof ApiError && e.code === 'device_revoked') {
 					this.#end('revoked');
 					writeLastUser(null);

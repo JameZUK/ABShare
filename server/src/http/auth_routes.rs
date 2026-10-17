@@ -625,7 +625,13 @@ async fn refresh(S(st): S<State>, Ip(ip): Ip, headers: HeaderMap) -> Result<Resp
                 "refresh token reused: device signed out".into(),
             )
             .await;
-            Err(device_revoked())
+            // Signed out for safety, but not wiped: a lost response or a copied cookie isn't
+            // the owner asking to remove this device's downloads (review A1).
+            Err(ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "session_reused",
+                "For your safety you've been signed out: this device's sign-in was used somewhere else. Sign in again.",
+            ))
         }
         RefreshOutcome::TooFast => Err(ApiError::too_many()),
         RefreshOutcome::Revoked => Err(device_revoked()),

@@ -7,7 +7,6 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 pub const REFRESH_LIFETIME: i64 = 90 * 24 * 3600;
 pub const ABSOLUTE_LIFETIME: i64 = 90 * 24 * 3600;
-pub const REUSE_GRACE: i64 = 60;
 pub const MAX_SIBLINGS: i64 = 8;
 pub const MAX_RENEWALS_PER_MINUTE: i64 = 30;
 pub const MAX_DEVICES: i64 = 20;
@@ -455,18 +454,20 @@ pub fn rotate_refresh(
     new: &[u8; 32],
     now: i64,
 ) -> Result<RefreshOutcome, String> {
-    // (device, user, used_at, issued_at, session_started, revoked_at)
-    type Row = (i64, i64, Option<i64>, i64, i64, Option<i64>);
+    // (device, user, used_at, issued_at, session_started, revoked_at, parent)
+    type Row = (i64, i64, Option<i64>, i64, i64, Option<i64>, Option<Vec<u8>>);
     let row: Option<Row> = tx
         .query_row(
-            "SELECT r.device_id, d.user_id, r.used_at, r.issued_at, d.session_started, d.revoked_at
+            "SELECT r.device_id, d.user_id, r.used_at, r.issued_at, d.session_started, d.revoked_at, r.parent
              FROM refresh r JOIN device d ON d.id = r.device_id WHERE r.hash = ?1",
             params![old.as_slice()],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
         )
         .optional()
         .map_err(sql_err)?;
-    let Some((device, user, used_at, issued_at, started, revoked)) = row else { return Ok(RefreshOutcome::Unknown) };
+    let Some((device, user, used_at, issued_at, started, revoked, parent)) = row else {
+        return Ok(RefreshOutcome::Unknown);
+    };
     if revoked.is_some() {
         return Ok(RefreshOutcome::Revoked);
     }
@@ -488,32 +489,49 @@ pub fn rotate_refresh(
     if renewals >= MAX_RENEWALS_PER_MINUTE {
         return Ok(RefreshOutcome::TooFast);
     }
-    if let Some(used) = used_at {
-        // Grace: a lost response or two tabs. Allowed only while no replacement has been used.
+    let theft = |tx: &Transaction<'_>| -> Result<RefreshOutcome, String> {
+        tx.execute(
+            "UPDATE device SET revoked_at = ?2, last_ip = NULL, user_agent = NULL WHERE id = ?1",
+            params![device, now],
+        )
+        .map_err(sql_err)?;
+        Ok(RefreshOutcome::Reused { device, user })
+    };
+    if used_at.is_some() {
+        // A spent token presented again. Fine while none of its replacements has been used
+        // (the response was lost, or two tabs raced): issue another replacement, a bounded
+        // number of times. Once a replacement has been used, this is a copy: theft.
         let (children, used_children): (i64, i64) = tx
             .query_row("SELECT count(*), count(used_at) FROM refresh WHERE parent = ?1", params![old.as_slice()], |r| {
                 Ok((r.get(0)?, r.get(1)?))
             })
             .map_err(sql_err)?;
-        if now - used > REUSE_GRACE || used_children > 0 || children >= MAX_SIBLINGS {
-            tx.execute(
-                "UPDATE device SET revoked_at = ?2, last_ip = NULL, user_agent = NULL WHERE id = ?1",
-                params![device, now],
-            )
-            .map_err(sql_err)?;
-            return Ok(RefreshOutcome::Reused { device, user });
+        if used_children > 0 || children >= MAX_SIBLINGS {
+            return theft(tx);
         }
     } else {
+        // A fresh token whose sibling (another replacement of the same parent) has already
+        // been used was superseded: someone else holds the live chain (review A1).
+        if let Some(p) = &parent {
+            let used_siblings: i64 = tx
+                .query_row(
+                    "SELECT count(*) FROM refresh WHERE parent = ?1 AND hash != ?2 AND used_at IS NOT NULL",
+                    params![p, old.as_slice()],
+                    |r| r.get(0),
+                )
+                .map_err(sql_err)?;
+            if used_siblings > 0 {
+                return theft(tx);
+            }
+        }
         tx.execute("UPDATE refresh SET used_at = ?2 WHERE hash = ?1", params![old.as_slice(), now]).map_err(sql_err)?;
     }
     issue_refresh(tx, device, new, Some(old), now)?;
     tx.execute("UPDATE device SET last_seen = ?2 WHERE id = ?1", params![device, now]).map_err(sql_err)?;
-    // Old, used tokens outside any grace are no longer needed.
-    tx.execute(
-        "DELETE FROM refresh WHERE device_id = ?1 AND used_at IS NOT NULL AND used_at < ?2",
-        params![device, now - 2 * REUSE_GRACE],
-    )
-    .map_err(sql_err)?;
+    // Spent tokens are kept for the session, so an old copy is always recognised as reuse;
+    // only tokens past their lifetime (which no longer work anyway) are removed.
+    tx.execute("DELETE FROM refresh WHERE device_id = ?1 AND issued_at < ?2", params![device, now - REFRESH_LIFETIME])
+        .map_err(sql_err)?;
     Ok(RefreshOutcome::Rotated { device, user })
 }
 
@@ -584,17 +602,61 @@ mod tests {
         assert_eq!(rotate(&mut c, [4; 32], [6; 32], 1050), RefreshOutcome::Revoked);
     }
 
+    /// Review A1: a renewal whose response was lost (a tunnel) can be retried much later
+    /// without being taken for theft.
     #[test]
-    fn reuse_outside_the_grace_revokes() {
+    fn a_lost_response_can_be_retried_long_after() {
+        let mut c = db();
+        let u = user(&mut c, "lia");
+        let d = device(&mut c, u, 1000);
+        issue_refresh(&c, d, &[1; 32], None, 1000).expect("issue");
+        assert_eq!(rotate(&mut c, [1; 32], [2; 32], 1000), RefreshOutcome::Rotated { device: d, user: u });
+        // The response with [2] never arrived; the app retries with [1] an hour later.
+        assert_eq!(rotate(&mut c, [1; 32], [3; 32], 4600), RefreshOutcome::Rotated { device: d, user: u });
+        assert!(device_active(&c, d).expect("active"));
+        // And it goes on normally from the new token.
+        assert_eq!(rotate(&mut c, [3; 32], [4; 32], 4700), RefreshOutcome::Rotated { device: d, user: u });
+    }
+
+    /// Review A1: an old stolen token is still recognised as reuse long after it was spent
+    /// (it used to be deleted after two minutes and come back as merely "unknown").
+    #[test]
+    fn an_old_spent_token_is_always_recognised_as_reuse() {
+        let mut c = db();
+        let u = user(&mut c, "mo");
+        let d = device(&mut c, u, 1000);
+        issue_refresh(&c, d, &[1; 32], None, 1000).expect("issue");
+        rotate(&mut c, [1; 32], [2; 32], 1000);
+        rotate(&mut c, [2; 32], [3; 32], 2000);
+        rotate(&mut c, [3; 32], [4; 32], 3000);
+        assert_eq!(rotate(&mut c, [1; 32], [9; 32], 90_000), RefreshOutcome::Reused { device: d, user: u });
+        assert!(!device_active(&c, d).expect("active"));
+    }
+
+    /// Review A1: siblings issued for a retry can't run on side by side: once one is used,
+    /// using another is theft.
+    #[test]
+    fn a_sibling_chain_is_detected_once_both_are_used() {
+        let mut c = db();
+        let u = user(&mut c, "ned");
+        let d = device(&mut c, u, 1000);
+        issue_refresh(&c, d, &[1; 32], None, 1000).expect("issue");
+        rotate(&mut c, [1; 32], [2; 32], 1000); // the owner
+        rotate(&mut c, [1; 32], [3; 32], 1010); // a thief with a copy of [1], before [2] is used
+        assert_eq!(rotate(&mut c, [2; 32], [4; 32], 1020), RefreshOutcome::Rotated { device: d, user: u });
+        assert_eq!(rotate(&mut c, [3; 32], [5; 32], 1030), RefreshOutcome::Reused { device: d, user: u });
+    }
+
+    #[test]
+    fn a_retry_is_allowed_until_a_replacement_is_used_then_it_is_theft() {
         let mut c = db();
         let u = user(&mut c, "bea");
         let d = device(&mut c, u, 1000);
         issue_refresh(&c, d, &[1; 32], None, 1000).expect("issue");
         rotate(&mut c, [1; 32], [2; 32], 1000);
-        assert_eq!(
-            rotate(&mut c, [1; 32], [3; 32], 1000 + REUSE_GRACE + 1),
-            RefreshOutcome::Reused { device: d, user: u }
-        );
+        assert_eq!(rotate(&mut c, [1; 32], [3; 32], 1000 + 3600), RefreshOutcome::Rotated { device: d, user: u });
+        assert_eq!(rotate(&mut c, [3; 32], [4; 32], 1000 + 3700), RefreshOutcome::Rotated { device: d, user: u });
+        assert_eq!(rotate(&mut c, [1; 32], [5; 32], 1000 + 3800), RefreshOutcome::Reused { device: d, user: u });
     }
 
     #[test]

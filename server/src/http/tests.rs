@@ -525,6 +525,8 @@ async fn refresh_rotates_and_a_stolen_old_token_signs_the_device_out() {
     // ...so a thief replaying the original is detected, and the whole device is signed out.
     let r = send(&t, "POST", "/v1/auth/refresh", None, &[("cookie", &format!("abshare_refresh={refresh}"))]).await;
     assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+    // Reuse is "signed out for safety", not "removed": the app keeps this device's downloads.
+    assert_eq!(json_of(r).await["error"], "session_reused");
     let r = send(&t, "GET", "/v1/me", None, &[("authorization", &format!("Bearer {access}"))]).await;
     assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
 }
