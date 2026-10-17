@@ -20,4 +20,16 @@ Each target ran for 3,600 s on one core, from the seed corpora in `fuzz/corpus/`
 
 Before this campaign, short runs had found one bug: a lone `<` or `>` survived description cleaning. The fix routes any description containing `<`, `>` or `&` through `html_to_text`, and a regression test covers it.
 
-CI runs every target for 60 s on each push (D21).
+## Targets added since
+
+Two targets were added after the Phase 1 campaign, in the Phase 6 review: `metadata_override` (admin corrections to book details) and `genre` (genre tags onto shelves, which also exercises text cleaning). They run in CI with the others; no one-hour campaign has been recorded for them yet.
+
+The `metadata` target uses a dictionary (`fuzz/dicts/metadata.dict`) of characters whose lower-case form changes length, the class of input behind review findings C1 and C2.
+
+## Running a campaign
+
+```sh
+cargo +nightly fuzz run <target> -- -max_total_time=3600
+```
+
+CI runs all 11 targets for 60 s on each push (D21).

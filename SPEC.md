@@ -14,6 +14,8 @@ ABShare is a small, self-hosted server for sharing an audiobook library with a f
 
 Native apps are out of scope for v1. The API is documented and versioned so that they can come later (§10).
 
+**This is the design.** Where the built code differs from it, §16 lists each difference; [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/API.md`](docs/API.md) describe what exists.
+
 ---
 
 ## 1. Decisions
@@ -34,7 +36,7 @@ Native apps are out of scope for v1. The API is documented and versioned so that
 | D12 | Progress sync | **The server holds each user's position per book. The newest listening event wins, with bounds.** Clients send progress while playing and queue it while offline. The server refuses events from the future, very old events and duplicates (§5.6). Decided 2026-10-17. |
 | D13 | Offline in the app | **IndexedDB, as chunked Blobs partitioned per user.** This is lyrion-anywhere's proven approach; OPFS writes aren't available from the page in Safari 17. **Playback reads them through a service worker that answers the player's Range requests from storage (option B)**, with a composed Blob URL (option A) as the fallback where service workers are unavailable. Both passed on iPad Safari, Firefox for Android and Chromium, offline (docs/phase0-report.md). Decided 2026-10-17; resolved by Phase 0(a) the same day. |
 | D14 | Web UI | **SvelteKit 2 + Svelte 5, static build, hash router, no third-party runtime code.** A strict CSP with no inline scripts and no `unsafe-eval`, enforced at build time. This keeps parity with lyrion-anywhere, so its CSP externaliser, service-worker policy and HTML-injection ban tests can be reused. Decided 2026-10-17. |
-| D15 | Tokens | **Opaque random tokens; no JWTs.** The server is the only verifier, so signed tokens would add a format to get wrong and gain nothing. A short-lived access token is held in memory only. The refresh token is rotated on every use, with reuse detection, in an `HttpOnly` cookie. This is lyrion-anywhere's model unchanged, including its 60 s reuse grace. Decided 2026-10-17. |
+| D15 | Tokens | **Opaque random tokens; no JWTs.** The server is the only verifier, so signed tokens would add a format to get wrong and gain nothing. A short-lived access token is held in memory only. The refresh token is rotated on every use, with reuse detection, in an `HttpOnly` cookie. Decided 2026-10-17. **Changed 2026-10-17 (Phase 6 review A1):** lyrion-anywhere's 60 s reuse grace is replaced. Spent tokens are kept for the session, a retry of a spent token is allowed (at most 8 replacements) until one of its replacements is used, and reuse after that signs the device out with `session_reused`. The time window let reuse go undetected after 2 minutes and treated a lost response as theft (§5.5). |
 | D16 | Configuration | **A TOML config file for deployment settings (`deny_unknown_fields`, validated at start-up, refused if world-writable) and the database for runtime settings that admins change in the UI.** CLI flags override the file. Decided 2026-10-17. |
 | D17 | Stable IDs | **A book's ID is HMAC-SHA256(server secret, key), truncated to 128 bits and base32-encoded.** The key is `asin:<ASIN>` when one is known, otherwise `path:<library id>/<relative folder>`. IDs survive rescans and (with an ASIN) folder renames, are unguessable, and never reveal paths. Progress, bookmarks and downloads all hang off this ID. Decided 2026-10-17. |
 | D18 | Library change detection | **Polling, not inotify.** Libraries are often NFS mounts, where inotify sees nothing. The server does a cheap metadata walk (size + mtime) on a schedule (default every 6 h), at start-up and when an admin asks. Only new or changed files are probed. Decided 2026-10-17. |
@@ -787,3 +789,31 @@ Further rules:
 - Linux Landlock (kernel docs, ABI versions); seccomp-bpf; the systemd.exec manual's sandboxing options.
 - Media Session API; WebKit notes on background audio and storage for home-screen web apps.
 - FFmpeg 7.1 release notes (native USAC/xHE-AAC decoder).
+
+---
+
+## 16. Built versus specified
+
+Recorded 2026-10-17 from a check of the code against this document, while writing the architecture and API docs. Where they differ, the code and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/API.md`](docs/API.md) describe what exists. Each row is either a simplification that was accepted or work still to do.
+
+| Section | Specified | Built |
+|---|---|---|
+| D19, §5.7 | The server refuses to start without Landlock unless `allow_unsandboxed_ffmpeg` is set. | There is no such setting. The jail itself refuses to run without Landlock, so media jobs fail; `doctor` fails and the admin overview shows the sandbox as off. |
+| §4.2 | Probes run one or two at a time at low priority; an option allows symlinks inside a root; missing books' progress expires after 180 days. | Probes run `[ffmpeg] jobs × 2` at a time; symlinks are never followed; missing books and their progress are kept indefinitely. |
+| §4.6 | WebP or JPEG covers at `/v1/covers/{id}/{size}.{hash}.webp`. | JPEG only, at `/v1/media/covers/{id}/{hash}?size=`. |
+| §5.1 | 4 KiB bodies on auth routes; per-user write rate limits on every write route; `client_ip_header`. | 16 KiB for auth, account and library routes, 64 KiB elsewhere. Rate limits on progress, refresh, new devices, anonymous auth routes and sign-in failures only. No `client_ip_header`. |
+| §5.2 | ETag an HMAC of the fingerprint; Content-Type from the probe; `fstat` checked against the catalogue; `?q=saver`; a 409 with progress. | ETag from length and modification time; Content-Type from the extension; files opened with `openat2(RESOLVE_BENEATH, NO_SYMLINKS)` but not compared with the catalogue; `?q=32\|40\|48`; the 409 has no progress; `422 unplayable` after a failed build; `GET /v1/media/{id}/state`. |
+| §5.2 | Media authenticated by the media cookie only; 403 never used. | A bearer token is also accepted. `403 not_permitted` for downloads without the `offline` permission and saving without `save_files` (after the visibility check, so nothing is revealed). |
+| §5.3 | `/v1/downloads/{id}`, single-use tickets, `/v1/files/{id}` with ZIPs, audited, 3 at a time and a daily cap. | Downloads are `/v1/media/{id}[?q=…]&dl=1`; saving is `/v1/media/{id}/file` (the original or the playable copy, no ZIP); no tickets, caps or audit entry. |
+| §5.4 | A persistent SQLite job queue with priorities and profile versions; `nice`; output re-probed and fsynced; chapters and tags written into copies; copies always pinned; a per-user limit of 4 segment jobs. | In-memory lanes (listener, prefetch and downloads, copies) with deduplication and *latest seek wins*; resource limits instead of `-fs` and `nice`; copies carry no chapters or tags (the app has them); eviction is LRU with only recently served books pinned; at most 4 read-aheads overall. |
+| §5.5 | Confusables folding of usernames; a top-1M breached-password filter; recovery codes force re-enrolment; challenges bound to the session; any factor change signs out other devices; per-device limits on signing devices out; 100,000 audit rows mirrored to stdout. | ASCII usernames only; about 46,000 hashed prefixes of common passwords of 12 or more characters, plus at least 4 distinct characters; recovery codes don't force re-enrolment; challenges are bearer ceremony tokens (4 minutes for the second sign-in step); only a password change signs out other devices; signing a device out has no rate limit or step-up; 500,000 audit rows, no stdout mirror. |
+| §5.5 | A server-side 2FA policy setting for listeners. | A second factor is always required; there is no setting. |
+| §5.6 | `speed` stored with progress; listening history; finished within 30 s of the end; 1,000 bookmarks per book. | No `speed` (speeds stay in the browser); no history; finished within 30 s or 2 % of the length, whichever is smaller; 1,000 per book and 10,000 per person. |
+| §5.6 | "Resume where you left off?" prompt. | A paused player silently follows a newer position from another device. |
+| §5.7 | Admin settings stored in the database. | All settings are in the config file. |
+| §5.8 | `create-user`, `reset-factors`, `list-users`, `list-devices`, `revoke-device`, an `--online` socket and a DB lock. | `admin invite`, `reset`, `users`, `devices`, `revoke-all` and `verify-audit`; the running server picks up changes within 30 seconds. `doctor` checks the jail by running it, not ffmpeg's decoders or protocols. |
+| §6 | `PATCH /v1/me`; `/v1/authors`, `/v1/series`, `/v1/collections`; `series=`; FTS5 search; opaque cursors; a contract fixture in CI. | Preferences stay in the browser; `/v1/groups` and `/v1/genres` instead; `shelf=` instead of `series=`; an in-memory folded substring search (200 characters, 8 words); offset and ID cursors; no contract fixture. |
+| §7.2 | Library filters by author, narrator, series and genre; a grid/list toggle; History and Downloads settings; admin Jobs and Server settings pages. | Search, status filter, sort and genre shelves; no filters by person or series, no toggle, and none of those pages yet. |
+| §9.3, §10 | A minimal static ffmpeg built from a pinned tarball; base images pinned by digest. | Debian's ffmpeg 7.1 in a Debian runtime; base images pinned by tag. |
+| §13 | Integration tests against the demo library; jail tests that can't skip in CI. | Not yet: there are no demo-library integration tests, and CI doesn't set `ABSHARE_REQUIRE_LANDLOCK`, so the jail and ffmpeg tests may skip on hosted runners. |
+
