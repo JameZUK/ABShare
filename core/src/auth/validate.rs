@@ -102,10 +102,7 @@ mod tests {
     fn common_leaked_passwords_are_refused() {
         assert_eq!(COMMON.len() % 8, 0);
         assert!(COMMON.len() / 8 > 40_000, "the list is bundled");
-        assert!(
-            COMMON.chunks_exact(8).zip(COMMON.chunks_exact(8).skip(1)).all(|(a, b)| a < b),
-            "sorted, no duplicates"
-        );
+        assert!(COMMON.as_chunks::<8>().0.windows(2).all(|w| w[0] < w[1]), "sorted, no duplicates");
         for pw in ["password1234", "PassWord1234", "qwertyuiop12", "1q2w3e4r5t6y", "iloveyou1234", "abcdefghijkl"] {
             assert!(is_common(pw), "{pw}");
             assert_eq!(password(pw, "ada"), Err(Invalid::PasswordCommon), "{pw}");
