@@ -36,7 +36,6 @@ The device tests still to run include a 2-hour locked-screen session on a phone,
 
 Planned, in no fixed order:
 
-- Listening history.
 - Author, narrator and series filters, and author pages.
 - Editing bookmark notes in the app.
 - An independent security review.

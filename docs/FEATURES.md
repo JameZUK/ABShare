@@ -34,6 +34,7 @@ Everything ABShare does today, by area. Only built and tested features are liste
 | Progress sync | Your position is saved every 15 seconds while playing, on pause and seek, and when the app goes to the background. |
 | Across devices | When another device has listened further, a paused player moves to the newer position. |
 | Offline | Positions and finished marks made offline are queued on the device and sent when it is back online. The newest listening wins, and a repeated or out-of-date update can't move you backwards. |
+| Listening history | Settings → History shows your listening time over the last 7 days, the last 30 days and all time, how many books you've finished, and your recent sessions. Only you can see it. You can clear it, or turn it off. Sessions are kept for 13 months. Listening while offline isn't counted. |
 
 ## Streaming quality
 
@@ -112,7 +113,6 @@ Everything ABShare does today, by area. Only built and tested features are liste
 
 These are designed in [`SPEC.md`](../SPEC.md) but not built:
 
-- Listening history and statistics.
 - Author, narrator and series filters in the Library, and author pages.
 - Editing a bookmark's note in the app (the API supports it).
 - A "Downloads" settings page (default quality, Wi-Fi only).

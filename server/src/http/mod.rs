@@ -5,6 +5,7 @@ pub mod admin_routes;
 pub mod auth_routes;
 pub mod diag_routes;
 pub mod guard;
+pub mod history_routes;
 pub mod library_routes;
 pub mod me_routes;
 pub mod media_routes;
@@ -141,6 +142,8 @@ pub struct AppState {
     pub progress_limit: RateLimit<(i64, String)>,
     /// Device sign-outs, per calling device.
     pub device_limit: RateLimit<i64>,
+    /// Listening-history changes (clear, turn on or off), per calling device.
+    pub history_limit: RateLimit<i64>,
     /// Start-up reports from blank pages: rate-limited per address, kept in memory only.
     pub diag_limit: RateLimit<abshare_core::auth::lockout::AddrKey>,
     pub diag: Mutex<std::collections::VecDeque<diag_routes::DiagReport>>,
@@ -192,6 +195,7 @@ impl AppState {
             anon_limit: RateLimit::new(30),
             progress_limit: RateLimit::new(12),
             device_limit: RateLimit::new(10),
+            history_limit: RateLimit::new(10),
             diag_limit: RateLimit::new(diag_routes::PER_MINUTE),
             diag: Mutex::new(std::collections::VecDeque::new()),
             media: None,
@@ -419,8 +423,12 @@ impl FromRequestParts<State> for Authed {
 }
 
 /// After a recovery-code sign-in, only the account routes (to set up a new factor) and the
-/// auth routes work until a new factor exists (SPEC §5.5).
+/// auth routes work until a new factor exists (SPEC §5.5). Listening history is personal data,
+/// not a sign-in method, so it waits too.
 pub fn allowed_while_needing_factor(path: &str) -> bool {
+    if path == "/v1/me/history" || path.starts_with("/v1/me/history/") {
+        return false;
+    }
     path == "/v1/me" || path.starts_with("/v1/me/") || path.starts_with("/v1/auth/")
 }
 

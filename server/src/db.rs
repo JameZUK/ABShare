@@ -190,6 +190,22 @@ pub const MIGRATIONS: &[&str] = &[
     // 7: set when someone signs in with a recovery code; their sessions are limited to their
     // account until they set up a new passkey or authenticator.
     "ALTER TABLE user ADD COLUMN needs_factor INTEGER NOT NULL DEFAULT 0;",
+    // 8: listening history (SPEC 5.6): sessions built from position reports, and a per-person
+    // switch to turn it off. Times are client event times in milliseconds.
+    "CREATE TABLE listening (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+        book_id TEXT NOT NULL,
+        device_id INTEGER,
+        started_at INTEGER NOT NULL,
+        ended_at INTEGER NOT NULL,
+        end_position_ms INTEGER NOT NULL,
+        heard_ms INTEGER NOT NULL
+    );
+    CREATE INDEX listening_user_ended ON listening(user_id, ended_at);
+    CREATE INDEX listening_user_id ON listening(user_id, id);
+    CREATE INDEX listening_tail ON listening(user_id, book_id, device_id, id);
+    ALTER TABLE user ADD COLUMN history_off INTEGER NOT NULL DEFAULT 0;",
 ];
 
 pub fn sql_err(e: rusqlite::Error) -> String {

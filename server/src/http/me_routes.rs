@@ -1,4 +1,5 @@
-//! `/v1/me/*` (SPEC §6): your profile, devices and sign-in methods. Bearer-authenticated.
+//! `/v1/me/*` (SPEC §6): your profile, devices and sign-in methods (and, in
+//! `history_routes`, your listening history). Bearer-authenticated.
 //! Every change to sign-in methods needs a step-up within the last 10 minutes, and no change
 //! may leave the account without a complete way to sign in (a passkey, or password + TOTP).
 
@@ -30,6 +31,7 @@ pub fn routes() -> Router<State> {
         .route("/totp/finish", post(totp_finish))
         .route("/totp", delete(remove_totp))
         .route("/recovery", post(new_recovery))
+        .nest("/history", super::history_routes::routes())
         .layer(axum::extract::DefaultBodyLimit::max(16 * 1024))
 }
 

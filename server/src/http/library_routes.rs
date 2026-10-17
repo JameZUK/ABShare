@@ -36,7 +36,10 @@ pub fn routes() -> Router<State> {
 }
 
 /// The caller's view: the catalogue and the libraries they may see.
-async fn view(st: &State, s: &crate::auth::sessions::Session) -> Result<(Arc<Catalog>, HashSet<i64>), ApiError> {
+pub(super) async fn view(
+    st: &State,
+    s: &crate::auth::sessions::Session,
+) -> Result<(Arc<Catalog>, HashSet<i64>), ApiError> {
     let cat = st.catalog().await?;
     let uid = s.user;
     let perms = st
@@ -55,7 +58,7 @@ fn find<'a>(cat: &'a Catalog, ok: &HashSet<i64>, id: &str) -> Result<&'a Book, A
     cat.by_id.get(id).map(|&i| &cat.books[i]).filter(|b| ok.contains(&b.library_id)).ok_or_else(ApiError::not_found)
 }
 
-fn cover_url(b: &Book) -> Value {
+pub(super) fn cover_url(b: &Book) -> Value {
     b.cover.as_ref().map_or(Value::Null, |h| json!(format!("media/covers/{}/{h}", b.id)))
 }
 
@@ -465,6 +468,10 @@ async fn put_progress(
                     params![uid, bid, p.position_ms as i64, p.duration_ms as i64, p.finished, p.updated_at, now(), device],
                 )
                 .map_err(crate::db::sql_err)?;
+                // Listening history grows from position reports only (SPEC §5.6).
+                if matches!(ev.action, Action::Position(_)) {
+                    super::history_routes::record(&tx, uid, device, &bid, p.updated_at, p.position_ms)?;
+                }
             }
             if !seen && !matches!(out, Outcome::TooFarInFuture | Outcome::TooOld) {
                 tx.execute("INSERT INTO progress_key (user_id, key, at) VALUES (?1, ?2, ?3)", params![uid, key, now()]).map_err(crate::db::sql_err)?;

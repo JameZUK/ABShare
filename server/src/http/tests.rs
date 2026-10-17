@@ -1088,6 +1088,165 @@ async fn progress_is_idempotent_validated_and_private() {
     assert_eq!(get_json(&m.t, "/v1/progress", &amy).await.1["items"], json!([]));
 }
 
+// ---------------------------------------------------------------- listening history
+
+/// Reports a position as `who` at `at` ms; returns the response status.
+async fn report(t: &T, who: &str, book: &str, at: i64, position_ms: u64) -> StatusCode {
+    static KEY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let key = format!("hist-{:08}", KEY.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
+    let body = json!({"key": key, "event_time_ms": at, "action": "position", "position_ms": position_ms});
+    as_user(t, "PUT", &format!("/v1/progress/{book}"), Some(body), who).await.status()
+}
+
+/// Listens to `book` for `secs` seconds from `at`, reporting every 15 s as the app does.
+async fn listen_to(t: &T, who: &str, book: &str, at: i64, from_ms: u64, secs: u64) {
+    for i in 0..=secs / 15 {
+        assert_eq!(report(t, who, book, at + (i * 15_000) as i64, from_ms + i * 15_000).await, StatusCode::OK);
+    }
+}
+
+#[tokio::test]
+async fn listening_history_is_built_from_progress_and_seen_only_by_its_owner() {
+    let m = setup_media();
+    let (joe, _) = listener(&m).await;
+    let (_, amy, _, _) = enrol(&m.t, "amy").await;
+    let t0 = super::now() * 1000 - 600_000;
+    listen_to(&m.t, &joe, BOOK, t0, 60_000, 45).await;
+    // A seek forward and a pause add nothing; the session carries on.
+    assert_eq!(report(&m.t, &joe, BOOK, t0 + 60_000, 900_000).await, StatusCode::OK);
+    assert_eq!(report(&m.t, &joe, BOOK, t0 + 75_000, 900_000).await, StatusCode::OK);
+    let (s, v) = get_json(&m.t, "/v1/me/history", &joe).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["enabled"], true);
+    assert_eq!(v["sessions"].as_array().map(Vec::len), Some(1), "{v}");
+    let session = &v["sessions"][0];
+    assert_eq!(session["book"]["id"], BOOK);
+    assert_eq!(session["book"]["title"], "A Book");
+    assert_eq!((session["started_at"].as_i64(), session["ended_at"].as_i64()), (Some(t0), Some(t0 + 75_000)));
+    assert_eq!(session["seconds"], 45);
+    assert_eq!(v["totals"], json!({"week_seconds": 45, "month_seconds": 45, "all_seconds": 45, "books_finished": 0}));
+    assert_eq!(v["next"], Value::Null);
+
+    // Another person sees none of it, and clearing theirs leaves it alone.
+    let (_, v) = get_json(&m.t, "/v1/me/history", &amy).await;
+    assert_eq!(v["sessions"], json!([]));
+    assert_eq!(v["totals"]["all_seconds"], 0);
+    assert_eq!(as_user(&m.t, "DELETE", "/v1/me/history", None, &amy).await.status(), StatusCode::NO_CONTENT);
+    assert_eq!(get_json(&m.t, "/v1/me/history", &joe).await.1["totals"]["all_seconds"], 45);
+
+    // A long pause starts a new session.
+    listen_to(&m.t, &joe, BOOK, t0 + 300_000, 900_000, 30).await;
+    let (_, v) = get_json(&m.t, "/v1/me/history", &joe).await;
+    assert_eq!(v["sessions"].as_array().map(Vec::len), Some(2), "{v}");
+    assert_eq!(v["sessions"][0]["seconds"], 30, "newest first");
+    assert_eq!(v["totals"]["all_seconds"], 75);
+
+    // Clearing removes it all.
+    assert_eq!(as_user(&m.t, "DELETE", "/v1/me/history", None, &joe).await.status(), StatusCode::NO_CONTENT);
+    let (_, v) = get_json(&m.t, "/v1/me/history", &joe).await;
+    assert_eq!((v["sessions"].clone(), v["totals"]["all_seconds"].clone()), (json!([]), json!(0)));
+    // Without a valid token there's nothing.
+    for method in ["GET", "DELETE"] {
+        let r = send(&m.t, method, "/v1/me/history", None, &[("authorization", "Bearer forged")]).await;
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "{method}");
+    }
+    let r = send(&m.t, "PATCH", "/v1/me/history", Some(json!({"enabled": false})), &[]).await;
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn listening_history_can_be_turned_off_and_its_requests_are_strict() {
+    let m = setup_media();
+    let (joe, _) = listener(&m).await;
+    let r = as_user(&m.t, "PATCH", "/v1/me/history", Some(json!({"enabled": false})), &joe).await;
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+    let t0 = super::now() * 1000 - 600_000;
+    listen_to(&m.t, &joe, BOOK, t0, 0, 30).await;
+    let (_, v) = get_json(&m.t, "/v1/me/history", &joe).await;
+    assert_eq!((v["enabled"].clone(), v["sessions"].clone()), (json!(false), json!([])));
+    let n: i64 = {
+        let c = m.t.st.db.0.lock().expect("db");
+        c.query_row("SELECT count(*) FROM listening", [], |r| r.get(0)).expect("count")
+    };
+    assert_eq!(n, 0, "nothing is stored while history is off");
+    // Progress itself is still kept.
+    assert_eq!(get_json(&m.t, "/v1/progress", &joe).await.1["items"][0]["position_ms"], 30_000);
+    let r = as_user(&m.t, "PATCH", "/v1/me/history", Some(json!({"enabled": true})), &joe).await;
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+    listen_to(&m.t, &joe, BOOK, t0 + 300_000, 30_000, 15).await;
+    assert_eq!(get_json(&m.t, "/v1/me/history", &joe).await.1["totals"]["all_seconds"], 15);
+
+    for bad in [json!({"enabled": false, "user": 1}), json!({"enabled": "no"}), json!({}), json!([false]), json!(null)]
+    {
+        let r = as_user(&m.t, "PATCH", "/v1/me/history", Some(bad.clone()), &joe).await;
+        assert!(r.status().is_client_error(), "{bad}: {}", r.status());
+    }
+    assert_eq!(get_json(&m.t, "/v1/me/history", &joe).await.1["enabled"], true, "refused bodies change nothing");
+    for uri in [
+        "/v1/me/history?bogus=1",
+        "/v1/me/history?user=1",
+        "/v1/me/history?limit=0",
+        "/v1/me/history?limit=101",
+        "/v1/me/history?limit=x",
+        "/v1/me/history?limit=-1",
+        "/v1/me/history?cursor=abc",
+        "/v1/me/history?cursor=0",
+        "/v1/me/history?cursor=-5",
+        "/v1/me/history?cursor=%2B5",
+        "/v1/me/history?cursor=99999999999999999999",
+    ] {
+        assert_eq!(get_json(&m.t, uri, &joe).await.0, StatusCode::BAD_REQUEST, "{uri}");
+    }
+    // Changes are rate-limited per device.
+    let mut limited = false;
+    for _ in 0..12 {
+        let r = as_user(&m.t, "PATCH", "/v1/me/history", Some(json!({"enabled": true})), &joe).await;
+        limited |= r.status() == StatusCode::TOO_MANY_REQUESTS;
+    }
+    assert!(limited);
+    assert_eq!(as_user(&m.t, "DELETE", "/v1/me/history", None, &joe).await.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn listening_history_pages_and_leaves_out_books_the_listener_cannot_see() {
+    let m = setup_media();
+    let (_, amy, _, _) = enrol(&m.t, "amy").await;
+    let t0 = super::now() * 1000 - 3_600_000;
+    for (i, book) in [BOOK, MULTI_BOOK, ESCAPE_BOOK, KIDS_BOOK].iter().enumerate() {
+        listen_to(&m.t, &amy, book, t0 + i as i64 * 600_000, 0, 15).await;
+    }
+    let finished = json!({"key": "hist-finish-1", "event_time_ms": t0 + 3_000_000, "action": "finished"});
+    assert_eq!(
+        as_user(&m.t, "PUT", &format!("/v1/progress/{KIDS_BOOK}"), Some(finished), &amy).await.status(),
+        StatusCode::OK
+    );
+    let (_, v) = get_json(&m.t, "/v1/me/history?limit=3", &amy).await;
+    let ids: Vec<&str> =
+        v["sessions"].as_array().expect("sessions").iter().filter_map(|s| s["book"]["id"].as_str()).collect();
+    assert_eq!(ids, vec![KIDS_BOOK, ESCAPE_BOOK, MULTI_BOOK]);
+    assert_eq!(v["totals"]["books_finished"], 1);
+    let next = v["next"].as_str().expect("next").to_owned();
+    let (_, v) = get_json(&m.t, &format!("/v1/me/history?limit=3&cursor={next}"), &amy).await;
+    let ids: Vec<&str> =
+        v["sessions"].as_array().expect("sessions").iter().filter_map(|s| s["book"]["id"].as_str()).collect();
+    assert_eq!(ids, vec![BOOK]);
+    assert_eq!(v["next"], Value::Null);
+
+    // Once amy can no longer see the Kids library, its book is left out of the list and the
+    // finished count; her own listening time still counts.
+    {
+        let c = m.t.st.db.0.lock().expect("db");
+        c.execute("UPDATE user SET libraries = '[\"Audiobooks\"]' WHERE username = 'amy'", []).expect("perms");
+    }
+    let (_, v) = get_json(&m.t, "/v1/me/history", &amy).await;
+    let ids: Vec<&str> =
+        v["sessions"].as_array().expect("sessions").iter().filter_map(|s| s["book"]["id"].as_str()).collect();
+    assert_eq!(ids, vec![ESCAPE_BOOK, MULTI_BOOK, BOOK]);
+    assert!(!v.to_string().contains(KIDS_BOOK));
+    assert_eq!(v["totals"]["books_finished"], 0);
+    assert_eq!(v["totals"]["all_seconds"], 60);
+}
+
 #[tokio::test]
 async fn saving_files_and_downloading_follow_the_account_permissions() {
     let m = setup_media();
@@ -2230,7 +2389,7 @@ async fn a_recovery_sign_in_must_set_up_a_new_factor_first() {
     let auth = format!("Bearer {}", v["access_token"].as_str().expect("access"));
 
     // Only the account works: the library, admin and media are refused.
-    for uri in ["/v1/home", "/v1/books", "/v1/libraries", "/v1/admin/status"] {
+    for uri in ["/v1/home", "/v1/books", "/v1/libraries", "/v1/admin/status", "/v1/me/history"] {
         let r = send(&t, "GET", uri, None, &[("authorization", &auth)]).await;
         assert_eq!(r.status(), StatusCode::FORBIDDEN, "{uri}");
         assert_eq!(json_of(r).await["error"], "factor_required", "{uri}");
