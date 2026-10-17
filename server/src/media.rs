@@ -38,6 +38,22 @@ pub struct Media {
     read_aheads: Arc<AtomicU64>,
     /// Whether the jail starts here (checked once, on first ask).
     sandbox: tokio::sync::OnceCell<bool>,
+    /// Background lane size (`[ffmpeg] jobs`, at most 8).
+    lanes: usize,
+}
+
+/// What the media jobs are doing, for the admin Jobs page.
+#[derive(Debug, serde::Serialize)]
+pub struct JobsStatus {
+    /// (busy, capacity) per lane.
+    pub listening: (usize, usize),
+    pub background: (usize, usize),
+    pub copies: (usize, usize),
+    pub read_aheads: u64,
+    /// Books whose playable copy is being built now.
+    pub building: Vec<String>,
+    /// Books whose playable copy failed: (book, failures, next try, Unix seconds).
+    pub failed: Vec<(String, u32, i64)>,
 }
 
 /// What the media layer needs to know about a book's audio.
@@ -190,7 +206,60 @@ impl Media {
             used: Mutex::default(),
             sandbox: tokio::sync::OnceCell::new(),
             read_aheads: Arc::new(AtomicU64::new(0)),
+            lanes,
         }
+    }
+
+    /// A snapshot of the job lanes, copies being built and failed copies.
+    pub fn jobs_status(&self) -> JobsStatus {
+        let busy = |sem: &Semaphore, cap: usize| (cap.saturating_sub(sem.available_permits()), cap);
+        let mut failed: Vec<(String, u32, i64)> = self
+            .copy_failed
+            .lock()
+            .map(|m| m.iter().map(|(b, &(n, until))| (b.clone(), n, until)).collect())
+            .unwrap_or_default();
+        failed.sort_by_key(|f| std::cmp::Reverse(f.2));
+        let mut building: Vec<String> = self.copying.lock().map(|c| c.iter().cloned().collect()).unwrap_or_default();
+        building.sort();
+        JobsStatus {
+            listening: busy(&self.fg, 1),
+            background: busy(&self.prefetch, self.lanes),
+            copies: busy(&self.copies, 1),
+            read_aheads: self.read_aheads.load(Ordering::Relaxed),
+            building,
+            failed,
+        }
+    }
+
+    /// Forgets a failed playable copy, so the next request tries again at once. Returns
+    /// whether the book had failed.
+    pub fn retry_copy(&self, book: &str) -> bool {
+        self.copy_failed.lock().map(|mut m| m.remove(book).is_some()).unwrap_or(false)
+    }
+
+    /// Deletes data-saver segments of books nobody has played in the last 10 minutes (they are
+    /// made again on demand). Playable copies are kept. Returns the bytes freed.
+    pub async fn clear_saver_cache(&self) -> Result<u64, String> {
+        let now = unix_now();
+        let used = self.used.lock().map(|u| u.clone()).unwrap_or_default();
+        let dir = self.data_dir.join("saver");
+        tokio::task::spawn_blocking(move || {
+            let mut freed = 0;
+            let Ok(rd) = std::fs::read_dir(&dir) else { return Ok(0) };
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if used.get(&format!("saver/{name}")).is_some_and(|&t| now - t < 600) {
+                    continue;
+                }
+                let (bytes, _) = dir_usage(&e.path());
+                if std::fs::remove_dir_all(e.path()).is_ok() {
+                    freed += bytes;
+                }
+            }
+            Ok(freed)
+        })
+        .await
+        .map_err(|e| e.to_string())?
     }
 
     pub fn copy_path(&self, book: &str) -> PathBuf {

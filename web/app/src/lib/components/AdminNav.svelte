@@ -7,6 +7,7 @@
 		['#/admin/users', 'Users'],
 		['#/admin/invites', 'Invites'],
 		['#/admin/library', 'Library'],
+		['#/admin/jobs', 'Jobs'],
 		['#/admin/audit', 'Audit log'],
 	] as const;
 </script>

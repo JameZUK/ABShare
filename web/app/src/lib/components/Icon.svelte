@@ -17,6 +17,7 @@
 		chevron: 'M6 9l6 6 6-6',
 		right: 'M9 5l7 7-7 7',
 		trash: 'M5 7h14M10 7V4.5h4V7M7 7l1 13h8l1-13',
+		pencil: 'M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4',
 		library: 'M5 4v16M10 4v16M14.5 4.5l4.5 15',
 		download: 'M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19.5h14',
 		downloaded: 'M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18zM12 7.5v8M8.5 12.5 12 16l3.5-3.5',

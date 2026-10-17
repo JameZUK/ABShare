@@ -37,8 +37,6 @@ The device tests still to run include a 2-hour locked-screen session on a phone,
 Planned, in no fixed order:
 
 - Listening history.
-- Author, narrator and series filters, and author pages.
-- Editing bookmark notes in the app.
 - An independent security review.
 
 Native apps are not planned until the web app has proved itself. The API is versioned and documented ([`API.md`](API.md)) so they can come later.

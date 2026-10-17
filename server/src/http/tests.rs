@@ -2542,3 +2542,97 @@ async fn the_content_type_comes_from_the_probe_and_a_changed_file_is_refused() {
     assert_eq!(json_of(r).await["error"], "changed");
     assert!(trigger.exists(), "a rescan is requested");
 }
+
+#[tokio::test]
+async fn author_and_narrator_filters_match_whole_names_and_are_bounded() {
+    let m = setup_media();
+    let (access, _) = listener(&m).await;
+    let auth = format!("Bearer {access}");
+    {
+        let c = m.t.st.db.0.lock().expect("db");
+        c.execute(
+            "UPDATE book SET meta = '{\"title\":\"A Book\",\"authors\":[{\"name\":\"Mara Quill\"}],\"narrators\":[{\"name\":\"Tomas Reed\"}]}' WHERE id = ?1",
+            [BOOK],
+        )
+        .expect("meta");
+    }
+    m.t.st.invalidate_catalog().await;
+    let ids = |v: Value| -> Vec<String> {
+        v["items"].as_array().expect("items").iter().map(|b| b["id"].as_str().unwrap_or("").to_owned()).collect()
+    };
+    let r = send(&m.t, "GET", "/v1/books?author=mara%20quill", None, &[("authorization", &auth)]).await;
+    assert_eq!(ids(json_of(r).await), [BOOK]);
+    let r = send(&m.t, "GET", "/v1/books?narrator=Tomas%20Reed", None, &[("authorization", &auth)]).await;
+    assert_eq!(ids(json_of(r).await), [BOOK]);
+    // Whole names only.
+    let r = send(&m.t, "GET", "/v1/books?author=Mara", None, &[("authorization", &auth)]).await;
+    assert!(ids(json_of(r).await).is_empty());
+    // Bounded.
+    let long = "a".repeat(201);
+    let r = send(&m.t, "GET", &format!("/v1/books?author={long}"), None, &[("authorization", &auth)]).await;
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn the_jobs_page_shows_failed_copies_and_its_actions_need_an_admin_and_step_up() {
+    let m = setup_media();
+    let (listener_access, cookie) = listener(&m).await;
+    // The multi-part book's playable copy can't be built here (no ffmpeg): it fails and backs off.
+    let r = send(
+        &m.t,
+        "GET",
+        &format!("/v1/media/{MULTI_BOOK}/state"),
+        None,
+        &[("cookie", &format!("abshare_media={cookie}"))],
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let mut failed = false;
+    for _ in 0..100 {
+        if m.t.st.media.as_ref().expect("media").copy_failed(MULTI_BOOK) {
+            failed = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(failed, "the copy should fail without ffmpeg");
+
+    // Only admins can look.
+    assert_eq!(as_user(&m.t, "GET", "/v1/admin/jobs", None, &listener_access).await.status(), StatusCode::FORBIDDEN);
+    assert_eq!(send(&m.t, "GET", "/v1/admin/jobs", None, &[]).await.status(), StatusCode::UNAUTHORIZED);
+    let (_, plain, ..) = enrol_role(&m.t, "adm3", Role::Admin).await;
+    let r = as_user(&m.t, "GET", "/v1/admin/jobs", None, &plain).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let v = json_of(r).await;
+    assert_eq!(v["lanes"]["copies"]["of"], 1);
+    assert_eq!(v["failed"][0]["id"], MULTI_BOOK);
+    assert_eq!(v["failed"][0]["title"], "A Book");
+
+    // Actions need a step-up.
+    let r = as_user(&m.t, "POST", &format!("/v1/admin/jobs/copies/{MULTI_BOOK}/retry"), Some(json!({})), &plain).await;
+    assert_eq!(json_of(r).await["error"], "step_up_required");
+    let r = as_user(&m.t, "POST", "/v1/admin/cache/clear", Some(json!({})), &plain).await;
+    assert_eq!(json_of(r).await["error"], "step_up_required");
+
+    let (_, boss) = admin(&m.t, "boss2").await;
+    // Retry forgets the failure; an unknown or malformed book is not found.
+    let r = as_user(&m.t, "POST", &format!("/v1/admin/jobs/copies/{MULTI_BOOK}/retry"), Some(json!({})), &boss).await;
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+    assert!(!m.t.st.media.as_ref().expect("media").copy_failed(MULTI_BOOK));
+    for id in [BOOK, "not-an-id"] {
+        let r = as_user(&m.t, "POST", &format!("/v1/admin/jobs/copies/{id}/retry"), Some(json!({})), &boss).await;
+        assert_eq!(r.status(), StatusCode::NOT_FOUND, "{id}");
+    }
+    // Clearing removes data-saver segments nobody is playing; copies stay.
+    let saver = m.dir.join("data").join("saver").join(BOOK).join("k48");
+    std::fs::create_dir_all(&saver).expect("mkdir");
+    std::fs::write(saver.join("000000.mp3"), vec![0u8; 4096]).expect("segment");
+    let copy = m.dir.join("data").join("copies").join(format!("{MULTI_BOOK}.m4b"));
+    std::fs::create_dir_all(copy.parent().expect("dir")).expect("mkdir");
+    std::fs::write(&copy, b"copy").expect("copy");
+    let r = as_user(&m.t, "POST", "/v1/admin/cache/clear", Some(json!({})), &boss).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert!(json_of(r).await["freed_bytes"].as_u64().expect("freed") >= 4096);
+    assert!(!saver.exists());
+    assert!(copy.exists());
+}

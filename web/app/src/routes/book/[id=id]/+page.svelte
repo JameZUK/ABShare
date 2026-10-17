@@ -2,7 +2,7 @@
 	// A book (SPEC §7.2): cover, title, series, people, length and time left, description and
 	// chapters. Play/Resume and Download; the rest is in ⋮.
 	import { page } from '$app/state';
-	import { api, session } from '$lib/api/session.svelte';
+	import { api, post, session } from '$lib/api/session.svelte';
 	import { messageOf } from '$lib/api/http';
 	import type { BookDetail, Me } from '$lib/api/types';
 	import { bytes, clock, duration, names, timeLeft } from '$lib/format';
@@ -15,6 +15,7 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import Sheet from '$lib/components/Sheet.svelte';
 	import EditDetails from '$lib/components/EditDetails.svelte';
+	import PeopleLinks from '$lib/components/PeopleLinks.svelte';
 
 	const id = $derived(page.params.id ?? '');
 	let book = $state<BookDetail | null>(null);
@@ -92,6 +93,25 @@
 		moreOpen = false;
 	}
 
+	// Editing a bookmark's note, in place in the list.
+	let editing = $state<number | null>(null);
+	let noteText = $state('');
+	function editMark(markId: number, note: string | null) {
+		editing = markId;
+		noteText = note ?? '';
+	}
+	async function saveNote(markId: number) {
+		if (!book) return;
+		const note = noteText.trim().slice(0, 2000);
+		try {
+			await post(`v1/bookmarks/${markId}`, { note }, 'PATCH');
+			book = { ...book, bookmarks: book.bookmarks.map((m) => (m.id === markId ? { ...m, note } : m)) };
+			editing = null;
+		} catch (e) {
+			error = messageOf(e);
+		}
+	}
+
 	async function removeMark(markId: number) {
 		if (!book) return;
 		try {
@@ -115,8 +135,8 @@
 				{#if book.series && seriesGroup}
 					<p><a href="#/group/{seriesGroup.id}">{book.series.position ? `Book ${book.series.position} of ${book.series.name}` : book.series.name}</a></p>
 				{/if}
-				{#if book.authors?.length}<p>By {names(book.authors)}</p>{/if}
-				{#if book.narrators?.length}<p class="muted">Read by {names(book.narrators)}</p>{/if}
+				{#if book.authors?.length}<p>By <PeopleLinks people={book.authors} kind="author" /></p>{/if}
+				{#if book.narrators?.length}<p class="muted">Read by <PeopleLinks people={book.narrators} kind="narrator" /></p>{/if}
 				{#if book.shelves?.length}
 					<p class="genres">{#each book.shelves as g (g.id)}<a href="#/genre/{g.id}">{g.name}</a>{/each}</p>
 				{/if}
@@ -213,11 +233,23 @@
 		<ul class="marks">
 			{#each book.bookmarks as m (m.id)}
 				<li class="row">
-					<button class="mark" onclick={() => { if (book) void player.open(book, { play: true, at: m.position_ms }); marksOpen = false; }}>
-						<strong>{clock(m.position_ms)}</strong>
-						{#if m.note}<span class="muted">{m.note}</span>{/if}
-					</button>
-					<button class="icon-btn" onclick={() => removeMark(m.id)} aria-label="Delete bookmark at {clock(m.position_ms)}"><Icon name="trash" /></button>
+					{#if editing === m.id}
+						<form class="note-edit" onsubmit={(e) => { e.preventDefault(); void saveNote(m.id); }}>
+							<label for="note-{m.id}">Note for {clock(m.position_ms)}</label>
+							<textarea id="note-{m.id}" bind:value={noteText} maxlength="2000" rows="3"></textarea>
+							<div class="note-actions">
+								<button type="submit" class="btn">Save</button>
+								<button type="button" class="btn plain" onclick={() => (editing = null)}>Cancel</button>
+							</div>
+						</form>
+					{:else}
+						<button class="mark" onclick={() => { if (book) void player.open(book, { play: true, at: m.position_ms }); marksOpen = false; }}>
+							<strong>{clock(m.position_ms)}</strong>
+							{#if m.note}<span class="muted">{m.note}</span>{/if}
+						</button>
+						<button class="icon-btn" onclick={() => editMark(m.id, m.note)} aria-label="{m.note ? 'Edit the note' : 'Add a note'} at {clock(m.position_ms)}"><Icon name="pencil" /></button>
+						<button class="icon-btn" onclick={() => removeMark(m.id)} aria-label="Delete bookmark at {clock(m.position_ms)}"><Icon name="trash" /></button>
+					{/if}
 				</li>
 			{/each}
 		</ul>
@@ -263,6 +295,20 @@
 		margin-bottom: 1.5rem;
 	}
 	.chapters,
+	.note-edit {
+		display: grid;
+		gap: 0.5rem;
+		width: 100%;
+		padding: 0.5rem 0;
+	}
+	.note-edit textarea {
+		width: 100%;
+		font: inherit;
+	}
+	.note-actions {
+		display: flex;
+		gap: 0.5rem;
+	}
 	.marks {
 		list-style: none;
 		margin: 0;

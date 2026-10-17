@@ -72,6 +72,14 @@ export interface DiagReport {
 	lines: string[];
 }
 
+export interface JobsView {
+	lanes: Record<'listening' | 'background' | 'copies', { busy: number; of: number }>;
+	read_aheads: number;
+	building: { id: string; title: string }[];
+	failed: { id: string; title: string; failures: number; retry_at: number }[];
+	cache_bytes: number;
+}
+
 export const adminApi = {
 	users: () => api<{ users: AdminUser[] }>('v1/admin/users').then((r) => r.users),
 	editUser: (id: number, change: Partial<{ display_name: string; role: string; disabled: boolean; libraries: Libraries; offline: boolean; save_files: boolean }>) =>
@@ -89,6 +97,9 @@ export const adminApi = {
 	library: () => api<LibraryView>('v1/admin/library'),
 	scan: () => api('v1/admin/library/scan', { method: 'POST' }),
 	status: () => api<Status>('v1/admin/status'),
+	jobs: () => api<JobsView>('v1/admin/jobs'),
+	retryCopy: (id: string) => post(`v1/admin/jobs/copies/${id}/retry`, {}),
+	clearCache: () => post<{ freed_bytes: number }>('v1/admin/cache/clear', {}),
 	diagnostics: () => api<{ reports: DiagReport[] }>('v1/admin/diagnostics').then((r) => r.reports),
 };
 

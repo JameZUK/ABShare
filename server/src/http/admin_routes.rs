@@ -28,6 +28,9 @@ pub fn routes() -> Router<State> {
         .route("/diagnostics", get(diagnostics))
         .route("/library", get(library))
         .route("/library/scan", post(request_scan))
+        .route("/jobs", get(jobs))
+        .route("/jobs/copies/{id}/retry", post(retry_copy))
+        .route("/cache/clear", post(clear_cache))
         .route("/status", get(status))
         .route("/books/{id}/details", get(book_details).put(set_book_details).delete(clear_book_details))
 }
@@ -528,6 +531,57 @@ async fn request_scan(S(st): S<State>, Ip(ip): Ip, Admin(s): Admin) -> Result<St
     tokio::fs::write(dir.join("scan-requested"), b"1").await.map_err(ApiError::internal)?;
     st.audit("scan.requested", Some(s.user), Some(s.device), Some(ip), String::new()).await;
     Ok(StatusCode::ACCEPTED)
+}
+
+// ---------------------------------------------------------------- jobs and cache
+
+/// What the media jobs are doing: lanes, copies being built, failed copies, and the cache.
+async fn jobs(S(st): S<State>, Admin(_): Admin) -> Result<Json<Value>, ApiError> {
+    let m = st.media.as_ref().ok_or_else(ApiError::not_found)?.clone();
+    let j = m.jobs_status();
+    let cat = st.catalog().await?;
+    let title = |id: &str| {
+        cat.by_id.get(id).map(|&i| cat.books[i].title.clone()).unwrap_or_else(|| "(not in the library)".into())
+    };
+    let dir = m.data_dir.clone();
+    let cache =
+        tokio::task::spawn_blocking(move || crate::media::cache_usage(&dir)).await.map_err(ApiError::internal)?;
+    let lane = |(busy, of): (usize, usize)| json!({ "busy": busy, "of": of });
+    Ok(Json(json!({
+        "lanes": { "listening": lane(j.listening), "background": lane(j.background), "copies": lane(j.copies) },
+        "read_aheads": j.read_aheads,
+        "building": j.building.iter().map(|b| json!({ "id": b, "title": title(b) })).collect::<Vec<_>>(),
+        "failed": j.failed.iter().map(|(b, n, until)| json!({ "id": b, "title": title(b), "failures": n, "retry_at": until })).collect::<Vec<_>>(),
+        "cache_bytes": cache,
+    })))
+}
+
+/// Tries a failed playable copy again at the next request, instead of waiting out its back-off.
+async fn retry_copy(
+    S(st): S<State>,
+    Ip(ip): Ip,
+    Admin(s): Admin,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    step_up(&st, &s)?;
+    if !abshare_core::ids::is_valid_id(&id) {
+        return Err(ApiError::not_found());
+    }
+    let m = st.media.as_ref().ok_or_else(ApiError::not_found)?;
+    if !m.retry_copy(&id) {
+        return Err(ApiError::not_found());
+    }
+    st.audit("copy.retry", Some(s.user), Some(s.device), Some(ip), format!("book {id}")).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Deletes data-saver segments not played in the last 10 minutes (made again on demand).
+async fn clear_cache(S(st): S<State>, Ip(ip): Ip, Admin(s): Admin) -> Result<Json<Value>, ApiError> {
+    step_up(&st, &s)?;
+    let m = st.media.as_ref().ok_or_else(ApiError::not_found)?;
+    let freed = m.clear_saver_cache().await.map_err(ApiError::internal)?;
+    st.audit("cache.cleared", Some(s.user), Some(s.device), Some(ip), format!("{} MiB", freed >> 20)).await;
+    Ok(Json(json!({ "freed_bytes": freed })))
 }
 
 // ---------------------------------------------------------------- book details (overrides)

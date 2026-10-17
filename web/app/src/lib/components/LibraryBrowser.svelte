@@ -7,7 +7,13 @@
 	import type { Page, Tile } from '$lib/api/types';
 	import BookTile from './BookTile.svelte';
 
-	let { title, shelf = null, header }: { title: string; shelf?: string | null; header?: Snippet } = $props();
+	let {
+		title,
+		shelf = null,
+		author = null,
+		narrator = null,
+		header,
+	}: { title: string; shelf?: string | null; author?: string | null; narrator?: string | null; header?: Snippet } = $props();
 
 	const SORTS = [
 		['title', 'Title'],
@@ -37,6 +43,8 @@
 		if (q.trim()) p.set('q', q.trim());
 		if (status) p.set('status', status);
 		if (shelf) p.set('shelf', shelf);
+		if (author) p.set('author', author);
+		if (narrator) p.set('narrator', narrator);
 		if (cursor) p.set('cursor', cursor);
 		return `v1/books?${p}`;
 	}
@@ -65,6 +73,8 @@
 		void sort;
 		void status;
 		void shelf;
+		void author;
+		void narrator;
 		clearTimeout(timer);
 		timer = setTimeout(() => void load(false), 250);
 		return () => clearTimeout(timer);

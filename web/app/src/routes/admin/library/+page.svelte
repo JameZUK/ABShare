@@ -4,6 +4,7 @@
 	import { session } from '$lib/api/session.svelte';
 	import { date } from '$lib/format';
 	import AdminShell from '$lib/components/AdminShell.svelte';
+	import { withStepUp } from '$lib/stepup.svelte';
 
 	let v = $state<LibraryView | null>(null);
 	let error = $state('');
@@ -20,7 +21,7 @@
 	});
 	async function scan() {
 		try {
-			await adminApi.scan();
+			await withStepUp(() => adminApi.scan());
 			await reload();
 		} catch (e) {
 			error = messageOf(e);

@@ -22,7 +22,7 @@ Everything ABShare does today, by area. Only built and tested features are liste
 | Speed | 0.75× to 3× (0.75, 0.9, 1, 1.1, 1.2, 1.3, 1.5, 1.75, 2, 2.5, 3), with the pitch kept. Remembered for each book, with a default of your choosing. |
 | Sleep timer | 5, 10, 15, 30, 45 or 60 minutes, or the end of the chapter. Fades out over the last 10 seconds. Works in the background. |
 | Auto-rewind | After a pause, playback steps back a little: nothing under a minute, 2 seconds under 10 minutes, 5 seconds under an hour, 10 seconds after that. |
-| Bookmarks | Add a bookmark at the current position from the player, see a book's bookmarks and jump to them, and delete them. |
+| Bookmarks | Add a bookmark at the current position from the player, see a book's bookmarks and jump to them, add or edit a note on each, and delete them. |
 | Lock screen and headsets | Title, chapter, author and cover on the lock screen; play, pause, skip, seek, and previous and next chapter from the lock screen, headsets and car controls (Media Session). AirPlay through Safari's own controls. |
 | Mark finished | Books are marked finished near the end automatically. You can also mark a book finished or unfinished, or start it again. |
 | Restore | Reopening the app restores the last book and position, ready to play. |
@@ -66,6 +66,7 @@ Everything ABShare does today, by area. Only built and tested features are liste
 | Genres | Store genre tags are sorted onto 17 shelves. Fiction: Science Fiction, Fantasy, Mystery & Thriller, Horror, Action & Adventure, Literature & Classics, Comedy, Romance, Children & Young Adult. Non-fiction: Biography & Memoir, History, Science & Technology, Politics & Society, Philosophy & Religion, Business, Money & Self-help, Arts, Entertainment & Travel. Plus Podcasts. A book can sit on several shelves. |
 | Series | Books sharing a series are grouped automatically, in reading order (prequels first), with a "Book 2 of …" link on each book. |
 | Shows | Podcast-style episodes are recognised and shown as one show, ordered by season and episode, with trailers and extras set aside. |
+| Authors and narrators | Every author and narrator on a book page is a link to all their books, with the Library's search and sorting. |
 | Book page | Cover, title, series, authors, narrators, genres, length, time left, description and chapters. Download, mark finished or unfinished, start again, bookmarks and save file. |
 | Covers | Embedded or folder artwork, resized for each screen. |
 | Themes | Material (from your choice of 8 accent colours), Classic and High contrast; light, dark or following the system. |
@@ -91,6 +92,7 @@ Everything ABShare does today, by area. Only built and tested features are liste
 | People | Change display names, roles, library access and permissions (offline, save files); disable accounts; reset someone's sign-in methods (with a new single-use link); sign all their devices out. Making someone an admin needs a second confirmation. |
 | Invites | Create invites with a name, role, libraries, permissions and expiry; copy the link; revoke unused ones. |
 | Library | The last scan, *Scan now*, each library's counts, and problems: unplayable files, unsupported formats, ignored duplicates, and missing books. |
+| Jobs | What the media jobs are doing (listening, background and copy lanes), playable copies being built, failed copies with *Retry now*, the cache size and *Clear data-saver cache*. |
 | Edit details | Correct any book's title, people, series, genres or description. Corrections survive rescans. |
 | Audit log | Sign-ins, failures, locks, enrolment, factor changes, invites, device sign-outs and admin actions, with a check that no entry has been edited or removed. |
 | Step-up | Every admin change asks for a fresh second factor. |
@@ -113,8 +115,6 @@ Everything ABShare does today, by area. Only built and tested features are liste
 These are designed in [`SPEC.md`](../SPEC.md) but not built:
 
 - Listening history and statistics.
-- Author, narrator and series filters in the Library, and author pages.
-- Editing a bookmark's note in the app (the API supports it).
 - A "Downloads" settings page (default quality, Wi-Fi only).
-- Admin pages for the job queue and server settings (settings live in the config file).
+- An admin page for server settings (settings live in the config file).
 - Native apps.

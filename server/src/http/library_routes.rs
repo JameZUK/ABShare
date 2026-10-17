@@ -149,6 +149,12 @@ async fn books(S(st): S<State>, Authed(s): Authed, Query(q): Query<BooksQuery>) 
     if words.len() > 8 {
         return Err(ApiError::bad("Searches are at most 8 words."));
     }
+    // Names are matched against every book: bounded like search (review H2).
+    for v in [&q.author, &q.narrator, &q.genre].into_iter().flatten() {
+        if v.chars().count() > 200 {
+            return Err(ApiError::bad("That name is too long."));
+        }
+    }
     let (fa, fnar, fg) = (q.author.as_deref().map(fold), q.narrator.as_deref().map(fold), q.genre.as_deref().map(fold));
     // Episodes of shows are collapsed into one tile per show (unless searching).
     let shows: Vec<&crate::library::Group> =

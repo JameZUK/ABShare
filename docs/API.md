@@ -514,7 +514,7 @@ Lists return books in this shape:
 |---|---|
 | `library` | A library ID |
 | `q` | Search text: at most 200 characters and 8 distinct words. Case and accents are ignored, and every word must occur (as a substring) in the book's title, people, series or genres |
-| `author`, `narrator`, `genre` | Exact match on one of the book's authors, narrators or tag genres, ignoring case and accents |
+| `author`, `narrator`, `genre` | Exact match on one of the book's authors, narrators or tag genres, ignoring case and accents; at most 200 characters (`400` otherwise) |
 | `shelf` | A genre shelf ID (see `GET /v1/genres`), or `fiction` / `non-fiction` for every shelf of that kind. An unknown ID is `400` |
 | `status` | `not_started`, `in_progress` or `finished` (by the caller's progress). Any other value is ignored |
 | `sort` | `title` (default; leading articles ignored), `author`, `added` (newest first) or `recent` (most recently listened first). Anything else is `400` |
@@ -882,6 +882,21 @@ Corrections are stored in the database and applied over the tags. The library it
 This is the only place the version is shown.
 
 ---
+
+#### `GET /v1/admin/jobs`
+
+- **Response:** `{"lanes": {"listening"|"background"|"copies": {"busy", "of"}}, "read_aheads", "building": [{"id", "title"}], "failed": [{"id", "title", "failures", "retry_at"}], "cache_bytes"}`. A snapshot of the media jobs (they run in memory, so a restart empties it).
+
+#### `POST /v1/admin/jobs/copies/{id}/retry` (step-up)
+
+- **Effect:** forgets a failed playable copy's back-off, so the next request for the book tries again at once.
+- **Response:** `204`
+- **Errors:** `404` for a book whose copy hasn't failed, or a malformed ID.
+
+#### `POST /v1/admin/cache/clear` (step-up)
+
+- **Effect:** deletes data-saver audio of books nobody has played in the last 10 minutes; it is made again on demand. Playable copies are kept.
+- **Response:** `{"freed_bytes": 123456}`
 
 #### `GET /v1/admin/diagnostics`
 
