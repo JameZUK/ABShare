@@ -41,9 +41,9 @@ Started 2026-10-17. It covers:
 |---|---|---|
 | A3 | Passkey sign-in start reveals whether a username exists and has passkeys. | **Fixed:** always the discoverable flow; test. |
 | A4 | Step-up accepts a password alone when the account also has a passkey. | **Fixed:** password-only step-up refused (`passkey_required`); the app shows password+code only; test. |
-| A5 | The audit chain can't detect a cut tail, and the prune anchor isn't authenticated. | Open |
+| A5 | The audit chain can't detect a cut tail, and the prune anchor isn't authenticated. | **Fixed:** a tagged head (newest row ID) and a tagged anchor (the cut); the chain must start right after the anchor; tests. Deleting everything, head included, still reads as a fresh log, so record the head off-box for that. |
 | A6 | Duplicate cookie names (planted from a sibling subdomain) are accepted, and the first one wins. | **Fixed:** a cookie name sent twice is ignored; test. |
-| A7 | Audit-log flushing through unaudited-cost failures (summary rows, separate pruning). | Open |
+| A7 | Audit-log flushing through unaudited-cost failures (summary rows, separate pruning). | **Fixed:** failed sign-in events are capped at 30 a minute with a summary row; the log keeps 500,000 rows; test. |
 | H3 | The Compose example publishes 8743 on every interface. | **Fixed:** binds loopback by default, with guidance. |
 | H4 | Admin "scan now" and book-detail edits skip step-up. | **Fixed:** step-up on every admin write; test. |
 | H5 | The rate-limit map scans everything when full. | **Fixed:** sweep at most once a second; full table refuses new keys; test. |

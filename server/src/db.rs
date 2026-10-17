@@ -183,6 +183,10 @@ pub const MIGRATIONS: &[&str] = &[
         updated_at INTEGER NOT NULL,
         updated_by INTEGER
     );",
+    // 6: an authenticated head and anchor for the audit chain (review A5).
+    "CREATE TABLE audit_head (id INTEGER PRIMARY KEY CHECK (id = 1), last_id INTEGER NOT NULL, tag BLOB NOT NULL);
+    ALTER TABLE audit_anchor ADD COLUMN cut_id INTEGER;
+    ALTER TABLE audit_anchor ADD COLUMN tag BLOB;",
 ];
 
 pub fn sql_err(e: rusqlite::Error) -> String {

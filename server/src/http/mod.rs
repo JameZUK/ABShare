@@ -126,6 +126,9 @@ pub struct AppState {
     pub limiter: Mutex<Limiter>,
     pub seeds: SeedBox,
     pub audit_key: [u8; 32],
+    noise_minute: std::sync::atomic::AtomicI64,
+    noise_count: std::sync::atomic::AtomicU64,
+    noise_dropped: std::sync::atomic::AtomicU64,
     pub webauthn: webauthn_rs::Webauthn,
     pub enrol: Ceremonies<Enrol>,
     pub login: Ceremonies<LoginPending>,
@@ -162,13 +165,18 @@ impl AppState {
         let webauthn = webauthn_rs::WebauthnBuilder::new(&host, &url)
             .and_then(|b| b.rp_name("ABShare").build())
             .map_err(|e| format!("webauthn: {e}"))?;
+        let audit_key = secret.derive(crate::secret::purpose::AUDIT);
+        crate::auth::audit::ensure_tags(&conn, &audit_key)?;
         Ok(Self {
             db: Db::new(conn),
             hasher,
             sessions: Sessions::new(),
             limiter: Mutex::new(Limiter::new()),
             seeds: SeedBox::new(&secret.derive(crate::secret::purpose::TOTP_SEED)),
-            audit_key: secret.derive(crate::secret::purpose::AUDIT),
+            audit_key,
+            noise_minute: std::sync::atomic::AtomicI64::new(0),
+            noise_count: std::sync::atomic::AtomicU64::new(0),
+            noise_dropped: std::sync::atomic::AtomicU64::new(0),
             webauthn,
             enrol: Ceremonies::new(ENROL_TTL),
             login: Ceremonies::new(CHALLENGE_TTL * 2),
@@ -210,6 +218,9 @@ impl AppState {
     }
 
     /// Writes an audit entry; failures to audit are logged but never block the request.
+    /// Failed sign-in noise is capped (review A7): at most [`NOISE_PER_MINUTE`] such rows a
+    /// minute, the rest counted into one `audit.suppressed` row, so a flood can't roll real
+    /// security events out of the log.
     pub async fn audit(
         &self,
         event: &'static str,
@@ -218,6 +229,27 @@ impl AppState {
         ip: Option<IpAddr>,
         detail: String,
     ) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let minute = now() / 60;
+        let prev = self.noise_minute.swap(minute, Relaxed);
+        if prev != minute {
+            self.noise_count.store(0, Relaxed);
+            let dropped = self.noise_dropped.swap(0, Relaxed);
+            if dropped > 0 {
+                Box::pin(self.audit(
+                    "audit.suppressed",
+                    None,
+                    None,
+                    None,
+                    format!("{dropped} failed sign-in events in the previous minute(s)"),
+                ))
+                .await;
+            }
+        }
+        if NOISE_EVENTS.contains(&event) && self.noise_count.fetch_add(1, Relaxed) >= NOISE_PER_MINUTE {
+            self.noise_dropped.fetch_add(1, Relaxed);
+            return;
+        }
         let key = self.audit_key;
         let ip = ip.map(|i| i.to_string());
         let r = self
@@ -278,6 +310,10 @@ pub fn spawn_revocation_sync(st: State) {
         }
     });
 }
+
+/// Events that an anonymous flood can generate, capped in the audit log (review A7).
+const NOISE_EVENTS: &[&str] = &["login.failed", "login.passkey_failed", "login.second_factor_failed", "step_up.failed"];
+pub const NOISE_PER_MINUTE: u64 = 30;
 
 /// API errors: a stable code and a message safe to show. Internal details are logged with a
 /// correlation ID, never sent.

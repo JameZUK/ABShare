@@ -1937,3 +1937,20 @@ async fn a_book_whose_copy_fails_is_reported_unplayable_not_retried_for_ever() {
     assert_eq!(r.status(), StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(json_of(r).await["error"], "unplayable");
 }
+
+#[tokio::test]
+async fn a_flood_of_failed_sign_ins_cannot_roll_the_audit_log() {
+    let t = setup();
+    for _ in 0..200 {
+        t.st.audit("login.failed", None, None, None, "x".into()).await;
+    }
+    t.st.audit("admin.user_changed", Some(1), None, None, "a real event".into()).await;
+    let c = t.st.db.0.lock().expect("db");
+    let noise: i64 =
+        c.query_row("SELECT count(*) FROM audit WHERE event = 'login.failed'", [], |r| r.get(0)).expect("n");
+    let real: i64 =
+        c.query_row("SELECT count(*) FROM audit WHERE event = 'admin.user_changed'", [], |r| r.get(0)).expect("n");
+    // At most the cap per minute (twice over if the minute turned during the test).
+    assert!(noise <= 2 * super::NOISE_PER_MINUTE as i64, "{noise}");
+    assert_eq!(real, 1, "real security events are always written");
+}
