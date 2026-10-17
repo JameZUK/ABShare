@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["core", "jail", "tools/saver-spike"]
+members = ["core", "jail", "server", "tools/saver-spike"]
 
 [workspace.package]
 version = "0.0.1"

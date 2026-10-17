@@ -16,7 +16,15 @@ const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BookKey<'a> {
     Asin(&'a str),
-    Path { library: u32, folder: &'a str },
+    Path {
+        library: u32,
+        folder: &'a str,
+    },
+    /// A series or show within a library.
+    Group {
+        library: u32,
+        name: &'a str,
+    },
 }
 
 impl BookKey<'_> {
@@ -24,6 +32,7 @@ impl BookKey<'_> {
         match self {
             Self::Asin(a) => format!("asin:{a}").into_bytes(),
             Self::Path { library, folder } => format!("path:{library}/{folder}").into_bytes(),
+            Self::Group { library, name } => format!("group:{library}/{name}").into_bytes(),
         }
     }
 }

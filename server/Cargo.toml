@@ -1,0 +1,27 @@
+[package]
+name = "abshare-server"
+description = "ABShare: self-hosted audiobook server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "abshare"
+path = "src/main.rs"
+
+[dependencies]
+abshare-core = { path = "../core" }
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "fs", "process", "sync", "time", "io-util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.154"
+toml = "1.1"
+rusqlite = { version = "0.40", features = ["bundled"] }
+getrandom = "0.4"
+hkdf = "0.13"
+sha2 = "0.11"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
+rustix = { version = "1.1.5", features = ["fs", "process"] }
+
+[lints]
+workspace = true
