@@ -1,0 +1,17 @@
+# ABShare behind Caddy (automatic HTTPS). Replace the name and the upstream address.
+# Caddy sets X-Forwarded-For and X-Forwarded-Proto itself; list Caddy's address in
+# trusted_proxies. No Content-Security-Policy here: ABShare sends its own.
+books.example.com {
+	header Strict-Transport-Security "max-age=63072000; includeSubDomains"
+	request_body {
+		max_size 64KB
+	}
+	reverse_proxy 10.0.0.20:8743 {
+		# Audio streams straight through.
+		flush_interval -1
+		transport http {
+			read_timeout 1h
+			write_timeout 1h
+		}
+	}
+}

@@ -9,6 +9,7 @@ mod catalogue;
 mod config;
 mod covers;
 mod db;
+mod doctor;
 mod http;
 mod library;
 mod media;
@@ -23,6 +24,7 @@ use std::process::ExitCode;
 
 const USAGE: &str = "usage:
   abshare check-config --config FILE
+  abshare doctor --config FILE
   abshare scan --config FILE [--library NAME] [--problems] [--every SECONDS]
   abshare serve --config FILE
   abshare admin invite --config FILE [--admin] [--name DISPLAY NAME]
@@ -91,6 +93,10 @@ async fn run() -> Result<(), String> {
                 cfg.cache.max_gib
             );
             Ok(())
+        }
+        "doctor" => {
+            let checks = doctor::run(&cfg).await;
+            if doctor::print(&checks) { Ok(()) } else { Err("doctor found problems".into()) }
         }
         "scan" => {
             config::prepare_data_dir(&cfg.data_dir)?;

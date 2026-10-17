@@ -76,6 +76,24 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: docker build -f deploy/Dockerfile -t abshare:ci .
+      - name: Deploy test (the image behind nginx with TLS)
+        run: deploy/ci/run.sh
+      - name: Image scan (high and critical, with fixes available)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: abshare:ci
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+        env:
+          TRIVY_DB_REPOSITORY: ghcr.io/aquasecurity/trivy-db:2
+      - name: systemd units stay hardened (exposure 1.5 or less)
+        run: |
+          for u in deploy/abshare.service deploy/abshare-scan.service; do
+            systemd-analyze security --offline=yes --threshold=15 "$u" > out.txt || { cat out.txt; exit 1; }
+            tail -1 out.txt
+          done
       - name: The image runs as non-root and its binaries are present
         run: |
           test "$(docker inspect -f '{{.Config.User}}' abshare:ci)" = "65534:65534"

@@ -1,0 +1,55 @@
+# ABShare as a systemd service, for a host without Docker. Install the binaries in
+# /usr/local/bin, the web app in /usr/share/abshare/web, the config in /etc/abshare.
+# Data lives in /var/lib/abshare (StateDirectory, mode 0700). Mount the library read-only.
+#
+# Check the hardening with: systemd-analyze security abshare.service
+
+[Unit]
+Description=ABShare audiobook server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/abshare serve --config /etc/abshare/abshare.toml
+DynamicUser=yes
+StateDirectory=abshare
+StateDirectoryMode=0700
+Restart=on-failure
+RestartSec=5
+
+# Least privilege.
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+UMask=0077
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+# The jail (abshare-jail) applies Landlock, seccomp and resource limits around ffmpeg.
+SystemCallFilter=@system-service landlock_create_ruleset landlock_add_rule landlock_restrict_self seccomp setrlimit prlimit64
+SystemCallFilter=~@privileged @mount @swap @reboot @debug @module @raw-io @cpu-emulation @obsolete
+# The library, read-only; nothing else of the filesystem is writable.
+ReadOnlyPaths=/srv/audiobooks
+MemoryMax=3G
+TasksMax=512
+
+[Install]
+WantedBy=multi-user.target

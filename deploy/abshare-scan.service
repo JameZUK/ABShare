@@ -1,0 +1,44 @@
+# The library scanner beside abshare.service: scans every hour, or when an admin asks.
+[Unit]
+Description=ABShare library scanner
+After=abshare.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/abshare scan --config /etc/abshare/abshare.toml --every 3600
+DynamicUser=yes
+StateDirectory=abshare
+StateDirectoryMode=0700
+Restart=on-failure
+RestartSec=30
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+UMask=0077
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+# The jail (abshare-jail) applies Landlock, seccomp and resource limits around ffmpeg.
+SystemCallFilter=@system-service landlock_create_ruleset landlock_add_rule landlock_restrict_self seccomp setrlimit prlimit64
+SystemCallFilter=~@privileged @mount @swap @reboot @debug @module @raw-io @cpu-emulation @obsolete
+ReadOnlyPaths=/srv/audiobooks
+MemoryMax=2G
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target
