@@ -22,6 +22,9 @@ pub struct Session {
     pub device: i64,
     pub role: Role,
     pub expires: i64,
+    /// Signed in with a recovery code: only the account routes work until a new factor is set
+    /// up (SPEC §5.5).
+    pub needs_factor: bool,
 }
 
 /// A pending ceremony: password accepted, waiting for the second factor; or a passkey
@@ -89,7 +92,7 @@ impl Sessions {
     }
 
     /// Issues an access token and a media token for a device.
-    pub fn issue(&self, user: i64, device: i64, role: Role, now: i64) -> Option<(String, String)> {
+    pub fn issue(&self, user: i64, device: i64, role: Role, needs_factor: bool, now: i64) -> Option<(String, String)> {
         let (access, ah) = new_token();
         let (media, mh) = new_token();
         let mut g = self.inner.lock().ok()?;
@@ -106,9 +109,9 @@ impl Sessions {
             let (k, _) = mine.remove(0);
             g.access.remove(&k);
         }
-        g.access.insert(ah, Session { user, device, role, expires: now + ACCESS_TTL });
+        g.access.insert(ah, Session { user, device, role, expires: now + ACCESS_TTL, needs_factor });
         g.media.retain(|_, s| s.device != device);
-        g.media.insert(mh, Session { user, device, role, expires: now + MEDIA_TTL });
+        g.media.insert(mh, Session { user, device, role, expires: now + MEDIA_TTL, needs_factor });
         Some((access, media))
     }
 
@@ -126,6 +129,18 @@ impl Sessions {
             return None;
         }
         map.get(&token_hash(token)).copied().filter(|s| s.expires > now)
+    }
+
+    /// A new factor was set up: lift the limit on every live session of the user.
+    pub fn clear_needs_factor(&self, user: i64) {
+        if let Ok(mut g) = self.inner.lock() {
+            let g = &mut *g;
+            for s in g.access.values_mut().chain(g.media.values_mut()) {
+                if s.user == user {
+                    s.needs_factor = false;
+                }
+            }
+        }
     }
 
     /// Ends every token of a device at once (sign-out, revocation, theft detection).
@@ -162,7 +177,7 @@ mod tests {
     #[test]
     fn tokens_work_until_they_expire_and_die_with_the_device() {
         let s = Sessions::new();
-        let (a, m) = s.issue(1, 10, Role::Listener, 1000).expect("issue");
+        let (a, m) = s.issue(1, 10, Role::Listener, false, 1000).expect("issue");
         assert_eq!(s.access(&a, 1000 + ACCESS_TTL - 1).map(|x| x.device), Some(10));
         assert!(s.access(&a, 1000 + ACCESS_TTL).is_none());
         assert!(s.media(&m, 1000 + MEDIA_TTL - 1).is_some());
@@ -174,9 +189,9 @@ mod tests {
     #[test]
     fn at_most_eight_access_tokens_per_device_and_one_media_token() {
         let s = Sessions::new();
-        let first = s.issue(1, 10, Role::Listener, 1000).expect("issue");
+        let first = s.issue(1, 10, Role::Listener, false, 1000).expect("issue");
         for i in 1..9 {
-            s.issue(1, 10, Role::Listener, 1000 + i).expect("issue");
+            s.issue(1, 10, Role::Listener, false, 1000 + i).expect("issue");
         }
         assert!(s.access(&first.0, 1010).is_none(), "oldest dropped");
         assert!(s.media(&first.1, 1010).is_none(), "media token replaced");
@@ -185,7 +200,7 @@ mod tests {
     #[test]
     fn malformed_tokens_are_refused_without_lookup() {
         let s = Sessions::new();
-        s.issue(1, 10, Role::Admin, 1000).expect("issue");
+        s.issue(1, 10, Role::Admin, false, 1000).expect("issue");
         for bad in ["", "x", &"A".repeat(64), "../etc"] {
             assert!(s.access(bad, 1000).is_none());
         }

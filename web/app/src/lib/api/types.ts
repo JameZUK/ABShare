@@ -4,6 +4,8 @@ export interface User {
 	username: string;
 	display_name: string;
 	role: 'listener' | 'admin';
+	/** Signed in with a recovery code: only the account page works until a new factor is set up. */
+	needs_factor?: boolean;
 }
 
 export interface Progress {
@@ -108,6 +110,7 @@ export interface Me {
 	device: number;
 	factors: { passkeys: number; password: boolean; totp: boolean; recovery_codes_left: number };
 	permissions: { offline: boolean; save_files: boolean };
+	needs_factor: boolean;
 }
 
 export interface Device {

@@ -348,7 +348,7 @@ As lyrion-anywhere, unless stated otherwise.
 - Challenges are single use, last 2 minutes, and are bound to the session that requested them.
 
 **Recovery**
-- A recovery code replaces the second factor once, then forces re-enrolment of a factor.
+- A recovery code replaces the second factor once, then forces re-enrolment of a factor: until the account sets up a new passkey or authenticator app, its sessions reach only `/v1/me` and `/v1/auth` (everything else is `403 factor_required`, media included), across refreshes. The recovery sign-in counts as a step-up, so the new factor can be added at once. Signing in with a real factor clears it. (Built 2026-10-17.)
 - There is no email recovery: the server has no outbound connections. An admin can reset a user's factors (step-up, audited); the user gets a new single-use enrolment link that the admin passes on out of band.
 
 **Lockout** (failures count before the hash is checked)
@@ -362,7 +362,7 @@ As lyrion-anywhere, unless stated otherwise.
 - Media cookie: D9.
 - An **absolute session lifetime** (default 90 days) applies even with continuous refresh; after it, the user signs in again.
 - Browser tabs take turns refreshing (`navigator.locks`).
-- Changing a password or factor revokes every other device of that user.
+- Changing the password, removing a passkey, or removing or replacing the authenticator app signs out every other device of that user. Adding a passkey or a first authenticator doesn't: nothing was lost. (Changed 2026-10-17: adding a factor used to be included, which would sign people out of every device, and wipe their downloads, for strengthening their account.)
 
 **CSRF**
 - Cookie-reading routes (`/v1/auth/*`) require `X-ABShare-Client: 1` and an exact `Origin` match. No CORS preflight is ever approved.
@@ -372,7 +372,7 @@ As lyrion-anywhere, unless stated otherwise.
 - Each sign-in is a device. Limits: 20 per user (the least recently seen is evicted) and 10 new per hour.
 - Device names are cleaned.
 - Each device's last IP and User-Agent are visible only to the user and admins, and are erased when the device is revoked.
-- "Your devices" lets users sign any device out. Limits on that route are keyed per device, so a stolen token can't starve the owner's sign-out (lyrion-anywhere review finding).
+- "Your devices" lets users sign any device out. Signing out *another* device needs a step-up, so a stolen access token can't sign the owner out of everything; signing out the calling device needs none. Limits on that route (10 a minute) are keyed per device, so a stolen token can't starve the owner's sign-out (lyrion-anywhere review finding).
 
 **Step-up**
 - Sensitive actions need a fresh factor within the last 10 minutes: changing password or factors, viewing recovery codes, and every write on the admin pages.
@@ -806,7 +806,7 @@ Recorded 2026-10-17 from a check of the code against this document, while writin
 | §5.2 | Media authenticated by the media cookie only; 403 never used. | A bearer token is also accepted. `403 not_permitted` for downloads without the `offline` permission and saving without `save_files` (after the visibility check, so nothing is revealed). |
 | §5.3 | `/v1/downloads/{id}`, single-use tickets, `/v1/files/{id}` with ZIPs, audited, 3 at a time and a daily cap. | Downloads are `/v1/media/{id}[?q=…]&dl=1`; saving is `/v1/media/{id}/file` (the original or the playable copy, no ZIP); no tickets, caps or audit entry. |
 | §5.4 | A persistent SQLite job queue with priorities and profile versions; `nice`; output re-probed and fsynced; chapters and tags written into copies; copies always pinned; a per-user limit of 4 segment jobs. | In-memory lanes (listener, prefetch and downloads, copies) with deduplication and *latest seek wins*; resource limits instead of `-fs` and `nice`; copies carry no chapters or tags (the app has them); eviction is LRU with only recently served books pinned; at most 4 read-aheads overall. |
-| §5.5 | Confusables folding of usernames; a top-1M breached-password filter; recovery codes force re-enrolment; challenges bound to the session; any factor change signs out other devices; per-device limits on signing devices out; 100,000 audit rows mirrored to stdout. | ASCII usernames only; about 46,000 hashed prefixes of common passwords of 12 or more characters, plus at least 4 distinct characters; recovery codes don't force re-enrolment; challenges are bearer ceremony tokens (4 minutes for the second sign-in step); only a password change signs out other devices; signing a device out has no rate limit or step-up; 500,000 audit rows, no stdout mirror. |
+| §5.5 | Confusables folding of usernames; a top-1M breached-password filter; challenges bound to the session; 100,000 audit rows mirrored to stdout. | ASCII usernames only; about 46,000 hashed prefixes of common passwords of 12 or more characters, plus at least 4 distinct characters; challenges are bearer ceremony tokens (4 minutes for the second sign-in step); 500,000 audit rows, no stdout mirror. (Recovery re-enrolment, signing out other devices on factor removal, and the step-up and limit on device sign-out were built on 2026-10-17.) |
 | §5.5 | A server-side 2FA policy setting for listeners. | A second factor is always required; there is no setting. |
 | §5.6 | `speed` stored with progress; listening history; finished within 30 s of the end; 1,000 bookmarks per book. | No `speed` (speeds stay in the browser); no history; finished within 30 s or 2 % of the length, whichever is smaller; 1,000 per book and 10,000 per person. |
 | §5.6 | "Resume where you left off?" prompt. | A paused player silently follows a newer position from another device. |
@@ -815,5 +815,4 @@ Recorded 2026-10-17 from a check of the code against this document, while writin
 | §6 | `PATCH /v1/me`; `/v1/authors`, `/v1/series`, `/v1/collections`; `series=`; FTS5 search; opaque cursors; a contract fixture in CI. | Preferences stay in the browser; `/v1/groups` and `/v1/genres` instead; `shelf=` instead of `series=`; an in-memory folded substring search (200 characters, 8 words); offset and ID cursors; no contract fixture. |
 | §7.2 | Library filters by author, narrator, series and genre; a grid/list toggle; History and Downloads settings; admin Jobs and Server settings pages. | Search, status filter, sort and genre shelves; no filters by person or series, no toggle, and none of those pages yet. |
 | §9.3, §10 | A minimal static ffmpeg built from a pinned tarball; base images pinned by digest. | Debian's ffmpeg 7.1 in a Debian runtime; base images pinned by tag. |
-| §13 | Integration tests against the demo library; jail tests that can't skip in CI. | Not yet: there are no demo-library integration tests, and CI doesn't set `ABSHARE_REQUIRE_LANDLOCK`, so the jail and ffmpeg tests may skip on hosted runners. |
 

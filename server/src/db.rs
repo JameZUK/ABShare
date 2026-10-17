@@ -187,6 +187,9 @@ pub const MIGRATIONS: &[&str] = &[
     "CREATE TABLE audit_head (id INTEGER PRIMARY KEY CHECK (id = 1), last_id INTEGER NOT NULL, tag BLOB NOT NULL);
     ALTER TABLE audit_anchor ADD COLUMN cut_id INTEGER;
     ALTER TABLE audit_anchor ADD COLUMN tag BLOB;",
+    // 7: set when someone signs in with a recovery code; their sessions are limited to their
+    // account until they set up a new passkey or authenticator.
+    "ALTER TABLE user ADD COLUMN needs_factor INTEGER NOT NULL DEFAULT 0;",
 ];
 
 pub fn sql_err(e: rusqlite::Error) -> String {

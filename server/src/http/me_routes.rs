@@ -37,6 +37,24 @@ fn require_step_up(st: &State, s: &Session) -> Result<(), ApiError> {
     if st.sessions.stepped_up(s.device, now()) { Ok(()) } else { Err(ApiError::step_up()) }
 }
 
+/// Signs out every other device of the user, as a password change does: removing or replacing
+/// a sign-in method is what someone does after losing one.
+async fn sign_out_others(st: &State, s: &Session) -> Result<usize, ApiError> {
+    let (uid, keep) = (s.user, s.device);
+    let revoked = st.db.run(move |c| store::revoke_all(c, uid, Some(keep), now())).await?;
+    for d in &revoked {
+        st.sessions.revoke_device(*d);
+    }
+    Ok(revoked.len())
+}
+
+/// A new passkey or authenticator: the limit after a recovery-code sign-in is lifted.
+async fn factor_added(st: &State, uid: i64) -> Result<(), ApiError> {
+    st.db.run(move |c| store::set_needs_factor(c, uid, false)).await?;
+    st.sessions.clear_needs_factor(uid);
+    Ok(())
+}
+
 async fn me(S(st): S<State>, Authed(s): Authed) -> Result<Json<Value>, ApiError> {
     let uid = s.user;
     let (user, passkeys, recovery_left) = st
@@ -52,6 +70,7 @@ async fn me(S(st): S<State>, Authed(s): Authed) -> Result<Json<Value>, ApiError>
         "role": user.role.as_str(),
         "device": s.device,
         "factors": { "passkeys": passkeys, "password": user.password_hash.is_some(), "totp": user.totp_secret.is_some(), "recovery_codes_left": recovery_left },
+        "needs_factor": user.needs_factor,
         "permissions": { "offline": user.perms.can_offline, "save_files": user.perms.can_save },
     })))
 }
@@ -72,6 +91,15 @@ async fn revoke_device(
     Path(id): Path<i64>,
 ) -> Result<StatusCode, ApiError> {
     let uid = s.user;
+    // Signing yourself out is always allowed. Signing out another device needs a fresh factor,
+    // so a stolen access token can't sign the owner out of everything (and wipe their
+    // downloads); a per-device limit stops it being hammered either way.
+    if !st.device_limit.allow(s.device, now()) {
+        return Err(ApiError::too_many());
+    }
+    if id != s.device {
+        require_step_up(&st, &s)?;
+    }
     // Only your own devices: another user's device is "not found".
     if !st.db.run(move |c| store::revoke_device(c, uid, id, now())).await? {
         return Err(ApiError::not_found());
@@ -134,6 +162,7 @@ async fn add_passkey_finish(
         passkeys::to_json(&pk).map_err(ApiError::internal)?,
     );
     let id = st.db.run(move |c| store::add_passkey(c, uid, &name, &cred, &data, now())).await?;
+    factor_added(&st, uid).await?;
     st.audit("passkey.added", Some(uid), Some(s.device), Some(ip), String::new()).await;
     Ok(Json(json!({ "id": id })))
 }
@@ -171,7 +200,8 @@ async fn delete_passkey(
         })
         .await?;
     outcome?;
-    st.audit("passkey.removed", Some(uid), Some(s.device), Some(ip), String::new()).await;
+    let n = sign_out_others(&st, &s).await?;
+    st.audit("passkey.removed", Some(uid), Some(s.device), Some(ip), format!("{n} other devices signed out")).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -241,8 +271,22 @@ async fn totp_finish(
     }
     let step = totp::verify(&seed, &b.code, now(), None).map_err(|_| ApiError::bad("That code didn't match."))?;
     let sealed = st.seeds.seal(uid, &seed);
-    st.db.run(move |c| store::set_totp(c, uid, Some(&sealed), Some(step))).await?;
-    st.audit("totp.enabled", Some(uid), Some(s.device), Some(ip), String::new()).await;
+    let replaced = st
+        .db
+        .run(move |c| {
+            let had = store::user_by_id(c, uid)?.ok_or("user vanished")?.totp_secret.is_some();
+            store::set_totp(c, uid, Some(&sealed), Some(step))?;
+            Ok(had)
+        })
+        .await?;
+    factor_added(&st, uid).await?;
+    // Replacing the authenticator retires the old one, like removing it.
+    let detail = if replaced {
+        format!("replaced; {} other devices signed out", sign_out_others(&st, &s).await?)
+    } else {
+        String::new()
+    };
+    st.audit("totp.enabled", Some(uid), Some(s.device), Some(ip), detail).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -266,7 +310,8 @@ async fn remove_totp(S(st): S<State>, Ip(ip): Ip, Authed(s): Authed) -> Result<S
         })
         .await?;
     outcome?;
-    st.audit("totp.removed", Some(uid), Some(s.device), Some(ip), String::new()).await;
+    let n = sign_out_others(&st, &s).await?;
+    st.audit("totp.removed", Some(uid), Some(s.device), Some(ip), format!("{n} other devices signed out")).await;
     Ok(StatusCode::NO_CONTENT)
 }
 

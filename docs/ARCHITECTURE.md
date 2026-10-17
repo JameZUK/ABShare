@@ -151,7 +151,8 @@ sequenceDiagram
 - **CSRF.** Cookie-reading routes (`/v1/auth/*`) need the `X-ABShare-Client` header and an exact `Origin`. Everything else uses bearer tokens. No CORS preflight is ever approved.
 - **Lockouts** count failures per address (/64 for IPv6) and per username. The per-username lock is soft: other addresses share a small allowance, and a browser already signed in to the account skips it, so a stranger can't lock you out.
 - **Step-up.** Changing sign-in methods and every admin write need a fresh second factor from the last 10 minutes: a passkey, or a password with a code.
-- **Devices.** Each sign-in is a device. You can see yours and sign any of them out. A device signed out remotely wipes its downloads the next time it runs.
+- **Devices.** Each sign-in is a device. You can see yours and sign any of them out (another device needs a step-up). A device signed out remotely wipes its downloads the next time it runs. Changing the password, or removing or replacing a factor, signs out every other device.
+- **Recovery codes.** A recovery-code sign-in is limited to the account pages until a new passkey or authenticator app is set up; it counts as a step-up, so that can be done at once.
 - **The audit log** records sign-ins, failures, locks, enrolment, factor changes, invites, device sign-outs and admin actions. Each row carries an HMAC of the one before, and a tagged head and anchor make a removed tail detectable. Admins can see whether the chain is intact.
 
 ### 6.2 Browsing
@@ -312,9 +313,10 @@ Passwords are argon2id hashes; tokens, invites and recovery codes are stored onl
 
 Every change ships with tests, security first. The full strategy is in [`SPEC.md`](../SPEC.md) §13.
 
-- **Security.** Negative tests for every externally reachable surface: about 70 HTTP tests over the real router, many of them checking several refusals each (forged, expired and revoked tokens; other people's books; CSRF and `Origin`; wrong `Host`; spoofed `X-Forwarded-For`; oversize and slow bodies; rate limits), jail escape tests, and a mutation check that removes each security control and confirms a test fails. Every security fix has a regression test that fails without it.
+- **Security.** Negative tests for every externally reachable surface: about 75 HTTP tests over the real router, many of them checking several refusals each (forged, expired and revoked tokens; other people's books; CSRF and `Origin`; wrong `Host`; spoofed `X-Forwarded-For`; oversize and slow bodies; rate limits), jail escape tests, and a mutation check that removes each security control and confirms a test fails. Every security fix has a regression test that fails without it.
 - **Parsers.** Each parser of untrusted bytes has a `cargo-fuzz` target and robustness tests and must never panic. CI runs every target on every push.
 - **Stability.** Unit and property-style tests for the progress merge, Range requests, data-saver segment maths, book assembly and the lockout state machine.
+- **The demo library, end to end.** `tools/demo/make-library.sh` builds a library of every shape and quirk; a test scans it with the real jail and ffmpeg, then browses, streams the original with Range requests, builds a playable copy, streams data saver, downloads for offline listening and syncs progress through the real router. CI requires Landlock, so the jail tests and this one can't skip there.
 - **The web app.** Type checks with warnings as errors, unit tests for the player rules, offline storage, downloads and themes, the HTML-injection source scan, and the build-time inline-script check.
 - **Deployment.** CI builds the image, runs it behind nginx with TLS and checks redirects, the single CSP, cookie flags, the `Host` check and spoofed client addresses; scans the image for known vulnerabilities; and checks the systemd units' exposure scores.
 

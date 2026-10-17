@@ -58,9 +58,11 @@ pub struct User {
     pub totp_last_step: Option<i64>,
     pub perms: Perms,
     pub disabled: bool,
+    /// Signed in with a recovery code and hasn't set up a new factor yet.
+    pub needs_factor: bool,
 }
 
-const USER_COLS: &str = "id, username, webauthn_id, display_name, role, password_hash, totp_secret, totp_last_step, can_offline, can_save, libraries, disabled_at";
+const USER_COLS: &str = "id, username, webauthn_id, display_name, role, password_hash, totp_secret, totp_last_step, can_offline, can_save, libraries, disabled_at, needs_factor";
 
 fn user_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
     Ok(User {
@@ -74,6 +76,7 @@ fn user_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
         totp_last_step: r.get(7)?,
         perms: Perms { can_offline: r.get(8)?, can_save: r.get(9)?, libraries: r.get(10)? },
         disabled: r.get::<_, Option<i64>>(11)?.is_some(),
+        needs_factor: r.get(12)?,
     })
 }
 
@@ -132,6 +135,11 @@ pub fn set_totp(c: &Connection, user: i64, sealed: Option<&[u8]>, last_step: Opt
     c.execute("UPDATE user SET totp_secret = ?2, totp_last_step = ?3 WHERE id = ?1", params![user, sealed, last_step])
         .map_err(sql_err)
         .map(drop)
+}
+
+/// Marks (or clears) that the user must set up a new factor before using anything else.
+pub fn set_needs_factor(c: &Connection, user: i64, needs: bool) -> Result<(), String> {
+    c.execute("UPDATE user SET needs_factor = ?2 WHERE id = ?1", params![user, needs]).map_err(sql_err).map(drop)
 }
 
 /// Records a used TOTP step, only if it is newer than the stored one (so two racing

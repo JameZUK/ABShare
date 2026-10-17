@@ -77,8 +77,8 @@ Everything ABShare does today, by area. Only built and tested features are liste
 | Invites | Single-use invite links that expire (72 hours by default, up to 7 days). No open sign-up. |
 | Passkeys | Sign in with Face ID, a fingerprint or a PIN. Add several and remove any. |
 | Password and authenticator | A password (at least 12 characters, checked against a list of breached passwords) always needs a code from an authenticator app. |
-| Recovery codes | Ten single-use codes at enrolment, renewable. |
-| Devices | See where you are signed in, and sign any device out. |
+| Recovery codes | Ten single-use codes at enrolment, renewable. Signing in with one takes you straight to set up a new passkey or authenticator app; the rest of the app opens once you have. |
+| Devices | See where you are signed in, and sign any device out. Changing your password, or removing a passkey or authenticator, signs out your other devices. |
 | Step-up | Changing your sign-in methods asks you to confirm it's you again. |
 | Lockouts | Repeated failures lock the address out, with doubling delays. A stranger can't lock you out of your own account. |
 | Remote sign-out | A device signed out from elsewhere stops working at once, and wipes its downloads. |

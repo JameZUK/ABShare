@@ -37,15 +37,21 @@ impl FromRequestParts<State> for MediaAuthed {
 
     async fn from_request_parts(parts: &mut Parts, st: &State) -> Result<Self, Self::Rejection> {
         let t = now();
-        if let Some(s) = cookie(&parts.headers, MEDIA_COOKIE).and_then(|c| st.sessions.media(&c, t)) {
-            return Ok(Self(s));
+        let s = match cookie(&parts.headers, MEDIA_COOKIE).and_then(|c| st.sessions.media(&c, t)) {
+            Some(s) => s,
+            None => parts
+                .headers
+                .get(header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Bearer "))
+                .and_then(|b| st.sessions.access(b, t))
+                .ok_or_else(ApiError::unauthenticated)?,
+        };
+        // After a recovery-code sign-in, nothing plays until a new factor is set up.
+        if s.needs_factor {
+            return Err(ApiError::factor_required());
         }
-        let bearer = parts
-            .headers
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "));
-        bearer.and_then(|b| st.sessions.access(b, t)).map(Self).ok_or_else(ApiError::unauthenticated)
+        Ok(Self(s))
     }
 }
 

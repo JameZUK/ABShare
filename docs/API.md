@@ -95,8 +95,7 @@ Errors from ABShare itself look like this:
 | 403 | `tls_required` | The front guard's TLS check failed |
 | 403 | `csrf` | A `/v1/auth/*` request without `X-ABShare-Client: 1` or with the wrong `Origin` |
 | 403 | `step_up_required` | The action needs a step-up within the last 10 minutes |
-| 403 | `totp_required` | A password step-up on an account with an authenticator app: use `step-up/totp` |
-| 403 | `passkey_required` | A password step-up on an account without an authenticator app: use a passkey |
+| 403 | `factor_required` | Signed in with a recovery code: only `/v1/me` and `/v1/auth` work until a new passkey or authenticator app is set up |
 | 403 | `not_permitted` | Not an admin, or the account lacks the `offline` or `save_files` permission |
 | 404 | `not_found` | No such thing, or not one the caller may see. A book outside the caller's libraries is always 404, never 403 |
 | 408 | `timeout` | The request body took more than 15 s to arrive |
@@ -290,9 +289,11 @@ sequenceDiagram
 {
   "access_token": "<64 hex>",
   "expires_in": 900,
-  "user": { "username": "ada", "display_name": "Ada", "role": "listener" }
+  "user": { "username": "ada", "display_name": "Ada", "role": "listener", "needs_factor": false }
 }
 ```
+
+`needs_factor` is `true` after a sign-in with a recovery code, and stays so (across refreshes) until the account sets up a new passkey or authenticator app. Meanwhile every bearer route outside `/v1/me` and `/v1/auth` answers `403 factor_required`, and media is refused. Signing in with a passkey or an authenticator code clears it, since nothing was lost.
 
 They also send two `Set-Cookie` headers: `abshare_refresh` (path `/v1/auth`) and `abshare_media` (path `/v1/media`). Every sign-in creates a new **device**: an entry in the user's device list, with the client address and `User-Agent` (at most 200 characters, without control characters).
 
@@ -309,7 +310,7 @@ They also send two `Set-Cookie` headers: `abshare_refresh` (path `/v1/auth`) and
 - **Body:** `{"challenge", "code"}`.
   - TOTP: 6 digits (RFC 6238, SHA-1, 30 s, ±1 step). Each step works once.
   - Recovery: 12 characters, with case, spaces and dashes ignored, `O` read as `0` and `I`/`L` as `1`. Each recovery code works once.
-- **Response:** the sign-in response.
+- **Response:** the sign-in response. After `login/recovery`, `user.needs_factor` is `true` (see above), and the device counts as stepped up for 10 minutes, so a new factor can be added at once.
 - **Errors:** `401 invalid_credentials`. The challenge is used up even by a wrong code, so the client starts again from `login/password`. A wrong code counts towards the lockouts. `429` (new-device limit).
 
 #### `POST /v1/auth/login/passkey/start`
@@ -383,10 +384,7 @@ Some actions need a fresh proof of identity: every change to your sign-in method
 - **Response:** `{"ok": true}`
 - **Errors:** `401 invalid_credentials` if the challenge, the account or the assertion doesn't match (user verification is required).
 
-#### `POST /v1/auth/step-up/password`
-
-- **Body:** `{"password"}` (a `code` field is accepted and ignored).
-- **Response:** it never succeeds. A wrong password is `401 invalid_credentials` and counts towards the lockouts. A right one is `403 totp_required` (the account has an authenticator app: use `step-up/totp`) or `403 passkey_required` (use a passkey). The web app doesn't call it.
+There is no password-only step-up: a password alone is never a complete sign-in method (review A4).
 
 ---
 
@@ -403,7 +401,8 @@ All routes need a **bearer** token and act only on the caller's own account. A s
   "role": "listener",
   "device": 42,
   "factors": { "passkeys": 1, "password": true, "totp": true, "recovery_codes_left": 9 },
-  "permissions": { "offline": true, "save_files": false }
+  "permissions": { "offline": true, "save_files": false },
+  "needs_factor": false
 }
 ```
 
@@ -415,9 +414,11 @@ All routes need a **bearer** token and act only on the caller's own account. A s
 
 #### `DELETE /v1/me/devices/{id}`
 
-- **Effect:** signs out one of your devices: its refresh, access and media tokens stop working at once. The device's own app learns of it at its next refresh (`device_revoked`) and removes its downloads. The calling device itself may be signed out this way too. No step-up.
+- **Effect:** signs out one of your devices: its refresh, access and media tokens stop working at once. The device's own app learns of it at its next refresh (`device_revoked`) and removes its downloads.
+- **Step-up:** needed to sign out *another* device, so a stolen access token can't sign the owner out of everything. Signing out the calling device itself needs none.
+- **Limits:** 10 a minute per calling device.
 - **Response:** `204`
-- **Errors:** `404` for another user's device, an unknown one or one already signed out; `400` for an ID that isn't a number.
+- **Errors:** `403 step_up_required`; `404` for another user's device, an unknown one or one already signed out; `400` for an ID that isn't a number; `429`.
 
 #### `GET /v1/me/passkeys`
 
@@ -431,11 +432,13 @@ All routes need a **bearer** token and act only on the caller's own account. A s
 #### `POST /v1/me/passkeys/finish` (step-up)
 
 - **Body:** `{"challenge", "name", "credential"}`, as in `enrol/passkey/finish`.
+- **Effect:** adds the passkey and lifts `needs_factor`.
 - **Response:** `{"id": 7}`
 - **Errors:** `400` (didn't verify); `401` (bad or someone else's challenge).
 
 #### `DELETE /v1/me/passkeys/{id}` (step-up)
 
+- **Effect:** removes the passkey and signs out every other device of yours, as a password change does.
 - **Response:** `204`
 - **Errors:** `404`; `409 last_method` if this is your last passkey and you have no password with an authenticator app.
 
@@ -454,12 +457,13 @@ All routes need a **bearer** token and act only on the caller's own account. A s
 #### `POST /v1/me/totp/finish` (step-up)
 
 - **Body:** `{"challenge", "code"}`
-- **Effect:** turns the authenticator on, replacing any earlier one.
+- **Effect:** turns the authenticator on and lifts `needs_factor`. Replacing an earlier authenticator also signs out every other device of yours.
 - **Response:** `204`
 - **Errors:** `400` (the code didn't match; the challenge is used up); `401` (bad challenge).
 
 #### `DELETE /v1/me/totp` (step-up)
 
+- **Effect:** removes the authenticator and signs out every other device of yours.
 - **Response:** `204`
 - **Errors:** `409 last_method` unless you have at least one passkey.
 

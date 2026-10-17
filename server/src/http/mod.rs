@@ -139,6 +139,8 @@ pub struct AppState {
     /// Keyed like the lockout: IPv4 exactly, IPv6 by /64 (one subscriber's allocation).
     pub anon_limit: RateLimit<abshare_core::auth::lockout::AddrKey>,
     pub progress_limit: RateLimit<(i64, String)>,
+    /// Device sign-outs, per calling device.
+    pub device_limit: RateLimit<i64>,
     /// Start-up reports from blank pages: rate-limited per address, kept in memory only.
     pub diag_limit: RateLimit<abshare_core::auth::lockout::AddrKey>,
     pub diag: Mutex<std::collections::VecDeque<diag_routes::DiagReport>>,
@@ -189,6 +191,7 @@ impl AppState {
             totp_add: Ceremonies::new(ENROL_TTL),
             anon_limit: RateLimit::new(30),
             progress_limit: RateLimit::new(12),
+            device_limit: RateLimit::new(10),
             diag_limit: RateLimit::new(diag_routes::PER_MINUTE),
             diag: Mutex::new(std::collections::VecDeque::new()),
             media: None,
@@ -341,6 +344,10 @@ impl ApiError {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", format!("Something went wrong (reference {id})."))
     }
 
+    pub fn factor_required() -> Self {
+        Self::new(StatusCode::FORBIDDEN, "factor_required", "Set up a new passkey or authenticator app first.")
+    }
+
     pub fn bad(message: impl Into<String>) -> Self {
         Self::new(StatusCode::BAD_REQUEST, "invalid", message)
     }
@@ -397,8 +404,24 @@ impl FromRequestParts<State> for Authed {
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
             .ok_or_else(ApiError::unauthenticated)?;
-        state.sessions.access(token, now()).map(Authed).ok_or_else(ApiError::unauthenticated)
+        let s = state.sessions.access(token, now()).ok_or_else(ApiError::unauthenticated)?;
+        if s.needs_factor {
+            let path = parts
+                .extensions
+                .get::<axum::extract::OriginalUri>()
+                .map_or_else(|| parts.uri.path().to_owned(), |u| u.0.path().to_owned());
+            if !allowed_while_needing_factor(&path) {
+                return Err(ApiError::factor_required());
+            }
+        }
+        Ok(Authed(s))
     }
+}
+
+/// After a recovery-code sign-in, only the account routes (to set up a new factor) and the
+/// auth routes work until a new factor exists (SPEC §5.5).
+pub fn allowed_while_needing_factor(path: &str) -> bool {
+    path == "/v1/me" || path.starts_with("/v1/me/") || path.starts_with("/v1/auth/")
 }
 
 /// The client address set by the guard.

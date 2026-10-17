@@ -155,6 +155,20 @@ async fn enrol_role(t: &T, username: &str, role: Role) -> (Vec<u8>, String, Stri
     (seed, v["access_token"].as_str().expect("access").to_owned(), refresh, codes, media)
 }
 
+/// Steps up with the password and a fresh authenticator code (enrolment's password).
+async fn step_up(t: &T, username: &str, seed: &[u8], access: &str) {
+    reset_totp_step(t, username);
+    let r = send(
+        t,
+        "POST",
+        "/v1/auth/step-up/totp",
+        Some(json!({"password": "correct horse battery", "code": code(seed, 0)})),
+        &[("authorization", &format!("Bearer {access}"))],
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK, "step-up");
+}
+
 fn reset_totp_step(t: &T, username: &str) {
     let c = t.st.db.0.lock().expect("db");
     c.execute("UPDATE user SET totp_last_step = NULL WHERE username = ?1", [username]).expect("reset");
@@ -577,6 +591,17 @@ async fn a_remotely_signed_out_device_learns_it_was_revoked() {
     let r = send(&t, "GET", "/v1/me/devices", None, &[("authorization", &format!("Bearer {access}"))]).await;
     let devices = json_of(r).await["devices"].as_array().expect("devices").clone();
     let tablet = devices.iter().find(|d| d["this_device"] == false).expect("tablet")["id"].as_i64().expect("id");
+    // Signing out another device needs a fresh factor.
+    let r = send(
+        &t,
+        "DELETE",
+        &format!("/v1/me/devices/{tablet}"),
+        None,
+        &[("authorization", &format!("Bearer {access}"))],
+    )
+    .await;
+    assert_eq!(json_of(r).await["error"], "step_up_required");
+    step_up(&t, "kit", &seed, &access).await;
     let r = send(
         &t,
         "DELETE",
@@ -627,7 +652,7 @@ async fn account_changes_need_step_up_and_sign_out_other_devices() {
     .await;
     assert_eq!(r.status(), StatusCode::FORBIDDEN);
     assert_eq!(json_of(r).await["error"], "step_up_required");
-    // Password alone isn't a step-up when TOTP exists.
+    // Password alone is never a step-up: there is no such route (review A4).
     let r = send(
         &t,
         "POST",
@@ -636,7 +661,7 @@ async fn account_changes_need_step_up_and_sign_out_other_devices() {
         &[("authorization", &auth)],
     )
     .await;
-    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    assert_ne!(r.status(), StatusCode::OK);
     reset_totp_step(&t, "ivy");
     let r = send(
         &t,
@@ -685,10 +710,11 @@ async fn the_last_sign_in_method_cannot_be_removed() {
 #[tokio::test]
 async fn nobody_can_revoke_another_users_device() {
     let t = setup();
-    let (_, a, ..) = enrol(&t, "kim").await;
+    let (kim_seed, a, ..) = enrol(&t, "kim").await;
     let (_, b, ..) = enrol(&t, "lee").await;
     let r = send(&t, "GET", "/v1/me/devices", None, &[("authorization", &format!("Bearer {b}"))]).await;
     let lee_device = json_of(r).await["devices"][0]["id"].as_i64().expect("id");
+    step_up(&t, "kim", &kim_seed, &a).await;
     let r =
         send(&t, "DELETE", &format!("/v1/me/devices/{lee_device}"), None, &[("authorization", &format!("Bearer {a}"))])
             .await;
@@ -1824,16 +1850,17 @@ async fn a_password_alone_is_never_a_step_up() {
         let c = t.st.db.0.lock().expect("db");
         c.execute("UPDATE user SET password_hash = ?1 WHERE username = 'pat'", [hash]).expect("set");
     }
-    let r = send(
-        &t,
-        "POST",
-        "/v1/auth/step-up/password",
-        Some(json!({"password": "a long enough password"})),
-        &[("authorization", &format!("Bearer {access}"))],
-    )
-    .await;
-    assert_eq!(r.status(), StatusCode::FORBIDDEN);
-    assert_eq!(json_of(r).await["error"], "passkey_required");
+    // With a passkey and a password but no authenticator, the password can't confirm anything.
+    for (uri, body) in [
+        ("/v1/auth/step-up/password", json!({"password": "a long enough password"})),
+        ("/v1/auth/step-up/totp", json!({"password": "a long enough password", "code": "000000"})),
+    ] {
+        let r = send(&t, "POST", uri, Some(body), &[("authorization", &format!("Bearer {access}"))]).await;
+        assert_ne!(r.status(), StatusCode::OK, "{uri}");
+    }
+    let r =
+        send(&t, "POST", "/v1/me/recovery", Some(json!({})), &[("authorization", &format!("Bearer {access}"))]).await;
+    assert_eq!(json_of(r).await["error"], "step_up_required");
 }
 
 #[tokio::test]
@@ -2050,4 +2077,413 @@ async fn start_up_reports_are_rate_limited_and_only_the_newest_kept() {
     let kept = super::diag_routes::recent(&t.st);
     assert_eq!(kept.len(), super::diag_routes::MAX_REPORTS);
     assert_eq!(kept[0].lines[0], "n59");
+}
+
+/// Signs `username` in on another device with the password and a fresh code: (access, refresh).
+async fn another_device(t: &T, username: &str, seed: &[u8]) -> (String, String) {
+    reset_totp_step(t, username);
+    let r = send(
+        t,
+        "POST",
+        "/v1/auth/login/password",
+        Some(json!({"username": username, "password": "correct horse battery", "device_name": "Tablet"})),
+        &[],
+    )
+    .await;
+    let ch = json_of(r).await["challenge"].as_str().expect("challenge").to_owned();
+    let r = send(t, "POST", "/v1/auth/login/totp", Some(json!({"challenge": ch, "code": code(seed, 0)})), &[]).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let refresh = cookie_value(&r, "abshare_refresh");
+    (json_of(r).await["access_token"].as_str().expect("access").to_owned(), refresh)
+}
+
+async fn refresh_error(t: &T, refresh: &str) -> Value {
+    let r = send(t, "POST", "/v1/auth/refresh", None, &[("cookie", &format!("abshare_refresh={refresh}"))]).await;
+    json_of(r).await["error"].clone()
+}
+
+async fn device_ids(t: &T, access: &str) -> (i64, i64) {
+    let r = send(t, "GET", "/v1/me/devices", None, &[("authorization", &format!("Bearer {access}"))]).await;
+    let list = json_of(r).await["devices"].as_array().expect("devices").clone();
+    let id = |this: bool| list.iter().find(|d| d["this_device"] == this).expect("device")["id"].as_i64().expect("id");
+    (id(true), id(false))
+}
+
+#[tokio::test]
+async fn signing_out_another_device_needs_step_up_but_your_own_does_not() {
+    let t = setup();
+    let (seed, phone, ..) = enrol(&t, "rue").await;
+    let (tablet, tablet_refresh) = another_device(&t, "rue", &seed).await;
+    let (tablet_id, phone_id) = device_ids(&t, &tablet).await;
+    // A stolen access token alone can't sign the owner's other devices out.
+    let r = send(
+        &t,
+        "DELETE",
+        &format!("/v1/me/devices/{phone_id}"),
+        None,
+        &[("authorization", &format!("Bearer {tablet}"))],
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    assert_eq!(json_of(r).await["error"], "step_up_required");
+    // Signing yourself out needs nothing more.
+    let r = send(
+        &t,
+        "DELETE",
+        &format!("/v1/me/devices/{tablet_id}"),
+        None,
+        &[("authorization", &format!("Bearer {tablet}"))],
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+    assert_eq!(refresh_error(&t, &tablet_refresh).await, "device_revoked");
+    // And the route is rate-limited per device.
+    step_up(&t, "rue", &seed, &phone).await;
+    let mut limited = false;
+    for _ in 0..12 {
+        let r =
+            send(&t, "DELETE", "/v1/me/devices/999999", None, &[("authorization", &format!("Bearer {phone}"))]).await;
+        limited |= r.status() == StatusCode::TOO_MANY_REQUESTS;
+    }
+    assert!(limited);
+}
+
+#[tokio::test]
+async fn removing_or_replacing_a_factor_signs_out_other_devices() {
+    let t = setup();
+    let (seed, phone, ..) = enrol(&t, "sol").await;
+    let auth = format!("Bearer {phone}");
+    // Add a passkey, so the authenticator can be removed.
+    step_up(&t, "sol", &seed, &phone).await;
+    let r = send(&t, "POST", "/v1/me/passkeys/start", Some(json!({})), &[("authorization", &auth)]).await;
+    let v = json_of(r).await;
+    let mut key = SoftKey::new();
+    let credential = key.create(&v["options"], ORIGIN);
+    let r = send(
+        &t,
+        "POST",
+        "/v1/me/passkeys/finish",
+        Some(json!({"challenge": v["challenge"], "name": "Laptop", "credential": credential})),
+        &[("authorization", &auth)],
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let passkey = json_of(r).await["id"].as_i64().expect("id");
+
+    // Removing the authenticator signs out the tablet.
+    let (_, tablet_refresh) = another_device(&t, "sol", &seed).await;
+    let r = send(&t, "DELETE", "/v1/me/totp", None, &[("authorization", &auth)]).await;
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+    assert_eq!(refresh_error(&t, &tablet_refresh).await, "device_revoked");
+    // This device stays signed in.
+    assert_eq!(send(&t, "GET", "/v1/me", None, &[("authorization", &auth)]).await.status(), StatusCode::OK);
+
+    // Setting one up again signs nobody out; replacing it does.
+    let set_totp = || async {
+        let r = send(&t, "POST", "/v1/me/totp/start", Some(json!({})), &[("authorization", &auth)]).await;
+        let v = json_of(r).await;
+        let new_seed = b32_decode(v["secret"].as_str().expect("secret"));
+        let r = send(
+            &t,
+            "POST",
+            "/v1/me/totp/finish",
+            Some(json!({"challenge": v["challenge"], "code": code(&new_seed, 0)})),
+            &[("authorization", &auth)],
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::NO_CONTENT);
+        new_seed
+    };
+    let seed = set_totp().await;
+    let (_, tablet_refresh) = another_device(&t, "sol", &seed).await;
+    assert_ne!(refresh_error(&t, &tablet_refresh).await, "device_revoked", "a refresh that works has no error");
+    let (_, tablet_refresh) = another_device(&t, "sol", &seed).await;
+    let seed = set_totp().await;
+    assert_eq!(refresh_error(&t, &tablet_refresh).await, "device_revoked");
+
+    // Removing a passkey signs out the tablet too.
+    let (_, tablet_refresh) = another_device(&t, "sol", &seed).await;
+    let r = send(&t, "DELETE", &format!("/v1/me/passkeys/{passkey}"), None, &[("authorization", &auth)]).await;
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+    assert_eq!(refresh_error(&t, &tablet_refresh).await, "device_revoked");
+}
+
+#[tokio::test]
+async fn a_recovery_sign_in_must_set_up_a_new_factor_first() {
+    let t = setup();
+    let (_, _, _, codes) = enrol(&t, "uma").await;
+    let r = send(
+        &t,
+        "POST",
+        "/v1/auth/login/password",
+        Some(json!({"username":"uma","password":"correct horse battery","device_name":"Borrowed"})),
+        &[],
+    )
+    .await;
+    let ch = json_of(r).await["challenge"].as_str().expect("challenge").to_owned();
+    let r = send(&t, "POST", "/v1/auth/login/recovery", Some(json!({"challenge": ch, "code": codes[0]})), &[]).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let refresh = cookie_value(&r, "abshare_refresh");
+    let media = cookie_value(&r, "abshare_media");
+    let v = json_of(r).await;
+    assert_eq!(v["user"]["needs_factor"], true);
+    let auth = format!("Bearer {}", v["access_token"].as_str().expect("access"));
+
+    // Only the account works: the library, admin and media are refused.
+    for uri in ["/v1/home", "/v1/books", "/v1/libraries", "/v1/admin/status"] {
+        let r = send(&t, "GET", uri, None, &[("authorization", &auth)]).await;
+        assert_eq!(r.status(), StatusCode::FORBIDDEN, "{uri}");
+        assert_eq!(json_of(r).await["error"], "factor_required", "{uri}");
+    }
+    let r = send(
+        &t,
+        "GET",
+        &format!("/v1/media/{}", "a".repeat(26)),
+        None,
+        &[("cookie", &format!("abshare_media={media}"))],
+    )
+    .await;
+    assert_eq!(json_of(r).await["error"], "factor_required");
+    let r = send(&t, "GET", "/v1/me", None, &[("authorization", &auth)]).await;
+    assert_eq!(json_of(r).await["needs_factor"], true);
+
+    // A refresh doesn't lift it.
+    let r = send(&t, "POST", "/v1/auth/refresh", None, &[("cookie", &format!("abshare_refresh={refresh}"))]).await;
+    let v = json_of(r).await;
+    assert_eq!(v["user"]["needs_factor"], true);
+    let auth = format!("Bearer {}", v["access_token"].as_str().expect("access"));
+    assert_eq!(send(&t, "GET", "/v1/home", None, &[("authorization", &auth)]).await.status(), StatusCode::FORBIDDEN);
+
+    // The recovery code counts as a fresh factor, so a new authenticator can be set up at once.
+    let r = send(&t, "POST", "/v1/me/totp/start", Some(json!({})), &[("authorization", &auth)]).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let v = json_of(r).await;
+    let seed = b32_decode(v["secret"].as_str().expect("secret"));
+    let r = send(
+        &t,
+        "POST",
+        "/v1/me/totp/finish",
+        Some(json!({"challenge": v["challenge"], "code": code(&seed, 0)})),
+        &[("authorization", &auth)],
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+    assert_eq!(send(&t, "GET", "/v1/home", None, &[("authorization", &auth)]).await.status(), StatusCode::OK);
+    let r = send(&t, "GET", "/v1/me", None, &[("authorization", &auth)]).await;
+    assert_eq!(json_of(r).await["needs_factor"], false);
+}
+
+#[tokio::test]
+async fn home_shows_a_show_once_in_recently_added() {
+    let t = setup();
+    {
+        let c = t.st.db.0.lock().expect("db");
+        c.execute("INSERT INTO library (id, name, root) VALUES (1, 'Audiobooks', '/srv/audiobooks')", []).expect("lib");
+        let ids = [
+            "e1aaaaaaaaaaaaaaaaaaaaaaaa",
+            "e2aaaaaaaaaaaaaaaaaaaaaaaa",
+            "e3aaaaaaaaaaaaaaaaaaaaaaaa",
+            "bkaaaaaaaaaaaaaaaaaaaaaaaa",
+        ];
+        for (n, id) in ids.iter().enumerate() {
+            c.execute(
+                "INSERT INTO book (id, library_id, folder, meta, duration_ms, needs_copy, updated_at, added_at)
+                 VALUES (?1, 1, '', '{\"title\":\"T\"}', 60000, 0, 1, ?2)",
+                rusqlite::params![id, 100 + n as i64],
+            )
+            .expect("book");
+        }
+        c.execute("INSERT INTO grp (id, library_id, name, kind) VALUES ('showaaaaaaaaaaaaaaaaaaaaaa', 1, 'Field Notes', 'show')", []).expect("grp");
+        for (n, id) in ids[..3].iter().enumerate() {
+            c.execute(
+                "INSERT INTO grp_member (grp_id, ord, book_id, extra) VALUES ('showaaaaaaaaaaaaaaaaaaaaaa', ?1, ?2, 0)",
+                rusqlite::params![n as i64, id],
+            )
+            .expect("member");
+        }
+    }
+    let (_, access, ..) = enrol(&t, "ned").await;
+    let r = send(&t, "GET", "/v1/home", None, &[("authorization", &format!("Bearer {access}"))]).await;
+    let recent = json_of(r).await["recently_added"].as_array().expect("recent").clone();
+    let kinds: Vec<&str> = recent.iter().map(|v| v["type"].as_str().unwrap_or("")).collect();
+    // The newest addition is the standalone book; the three episodes are one show tile.
+    assert_eq!(kinds, ["book", "show"], "{recent:?}");
+    assert_eq!(recent[1]["title"], "Field Notes");
+    assert_eq!(recent[1]["episodes"], 3);
+}
+
+// ---------------------------------------------------------------- the demo library, end to end
+
+/// Makes a tree read-only (the scanner refuses a library it could write to), or writable again.
+fn set_tree_writable(root: &std::path::Path, writable: bool) {
+    use std::os::unix::fs::PermissionsExt;
+    for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
+        let p = entry.path();
+        let meta = std::fs::symlink_metadata(&p).expect("meta");
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.is_dir() {
+            if writable {
+                let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755));
+            }
+            set_tree_writable(&p, writable);
+            if !writable {
+                std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o555)).expect("chmod");
+            }
+        } else {
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(if writable { 0o644 } else { 0o444 }))
+                .expect("chmod");
+        }
+    }
+    std::fs::set_permissions(root, std::fs::Permissions::from_mode(if writable { 0o755 } else { 0o555 }))
+        .expect("chmod");
+}
+
+/// The synthetic demo library (tools/demo/make-library.sh), scanned with the real jail and
+/// ffmpeg, then used through the real router: browse, stream the original and data saver,
+/// build a playable copy, download for offline listening, and sync progress. Needs Landlock;
+/// with ABSHARE_REQUIRE_LANDLOCK set (as in CI) it fails rather than skips.
+#[tokio::test]
+async fn the_demo_library_scans_streams_downloads_and_syncs() {
+    let Some(ff) = crate::tools::test_ffmpeg().await else {
+        eprintln!("skipped: the jailed ffmpeg can't run here");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("abshare-demo-test-{}", std::process::id()));
+    if dir.exists() {
+        set_tree_writable(&dir, true);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    let (lib, data) = (dir.join("lib"), dir.join("data"));
+    std::fs::create_dir_all(&data).expect("mkdir");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+    }
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tools/demo/make-library.sh");
+    let made = std::process::Command::new("sh").arg(&script).arg(&lib).output().expect("run make-library.sh");
+    assert!(made.status.success(), "make-library.sh: {}", String::from_utf8_lossy(&made.stderr));
+    set_tree_writable(&lib, false);
+
+    // Scan it, as `abshare scan` does.
+    let libs: Vec<String> = ff.libs.iter().map(|p| format!("{:?}", p.to_string_lossy())).collect();
+    let toml = format!(
+        "data_dir = {:?}\npublic_origin = \"https://books.example.com\"\ntrusted_proxies = [\"10.0.0.10\"]\n\
+         [ffmpeg]\nffmpeg = {:?}\nffprobe = {:?}\njail = {:?}\nlibs = [{}]\n\
+         [[library]]\nname = \"Audiobooks\"\npath = {:?}\n",
+        data.to_string_lossy(),
+        ff.ffmpeg.to_string_lossy(),
+        ff.ffprobe.to_string_lossy(),
+        ff.jail.to_string_lossy(),
+        libs.join(", "),
+        lib.to_string_lossy(),
+    );
+    let cfg_path = dir.join("abshare.toml");
+    std::fs::write(&cfg_path, toml).expect("config");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&cfg_path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+    }
+    let cfg = crate::config::Config::load(&cfg_path).expect("config loads");
+    let secret = Secret::load_or_create(&data).expect("secret");
+    let mut cat = crate::catalogue::Catalogue::open(&data.join("abshare.db")).expect("catalogue");
+    let rep = crate::scan::scan_library(&cfg, &mut cat, &secret, &cfg.libraries[0], 1).await.expect("scan");
+    assert_eq!((rep.files, rep.books, rep.needs_copy, rep.shows), (25, 15, 2, 2), "{rep:?}");
+    let kinds = |k: &str| rep.problems.iter().filter(|p| p.1 == k).count();
+    assert_eq!((kinds("unplayable"), kinds("duplicate"), kinds("skipped")), (2, 1, 1), "{:?}", rep.problems);
+    assert!(rep.problems.iter().any(|p| p.0 == "escape.mp3" && p.1 == "skipped"), "the symlink isn't followed");
+    drop(cat);
+
+    // Serve it, as `abshare serve` does.
+    let conn = crate::db::open(&data.join("abshare.db")).expect("db");
+    let mut st = AppState::new(conn, &secret, ORIGIN, vec!["10.0.0.10".parse().expect("ip")], Hasher::for_tests())
+        .expect("state");
+    let roots = [("Audiobooks".to_owned(), cfg.libraries[0].path.clone())].into_iter().collect();
+    st.media = Some(Arc::new(crate::media::Media::new(ff, data.clone(), roots)));
+    let st = Arc::new(st);
+    let t = T { app: router(st.clone()), st };
+    let (_, access, _, _, media) = enrol_with_media(&t, "demo").await;
+    let bearer = format!("Bearer {access}");
+    let cookie = format!("abshare_media={media}");
+
+    // Browse: the series is grouped, the show is one tile, the broken files aren't listed.
+    let r = send(&t, "GET", "/v1/books?limit=100", None, &[("authorization", &bearer)]).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let items = json_of(r).await["items"].as_array().expect("items").clone();
+    let title = |v: &Value| v["title"].as_str().unwrap_or("").to_owned();
+    let titles: Vec<String> = items.iter().map(title).collect();
+    assert!(titles.contains(&"The Copper Tide".to_owned()), "{titles:?}");
+    assert!(!titles.iter().any(|t| t.starts_with("Broken")), "{titles:?}");
+    assert!(items.iter().any(|v| v["type"] == "show"), "{titles:?}");
+    let copper =
+        items.iter().find(|v| title(v) == "The Copper Tide").expect("book")["id"].as_str().expect("id").to_owned();
+
+    // Stream the original with a Range request.
+    let r =
+        send(&t, "GET", &format!("/v1/media/{copper}"), None, &[("cookie", &cookie), ("range", "bytes=0-99")]).await;
+    assert_eq!(r.status(), StatusCode::PARTIAL_CONTENT);
+    assert!(r.headers()["content-range"].to_str().expect("range").starts_with("bytes 0-99/"));
+    assert_eq!(body_of(r).await.len(), 100);
+
+    // A multi-part book: its playable copy is built in the jail, then streams.
+    let multi: String = t
+        .st
+        .db
+        .run(|c| {
+            c.query_row("SELECT id FROM book WHERE needs_copy = 1 AND missing_since IS NULL LIMIT 1", [], |r| r.get(0))
+                .map_err(crate::db::sql_err)
+        })
+        .await
+        .expect("a multi-part book");
+    let mut ready = false;
+    for _ in 0..240 {
+        let r = send(&t, "GET", &format!("/v1/media/{multi}/state"), None, &[("cookie", &cookie)]).await;
+        let v = json_of(r).await;
+        assert_ne!(v["failed"], true, "the playable copy failed");
+        if v["ready"] == true {
+            ready = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    assert!(ready, "the playable copy wasn't ready within two minutes");
+    let r = send(&t, "GET", &format!("/v1/media/{multi}"), None, &[("cookie", &cookie), ("range", "bytes=0-")]).await;
+    assert_eq!(r.status(), StatusCode::PARTIAL_CONTENT);
+    assert!(!body_of(r).await.is_empty());
+
+    // Data saver: a constant-bitrate MP3 made on demand; byte 0 is a frame header.
+    let r =
+        send(&t, "GET", &format!("/v1/media/{copper}?q=32"), None, &[("cookie", &cookie), ("range", "bytes=0-959")])
+            .await;
+    assert_eq!(r.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(r.headers()["content-type"], "audio/mpeg");
+    let bytes = body_of(r).await;
+    assert_eq!(bytes.len(), 960);
+    assert_eq!((bytes[0], bytes[1] & 0xE0), (0xFF, 0xE0), "an MP3 frame sync");
+
+    // An offline download of the data-saver file, as the app fetches it.
+    let r =
+        send(&t, "GET", &format!("/v1/media/{copper}?q=32&dl=1"), None, &[("cookie", &cookie), ("range", "bytes=0-")])
+            .await;
+    assert_eq!(r.status(), StatusCode::PARTIAL_CONTENT);
+    assert!(!body_of(r).await.is_empty());
+
+    // Progress syncs and shows up in Continue listening.
+    let event = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("time").as_millis() as i64;
+    let r = send(
+        &t,
+        "PUT",
+        &format!("/v1/progress/{copper}"),
+        Some(json!({"key": "demo-key-0001", "event_time_ms": event, "action": "position", "position_ms": 5000})),
+        &[("authorization", &bearer)],
+    )
+    .await;
+    assert_eq!(json_of(r).await["result"], "accepted");
+    let r = send(&t, "GET", "/v1/home", None, &[("authorization", &bearer)]).await;
+    let home = json_of(r).await;
+    assert!(home["continue"].as_array().expect("continue").iter().any(|v| v["id"] == copper.as_str()), "{home}");
+
+    set_tree_writable(&dir, true);
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -37,7 +37,6 @@ pub fn routes(_state: State) -> Router<State> {
         .route("/login/passkey/finish", post(login_passkey_finish))
         .route("/refresh", post(refresh))
         .route("/logout", post(logout))
-        .route("/step-up/password", post(step_up_password))
         .route("/step-up/totp", post(step_up_totp))
         .route("/step-up/passkey/start", post(step_up_passkey_start))
         .route("/step-up/passkey/finish", post(step_up_passkey_finish))
@@ -56,6 +55,7 @@ async fn complete_login(
     ip: std::net::IpAddr,
     ua: Option<String>,
     extra: Value,
+    recovery: bool,
 ) -> Result<Response, ApiError> {
     let name = validate::label(device_name, "Device");
     let (refresh, rh) = new_token();
@@ -74,18 +74,31 @@ async fn complete_login(
                 Err(DeviceError::Db(e)) => return Err(e),
             };
             store::issue_refresh(&tx, device, &rh, None, now())?;
+            // A recovery code means a factor was lost: the account must set up a new one before
+            // anything else. Signing in with a real factor shows nothing was lost.
+            store::set_needs_factor(&tx, user_id, recovery)?;
             tx.commit().map_err(crate::db::sql_err)?;
             Ok((user, Some(device)))
         })
         .await?;
     let Some(device) = device else { return Err(ApiError::too_many()) };
-    let (access, media) =
-        st.sessions.issue(user.id, device, user.role, now()).ok_or_else(|| ApiError::internal("session table full"))?;
+    let (access, media) = st
+        .sessions
+        .issue(user.id, device, user.role, recovery, now())
+        .ok_or_else(|| ApiError::internal("session table full"))?;
+    if !recovery {
+        st.sessions.clear_needs_factor(user.id);
+    }
+    if recovery {
+        // The recovery code is this session's fresh factor: without it, someone who lost their
+        // only factor could never pass step-up to add a new one.
+        st.sessions.mark_stepped_up(device, now());
+    }
     st.audit("login.ok", Some(user.id), Some(device), Some(ip), String::new()).await;
     let mut body = json!({
         "access_token": access,
         "expires_in": crate::auth::sessions::ACCESS_TTL,
-        "user": { "username": user.username, "display_name": user.display_name, "role": user.role.as_str() },
+        "user": { "username": user.username, "display_name": user.display_name, "role": user.role.as_str(), "needs_factor": recovery },
     });
     if let (Some(b), Value::Object(extra)) = (body.as_object_mut(), extra) {
         b.extend(extra);
@@ -361,7 +374,7 @@ async fn enrol_finish(
         format!("passkey={has_passkey} totp={has_pw_totp}"),
     )
     .await;
-    complete_login(&st, uid, &b.device_name, ip, ua(&headers), json!({ "recovery_codes": codes })).await
+    complete_login(&st, uid, &b.device_name, ip, ua(&headers), json!({ "recovery_codes": codes }), false).await
 }
 
 // ---------------------------------------------------------------- sign-in
@@ -453,7 +466,7 @@ async fn finish_second(
     if let Ok(mut l) = st.limiter.lock() {
         l.succeeded(&p.attempt);
     }
-    complete_login(st, p.user, &p.device_name, ip, ua(headers), json!({})).await
+    complete_login(st, p.user, &p.device_name, ip, ua(headers), json!({}), how == "recovery").await
 }
 
 async fn login_totp(
@@ -569,7 +582,7 @@ async fn login_passkey_finish(
         let data = passkeys::to_json(&pk).map_err(ApiError::internal)?;
         st.db.run(move |c| store::update_passkey(c, pk_id, &data, now())).await?;
     }
-    complete_login(&st, uid, &b.device_name, ip, ua(&headers), json!({})).await
+    complete_login(&st, uid, &b.device_name, ip, ua(&headers), json!({}), false).await
 }
 
 // ---------------------------------------------------------------- refresh, sign-out
@@ -603,10 +616,10 @@ async fn refresh(S(st): S<State>, Ip(ip): Ip, headers: HeaderMap) -> Result<Resp
             let u = st.db.run(move |c| store::user_by_id(c, user)).await?.ok_or_else(ApiError::unauthenticated)?;
             let (access, media) = st
                 .sessions
-                .issue(user, device, u.role, now())
+                .issue(user, device, u.role, u.needs_factor, now())
                 .ok_or_else(|| ApiError::internal("session table full"))?;
             let mut r = Json(json!({ "access_token": access, "expires_in": crate::auth::sessions::ACCESS_TTL,
-                "user": { "username": u.username, "display_name": u.display_name, "role": u.role.as_str() } }))
+                "user": { "username": u.username, "display_name": u.display_name, "role": u.role.as_str(), "needs_factor": u.needs_factor } }))
             .into_response();
             r.headers_mut()
                 .append(header::SET_COOKIE, set_cookie(REFRESH_COOKIE, &new, "/v1/auth", store::REFRESH_LIFETIME));
@@ -674,41 +687,6 @@ async fn logout(S(st): S<State>, Ip(ip): Ip, headers: HeaderMap) -> Result<Respo
 struct StepUp {
     password: Option<String>,
     code: Option<String>,
-}
-
-async fn step_up_password(
-    S(st): S<State>,
-    Ip(ip): Ip,
-    Authed(s): Authed,
-    Json(b): Json<StepUp>,
-) -> Result<Json<Value>, ApiError> {
-    let uid = s.user;
-    let user = st.db.run(move |c| store::user_by_id(c, uid)).await?.ok_or_else(ApiError::unauthenticated)?;
-    let attempt = st
-        .limiter
-        .lock()
-        .map_err(|_| ApiError::internal("limiter"))?
-        .begin(ip, &user.username, now())
-        .map_err(refusal)?;
-    let pw = b.password.unwrap_or_default();
-    if pw.len() > 4096 || !st.hasher.verify(pw, user.password_hash.clone()).await? {
-        st.audit("step_up.failed", Some(uid), Some(s.device), Some(ip), "password".into()).await;
-        return Err(ApiError::denied());
-    }
-    // A password alone is never a step-up (it isn't a complete sign-in method): with an
-    // authenticator app, the code follows; otherwise the account has a passkey, which must be
-    // used (review A4).
-    if user.totp_secret.is_some() {
-        return Err(ApiError::new(StatusCode::FORBIDDEN, "totp_required", "Enter an authenticator code too."));
-    }
-    if user.totp_secret.is_none() {
-        return Err(ApiError::new(StatusCode::FORBIDDEN, "passkey_required", "Use your passkey to confirm."));
-    }
-    if let Ok(mut l) = st.limiter.lock() {
-        l.succeeded(&attempt);
-    }
-    st.sessions.mark_stepped_up(s.device, now());
-    Ok(Json(json!({ "ok": true })))
 }
 
 async fn step_up_totp(

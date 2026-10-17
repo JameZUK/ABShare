@@ -203,13 +203,7 @@ async fn books(S(st): S<State>, Authed(s): Authed, Query(q): Query<BooksQuery>) 
         && shelf.is_none()
     {
         for g in &shows {
-            let first = g
-                .members
-                .iter()
-                .filter_map(|(id, _)| cat.by_id.get(id))
-                .map(|&i| &cat.books[i])
-                .find(|b| ok.contains(&b.library_id));
-            out.push(json!({ "type": "show", "id": g.id, "title": g.name, "episodes": g.members.iter().filter(|m| !m.1).count(), "cover": first.map_or(Value::Null, cover_url) }));
+            out.push(show_tile(&cat, &ok, g));
         }
         if q.sort.as_deref().is_none_or(|s| s == "title") {
             out.sort_by_key(|v| fold(v["title"].as_str().unwrap_or("")).trim_start_matches("the ").to_owned());
@@ -334,6 +328,17 @@ async fn group(S(st): S<State>, Authed(s): Authed, Path(id): Path<String>) -> Re
     ))
 }
 
+/// A show as one tile (its episodes are separate books), as the Library and Home show it.
+fn show_tile(cat: &crate::library::Catalog, ok: &HashSet<i64>, g: &crate::library::Group) -> Value {
+    let first = g
+        .members
+        .iter()
+        .filter_map(|(id, _)| cat.by_id.get(id))
+        .map(|&i| &cat.books[i])
+        .find(|b| ok.contains(&b.library_id));
+    json!({ "type": "show", "id": g.id, "title": g.name, "episodes": g.members.iter().filter(|m| !m.1).count(), "cover": first.map_or(Value::Null, cover_url) })
+}
+
 async fn home(S(st): S<State>, Authed(s): Authed) -> Result<Json<Value>, ApiError> {
     let (cat, ok) = view(&st, &s).await?;
     let prog = user_progress(&st, s.user).await?;
@@ -362,8 +367,36 @@ async fn home(S(st): S<State>, Authed(s): Authed) -> Result<Json<Value>, ApiErro
     Ok(Json(json!({
         "continue": cont.iter().take(12).map(|(b, p)| summary(b, Some(p))).collect::<Vec<_>>(),
         "series_next": next_up.into_iter().take(12).collect::<Vec<_>>(),
-        "recently_added": recent.iter().take(12).map(|b| summary(b, prog.get(&b.id))).collect::<Vec<_>>(),
+        "recently_added": recently_added(&cat, &ok, &recent, &prog),
     })))
+}
+
+/// The newest additions, with a show's episodes as one tile at its newest episode's place.
+fn recently_added(
+    cat: &crate::library::Catalog,
+    ok: &HashSet<i64>,
+    recent: &[&Book],
+    prog: &HashMap<String, (u64, bool, i64)>,
+) -> Vec<Value> {
+    let show_of: HashMap<&str, &crate::library::Group> = cat
+        .groups
+        .iter()
+        .filter(|g| g.kind == "show" && ok.contains(&g.library_id))
+        .flat_map(|g| g.members.iter().map(move |(b, _)| (b.as_str(), g)))
+        .collect();
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for b in recent {
+        match show_of.get(b.id.as_str()) {
+            Some(g) if seen.insert(g.id.as_str()) => out.push(show_tile(cat, ok, g)),
+            Some(_) => {}
+            None => out.push(summary(b, prog.get(&b.id))),
+        }
+        if out.len() == 12 {
+            break;
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------- progress

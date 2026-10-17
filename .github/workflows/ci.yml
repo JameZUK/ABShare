@@ -24,11 +24,17 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg sqlite3
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      # The jail needs Landlock ABI 6 (Linux 6.12+). Hosted runners may run older kernels, so the
-      # escape tests skip here when the jail cannot start; they are required (and run) on
-      # development machines and on the deployment target via ABSHARE_REQUIRE_LANDLOCK=1.
+      # The jail needs Landlock ABI 6 (Linux 6.12+); the hosted runners have it (kernel 6.17,
+      # ABI 7, checked 2026-10-17). With ABSHARE_REQUIRE_LANDLOCK set, the jail escape tests,
+      # the jailed ffmpeg tests and the demo-library integration test fail instead of skipping.
+      - name: Landlock is available
+        run: cat /sys/kernel/security/lsm | grep -q landlock
       - run: cargo test --workspace
+        env:
+          ABSHARE_REQUIRE_LANDLOCK: "1"
       - run: cargo test --workspace --release
+        env:
+          ABSHARE_REQUIRE_LANDLOCK: "1"
 
   web:
     runs-on: ubuntu-24.04

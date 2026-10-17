@@ -27,13 +27,18 @@
 
 	const inviting = $derived(page.url.hash.startsWith('#/invite/'));
 	const ready = $derived(session.status === 'signed-in' || session.status === 'offline');
+	// After a recovery-code sign-in only the account page works until a new factor is set up.
+	const limited = $derived(session.status === 'signed-in' && session.user?.needs_factor === true);
+	$effect(() => {
+		if (limited && !page.url.hash.startsWith('#/settings/account')) location.hash = '#/settings/account';
+	});
 
 	// After sign-in (or with the last user, offline): load downloads, flush the outbox and
 	// bring back the last book, paused.
 	let restoredFor: string | null = null;
 	$effect(() => {
 		const user = session.user?.username;
-		if (!ready || !user || restoredFor === user) return;
+		if (!ready || limited || !user || restoredFor === user) return;
 		restoredFor = user;
 		settings.owner = user;
 		void downloads.finishWipes().then(() => downloads.load());
@@ -43,7 +48,7 @@
 	});
 
 	$effect(() => {
-		if (session.status === 'signed-in') {
+		if (session.status === 'signed-in' && !limited) {
 			void sync.flush();
 			void downloads.load();
 		}
@@ -77,6 +82,8 @@
 	<div class="splash" aria-busy="true"><img src="./favicon.svg" alt="ABShare" width="72" height="72" /></div>
 {:else if !ready}
 	<SignIn />
+{:else if limited}
+	{@render children()}
 {:else}
 	{#if session.status === 'offline'}
 		<p class="banner" role="status"><Icon name="offline" size={18} /> Offline. Downloaded books still play.</p>

@@ -8,7 +8,7 @@ export const CLIENT_HEADER = { 'X-ABShare-Client': '1' } as const;
 export class ApiError extends Error {
 	constructor(
 		readonly status: number,
-		/** The server's error code ("denied", "preparing", "totp_required", …). */
+		/** The server's error code ("denied", "preparing", "factor_required", …). */
 		readonly code: string,
 		message: string,
 		/** Seconds to wait before trying again, if the server said. */

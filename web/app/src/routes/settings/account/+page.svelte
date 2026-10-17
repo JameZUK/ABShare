@@ -31,6 +31,8 @@
 	async function reload() {
 		try {
 			[me, passkeys] = await Promise.all([api<Me>('v1/me'), api<{ passkeys: PasskeyInfo[] }>('v1/me/passkeys').then((r) => r.passkeys)]);
+			// A new factor lifts the limit after a recovery-code sign-in: let the rest of the app in.
+			if (session.user?.needs_factor && !me.needs_factor) session.user = { ...session.user, needs_factor: false };
 		} catch (e) {
 			error = messageOf(e);
 		}
@@ -112,6 +114,9 @@
 <main class="page narrow">
 	<button class="icon-btn" onclick={() => history.back()} aria-label="Back"><Icon name="back" /></button>
 	<h1>Account</h1>
+	{#if session.user?.needs_factor}
+		<p class="notice" role="alert">You signed in with a recovery code. Set up a new passkey or authenticator app below to carry on. If a lost phone or computer holds one of your passkeys, remove it too.</p>
+	{/if}
 	{#if me}<p class="muted">Signed in as <strong>{me.username}</strong>{me.display_name !== me.username ? ` (${me.display_name})` : ''}</p>{/if}
 	{#if note}<p role="status">{note}</p>{/if}
 	{#if error}<p class="error" role="alert">{error}</p>{/if}
@@ -192,6 +197,12 @@
 </Sheet>
 
 <style>
+	.notice {
+		background: var(--accent-soft);
+		color: var(--accent-soft-fg);
+		padding: 0.75rem 1rem;
+		border-radius: var(--radius-sm);
+	}
 	section {
 		margin: 1.5rem 0;
 	}
