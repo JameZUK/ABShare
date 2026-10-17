@@ -1,0 +1,34 @@
+# ABShare with Docker Compose. Copy to /srv/abshare/compose.yaml next to abshare.toml.
+#
+#   mkdir -p /srv/abshare/data && chown 65534:65534 /srv/abshare/data && chmod 0700 /srv/abshare/data
+#   docker compose up -d
+#   docker compose run --rm --entrypoint /usr/local/bin/abshare scan scan --config /etc/abshare/abshare.toml --problems
+#   docker compose run --rm --entrypoint /usr/local/bin/abshare scan admin invite --config /etc/abshare/abshare.toml --admin
+#
+# Both services share the data directory: the server notices a finished scan by itself.
+x-hardening: &hardening
+  image: abshare:latest
+  user: "65534:65534"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: [/tmp:size=64m,mode=1777]
+  mem_limit: 2g
+  pids_limit: 256
+  volumes:
+    - /srv/audiobooks:/library:ro
+    - ./data:/data
+    - ./abshare.toml:/etc/abshare/abshare.toml:ro
+  restart: unless-stopped
+
+services:
+  abshare:
+    <<: *hardening
+    command: ["serve", "--config", "/etc/abshare/abshare.toml"]
+    ports: ["8743:8743"]
+
+  # Rescans the library every hour (only changed files are probed).
+  scan:
+    <<: *hardening
+    mem_limit: 1g
+    entrypoint: ["/bin/sh", "-c", "while true; do /usr/local/bin/abshare scan --config /etc/abshare/abshare.toml; sleep 3600; done"]

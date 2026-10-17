@@ -1,0 +1,24 @@
+# ABShare configuration (SPEC §5.7). Copy to /srv/abshare/abshare.toml, mode 0600 or 0644,
+# owned by root; never group- or world-writable (the server refuses to start).
+
+# Inside the container. Publish it with the compose file; put a TLS reverse proxy in front.
+listen = "0.0.0.0:8743"
+data_dir = "/data"
+# The address people use. It must be https:// (the server checks Host and Origin against it).
+public_origin = "https://books.example.com"
+# The reverse proxy's address. Only these may set X-Forwarded-For and X-Forwarded-Proto.
+trusted_proxies = ["10.0.0.10"]
+web_dir = "/usr/share/abshare/web"
+
+[ffmpeg]
+ffmpeg = "/usr/bin/ffmpeg"
+ffprobe = "/usr/bin/ffprobe"
+jail = "/usr/local/bin/abshare-jail"
+# Debian's ffmpeg is dynamically linked: the jail may load its libraries and nothing else.
+libs = ["/usr/lib", "/etc/ld.so.cache"]
+jobs = 1
+
+[[library]]
+name = "Audiobooks"
+# Mounted read-only (the server refuses a writable library).
+path = "/library"
