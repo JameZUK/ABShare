@@ -147,7 +147,9 @@ pub fn prune(conn: &Connection, key: &[u8; 32], now: i64) -> Result<usize, Strin
 /// Checks the whole chain. Returns the number of rows, or the ID of the first bad row.
 pub fn verify(conn: &Connection, key: &[u8; 32]) -> Result<usize, i64> {
     let ct = |a: &[u8], b: &[u8]| bool::from(subtle::ConstantTimeEq::ct_eq(a, b));
-    let anchor: Option<(Vec<u8>, Option<i64>, Option<Vec<u8>>)> = conn
+    // (mac, cut_id, tag)
+    type Anchor = (Vec<u8>, Option<i64>, Option<Vec<u8>>);
+    let anchor: Option<Anchor> = conn
         .query_row("SELECT mac, cut_id, tag FROM audit_anchor WHERE id = 1", [], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?))
         })
