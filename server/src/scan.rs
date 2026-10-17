@@ -115,6 +115,7 @@ pub async fn scan_library(
     }
 
     let id_key = secret.derive(purpose::BOOK_ID);
+    let previous_covers = cat.covers(lib_id)?;
     let mut asin_seen: HashSet<String> = HashSet::new();
     let mut metas: Vec<BookMeta> = Vec::new();
     let mut rows: Vec<BookRow> = Vec::new();
@@ -144,8 +145,17 @@ pub async fn scan_library(
         } else {
             cover_sidecar(&w.extras, first.dir()).map(|p| covers::Source::Sidecar(lib.path.join(p)))
         };
-        let cover = match src {
-            Some(s) => match covers::make(&cfg.ffmpeg, &cfg.data_dir, &id, s).await {
+        let cover_src = src.as_ref().map(|s| fingerprint(s, &lib.path, &records));
+        let reuse = previous_covers
+            .get(&id)
+            .filter(|(hash, from)| Some(from) == cover_src.as_ref() && covers::exists(&cfg.data_dir, &id, hash))
+            .map(|(hash, _)| hash.clone());
+        let cover = match (reuse, src) {
+            (Some(h), _) => {
+                rep.covers += 1;
+                Some(h)
+            }
+            (None, Some(s)) => match covers::make(&cfg.ffmpeg, &cfg.data_dir, &id, s).await {
                 Ok(h) => {
                     rep.covers += 1;
                     Some(h)
@@ -155,7 +165,7 @@ pub async fn scan_library(
                     None
                 }
             },
-            None => None,
+            (None, None) => None,
         };
         if plan.needs_copy {
             rep.needs_copy += 1;
@@ -166,6 +176,7 @@ pub async fn scan_library(
             meta_json: meta_json(&meta),
             duration_ms: plan.duration_ms,
             needs_copy: plan.needs_copy,
+            cover_src: cover.as_ref().and(cover_src),
             cover,
             parts: parts.iter().map(|p| p.rel_path.clone()).collect(),
             chapters,
@@ -247,6 +258,22 @@ fn cover_in(x: &DirExtras) -> Option<&String> {
         n.starts_with("cover.") || n.starts_with("folder.")
     });
     named.or_else(|| (x.images.len() == 1).then(|| &x.images[0]))
+}
+
+/// Identifies a cover source: the file it comes from, with its size and modification time.
+fn fingerprint(src: &covers::Source, root: &Path, records: &HashMap<String, crate::catalogue::StoredFile>) -> String {
+    match src {
+        covers::Source::Embedded { file, .. } => {
+            let rel = file.strip_prefix(root).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+            let (size, mtime) = records.get(&rel).map_or((0, 0), |r| (r.size, r.mtime_ns));
+            format!("embedded:{rel}:{size}:{mtime}")
+        }
+        covers::Source::Sidecar(p) => {
+            let m = std::fs::symlink_metadata(p).ok();
+            let (size, mtime) = m.map_or((0, 0), |m| (m.len(), std::os::unix::fs::MetadataExt::mtime(&m)));
+            format!("sidecar:{}:{size}:{mtime}", p.strip_prefix(root).unwrap_or(p).display())
+        }
+    }
 }
 
 fn meta_json(m: &BookMeta) -> String {

@@ -15,6 +15,11 @@ use std::time::Duration;
 pub const SIZES: [u32; 4] = [128, 320, 640, 1280];
 const MAX_SOURCE: usize = 20 * 1024 * 1024;
 
+/// Whether the thumbnails for `hash` are on disk.
+pub fn exists(data_dir: &Path, book_id: &str, hash: &str) -> bool {
+    SIZES.iter().all(|s| data_dir.join("covers").join(book_id).join(format!("{hash}-{s}.jpg")).exists())
+}
+
 pub enum Source {
     Embedded { file: PathBuf, ext: String },
     Sidecar(PathBuf),

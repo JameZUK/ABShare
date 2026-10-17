@@ -69,6 +69,8 @@ const MIGRATIONS: &[&str] = &[
         kind TEXT NOT NULL,
         detail TEXT NOT NULL
     );",
+    // 2: where each book's cover came from, so unchanged covers are not re-extracted.
+    "ALTER TABLE book ADD COLUMN cover_src TEXT;",
 ];
 
 pub struct Catalogue {
@@ -82,6 +84,8 @@ pub struct BookRow {
     pub duration_ms: u64,
     pub needs_copy: bool,
     pub cover: Option<String>,
+    /// The cover's source fingerprint (path, size, mtime).
+    pub cover_src: Option<String>,
     pub parts: Vec<String>,
     pub chapters: Vec<Chapter>,
 }
@@ -192,6 +196,18 @@ impl Catalogue {
         Ok(())
     }
 
+    /// Each book's current cover hash and the source it was made from.
+    pub fn covers(&self, lib: i64) -> Result<HashMap<String, (String, String)>, String> {
+        let mut st = self
+            .conn
+            .prepare("SELECT id, cover, cover_src FROM book WHERE library_id = ?1 AND cover IS NOT NULL AND cover_src IS NOT NULL")
+            .map_err(sql_err)?;
+        let rows = st
+            .query_map(params![lib], |r| Ok((r.get::<_, String>(0)?, (r.get::<_, String>(1)?, r.get::<_, String>(2)?))))
+            .map_err(sql_err)?;
+        rows.collect::<Result<_, _>>().map_err(sql_err)
+    }
+
     pub fn forget_files_not_in(&mut self, lib: i64, keep: &HashSet<String>) -> Result<usize, String> {
         let existing: Vec<String> = {
             let mut st = self.conn.prepare("SELECT rel_path FROM file WHERE library_id = ?1").map_err(sql_err)?;
@@ -232,12 +248,13 @@ impl Catalogue {
         }
         for b in books {
             tx.execute(
-                "INSERT INTO book (id, library_id, folder, meta, duration_ms, needs_copy, cover, missing_since, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)
+                "INSERT INTO book (id, library_id, folder, meta, duration_ms, needs_copy, cover, cover_src, missing_since, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?9, NULL, ?8)
                  ON CONFLICT(id) DO UPDATE SET library_id = excluded.library_id, folder = excluded.folder,
                  meta = excluded.meta, duration_ms = excluded.duration_ms, needs_copy = excluded.needs_copy,
-                 cover = excluded.cover, missing_since = NULL, updated_at = excluded.updated_at",
-                params![b.id, lib, b.folder, b.meta_json, to_i64(b.duration_ms), b.needs_copy, b.cover, now],
+                 cover = excluded.cover, cover_src = excluded.cover_src, missing_since = NULL,
+                 updated_at = excluded.updated_at",
+                params![b.id, lib, b.folder, b.meta_json, to_i64(b.duration_ms), b.needs_copy, b.cover, now, b.cover_src],
             )
             .map_err(sql_err)?;
             tx.execute("DELETE FROM book_part WHERE book_id = ?1", params![b.id]).map_err(sql_err)?;
@@ -314,6 +331,7 @@ mod tests {
             duration_ms: 1000,
             needs_copy: false,
             cover: None,
+            cover_src: None,
             parts: vec!["F/a.m4b".into()],
             chapters: vec![Chapter { start_ms: 0, end_ms: 1000, title: "One".into() }],
         }
