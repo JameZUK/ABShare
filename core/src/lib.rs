@@ -4,6 +4,7 @@
 //! returns. Nothing here opens files, sockets or processes.
 
 pub mod assemble;
+pub mod auth;
 pub mod chapters;
 pub mod ffprobe;
 pub mod ids;
