@@ -117,6 +117,7 @@ pub async fn scan_library(
     let id_key = secret.derive(purpose::BOOK_ID);
     let previous_covers = cat.covers(lib_id)?;
     let mut asin_seen: HashSet<String> = HashSet::new();
+    let overrides = cat.overrides()?;
     let mut metas: Vec<BookMeta> = Vec::new();
     let mut rows: Vec<BookRow> = Vec::new();
     for plan in &asm.books {
@@ -125,7 +126,7 @@ pub async fn scan_library(
         let loose = plan.parts.len() == 1 && first.dir().is_empty();
         let folder_name = if loose { None } else { folder_path.rsplit('/').next() };
         let side = sidecars(&lib.path, &w.extras, first.dir());
-        let meta = book_meta(&first.tags, folder_name, first.file_name(), &side, plan.parts.len() > 1);
+        let mut meta = book_meta(&first.tags, folder_name, first.file_name(), &side, plan.parts.len() > 1);
         let parts: Vec<&ProbedFile> = plan.parts.iter().map(|&i| &files[i]).collect();
         let chapters = chapters::for_parts(&parts);
         let id = match meta.asin.as_deref() {
@@ -136,6 +137,10 @@ pub async fn scan_library(
             }
             None => book_id(&id_key, &BookKey::Path { library: lib_no, folder: &plan.key }),
         };
+        // An admin's corrections replace what the tags say (and so regroup series).
+        if let Some(o) = overrides.get(&id) {
+            o.apply(&mut meta);
+        }
         // Cover: embedded first, then cover.*/folder.*, then a single image in the folder.
         let src = if first.has_cover {
             Some(covers::Source::Embedded {

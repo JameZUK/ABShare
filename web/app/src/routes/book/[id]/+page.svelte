@@ -14,6 +14,7 @@
 	import Cover from '$lib/components/Cover.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import Sheet from '$lib/components/Sheet.svelte';
+	import EditDetails from '$lib/components/EditDetails.svelte';
 
 	const id = $derived(page.params.id ?? '');
 	let book = $state<BookDetail | null>(null);
@@ -23,11 +24,14 @@
 	let moreOpen = $state(false);
 	let dlOpen = $state(false);
 	let marksOpen = $state(false);
+	let editOpen = $state(false);
+	let reloadKey = $state(0);
 	let dlQuality = $state<Quality>('original');
 	let dlSize = $state<number | null>(null);
 
 	$effect(() => {
 		const bid = id;
+		void reloadKey;
 		book = null;
 		error = '';
 		void (async () => {
@@ -172,6 +176,9 @@
 		{/if}
 		<button class="btn plain" onclick={() => mark('restart')}>Start again</button>
 		<button class="btn plain" onclick={() => { moreOpen = false; marksOpen = true; }}>Bookmarks ({book?.bookmarks.length ?? 0})</button>
+		{#if session.user?.role === 'admin' && session.status === 'signed-in'}
+			<button class="btn plain" onclick={() => { moreOpen = false; editOpen = true; }}>Edit details</button>
+		{/if}
 		{#if canSave && session.status === 'signed-in'}
 			<a class="btn plain" href="v1/media/{id}/file" download onclick={() => (moreOpen = false)}>Save file</a>
 		{/if}
@@ -196,6 +203,8 @@
 	{/if}
 	<button class="btn" onclick={startDownload} disabled={book?.media.preparing && dlSize === null}>Download</button>
 </Sheet>
+
+{#if book}<EditDetails {book} bind:open={editOpen} onsaved={() => reloadKey++} />{/if}
 
 <Sheet bind:open={marksOpen} title="Bookmarks">
 	{#if !book?.bookmarks.length}

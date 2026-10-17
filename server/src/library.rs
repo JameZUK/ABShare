@@ -3,6 +3,7 @@
 
 use crate::db::sql_err;
 use abshare_core::genre::{Shelf, shelves};
+use abshare_core::metadata_override::Override;
 use abshare_core::text::fold;
 use rusqlite::Connection;
 use serde_json::Value;
@@ -46,7 +47,7 @@ pub struct Catalog {
     pub by_id: HashMap<String, usize>,
     pub groups: Vec<Group>,
     pub libraries: Vec<(i64, String)>,
-    pub stamp: (i64, i64, i64),
+    pub stamp: (i64, i64, i64, i64),
 }
 
 fn names(v: &Value, key: &str) -> Vec<String> {
@@ -67,14 +68,51 @@ fn sort_key(title: &str) -> String {
     f
 }
 
-/// A cheap fingerprint of the catalogue: when it changes, the view is reloaded.
-pub fn stamp(c: &Connection) -> Result<(i64, i64, i64), String> {
+/// A cheap fingerprint of the catalogue: when it changes, the view is reloaded. The last
+/// part changes whenever an admin correction is saved or removed.
+pub fn stamp(c: &Connection) -> Result<(i64, i64, i64, i64), String> {
     c.query_row(
-        "SELECT count(*), coalesce(max(updated_at), 0), (SELECT count(*) FROM grp) FROM book WHERE missing_since IS NULL",
+        "SELECT count(*), coalesce(max(updated_at), 0), (SELECT count(*) FROM grp),
+                (SELECT count(*) * 1000000000000 + coalesce(max(updated_at), 0) FROM book_override)
+         FROM book WHERE missing_since IS NULL",
         [],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
     )
     .map_err(sql_err)
+}
+
+/// Writes an admin's corrections over the stored metadata, in the shape the scanner stores.
+pub fn apply_override(meta: &mut Value, o: &Override) {
+    let names = |v: &[String]| {
+        Value::from(v.iter().map(|n| serde_json::json!({ "name": n, "role": null })).collect::<Vec<_>>())
+    };
+    if !meta.is_object() {
+        *meta = Value::Object(serde_json::Map::new());
+    }
+    if let Some(t) = &o.title {
+        meta["title"] = t.clone().into();
+    }
+    if let Some(s) = &o.subtitle {
+        meta["subtitle"] = s.clone().map_or(Value::Null, Value::from);
+    }
+    if let Some(a) = &o.authors {
+        meta["authors"] = names(a);
+    }
+    if let Some(n) = &o.narrators {
+        meta["narrators"] = names(n);
+    }
+    if let Some(g) = &o.genres {
+        meta["genres"] = Value::from(g.clone());
+    }
+    if let Some(d) = &o.description {
+        meta["description"] = d.clone().map_or(Value::Null, Value::from);
+    }
+    if let Some(s) = &o.series {
+        meta["series"] = s.as_ref().map_or(Value::Null, |(name, pos)| {
+            let p = pos.as_deref().and_then(abshare_core::metadata::Position::parse);
+            serde_json::json!({ "name": name, "qualifier": null, "position": p.map(|p| p.display()), "sort": p.map(|p| p.thousandths()) })
+        });
+    }
 }
 
 pub fn load(c: &Connection) -> Result<Catalog, String> {
@@ -87,6 +125,13 @@ pub fn load(c: &Connection) -> Result<Catalog, String> {
             .collect::<Result<_, _>>()
             .map_err(sql_err)?;
     }
+    let overrides: HashMap<String, Override> = {
+        let mut q = c.prepare("SELECT book_id, data FROM book_override").map_err(sql_err)?;
+        let rows = q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(sql_err)?;
+        rows.filter_map(Result::ok)
+            .filter_map(|(id, d)| serde_json::from_str(&d).ok().and_then(|v| Override::parse(&v).ok()).map(|o| (id, o)))
+            .collect()
+    };
     let mut st = c
         .prepare(
             "SELECT id, library_id, meta, duration_ms, needs_copy, cover, coalesce(added_at, updated_at) FROM book
@@ -108,7 +153,10 @@ pub fn load(c: &Connection) -> Result<Catalog, String> {
         .map_err(sql_err)?;
     for row in rows {
         let (id, library_id, meta, duration, needs_copy, cover, added_at) = row.map_err(sql_err)?;
-        let meta: Value = serde_json::from_str(&meta).unwrap_or(Value::Null);
+        let mut meta: Value = serde_json::from_str(&meta).unwrap_or(Value::Null);
+        if let Some(o) = overrides.get(&id) {
+            apply_override(&mut meta, o);
+        }
         let title = meta["title"].as_str().unwrap_or("Untitled").to_owned();
         let authors = names(&meta, "authors");
         let narrators = names(&meta, "narrators");

@@ -1572,3 +1572,44 @@ async fn admin_status_and_library_views_answer() {
     let r = as_user(&m.t, "GET", "/v1/admin/library", None, &a).await;
     assert_eq!(json_of(r).await["scan_requested"], true);
 }
+
+#[tokio::test]
+async fn admins_correct_book_details_and_everyone_sees_them_at_once() {
+    let m = setup_media();
+    let (_, a) = admin(&m.t, "editor").await;
+    let (listener_token, _) = listener(&m).await;
+    let uri = format!("/v1/admin/books/{BOOK}/details");
+    let r = as_user(&m.t, "PUT", &uri, Some(json!({"title": "The Right Title", "authors": ["Ann Author"], "series": {"name": "Harbour", "position": "2"}, "genres": ["Biographies & Memoirs"]})), &a).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let (_, b) = get_json(&m.t, &format!("/v1/books/{BOOK}"), &listener_token).await;
+    assert_eq!(b["title"], "The Right Title");
+    assert_eq!(b["authors"][0]["name"], "Ann Author");
+    assert_eq!(b["series"]["position"], "2");
+    assert_eq!(
+        b["shelves"],
+        json!([{ "id": "biography", "name": "Biography & Memoir" }]),
+        "genre shelves follow the correction"
+    );
+    let (_, v) = get_json(&m.t, "/v1/books?q=right%20title", &listener_token).await;
+    assert_eq!(v["total"], 1, "search finds the corrected title");
+    // Listeners can't edit; bad edits and unknown books are refused.
+    assert_eq!(
+        as_user(&m.t, "PUT", &uri, Some(json!({"title": "Mine"})), &listener_token).await.status(),
+        StatusCode::FORBIDDEN
+    );
+    for bad in
+        [json!({"title": ""}), json!({"path": "/etc"}), json!({"series": {"name": "S", "position": "two"}}), json!([])]
+    {
+        assert_eq!(as_user(&m.t, "PUT", &uri, Some(bad.clone()), &a).await.status(), StatusCode::BAD_REQUEST, "{bad}");
+    }
+    assert_eq!(
+        as_user(&m.t, "PUT", "/v1/admin/books/zzzzzzzzzzzzzzzzzzzzzzzzzz/details", Some(json!({"title": "X"})), &a)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    // Removing the correction brings the tags back.
+    assert_eq!(as_user(&m.t, "DELETE", &uri, None, &a).await.status(), StatusCode::NO_CONTENT);
+    let (_, b) = get_json(&m.t, &format!("/v1/books/{BOOK}"), &listener_token).await;
+    assert_eq!(b["title"], "A Book");
+}

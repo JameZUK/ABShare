@@ -28,6 +28,7 @@ pub fn routes() -> Router<State> {
         .route("/library", get(library))
         .route("/library/scan", post(request_scan))
         .route("/status", get(status))
+        .route("/books/{id}/details", get(book_details).put(set_book_details).delete(clear_book_details))
 }
 
 /// A signed-in admin whose account is still an enabled admin right now.
@@ -510,6 +511,80 @@ async fn request_scan(S(st): S<State>, Ip(ip): Ip, Admin(s): Admin) -> Result<St
     tokio::fs::write(dir.join("scan-requested"), b"1").await.map_err(ApiError::internal)?;
     st.audit("scan.requested", Some(s.user), Some(s.device), Some(ip), String::new()).await;
     Ok(StatusCode::ACCEPTED)
+}
+
+// ---------------------------------------------------------------- book details (overrides)
+
+/// The current correction for a book, if any (the book page shows the merged result).
+async fn book_details(S(st): S<State>, Admin(_): Admin, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
+    let cat = st.catalog().await?;
+    if !abshare_core::ids::is_valid_id(&id) || !cat.by_id.contains_key(&id) {
+        return Err(ApiError::not_found());
+    }
+    let data: Option<String> = st
+        .db
+        .run(move |c| {
+            use rusqlite::OptionalExtension;
+            c.query_row("SELECT data FROM book_override WHERE book_id = ?1", [&id], |r| r.get(0))
+                .optional()
+                .map_err(crate::db::sql_err)
+        })
+        .await?;
+    let ov = data.and_then(|d| serde_json::from_str::<Value>(&d).ok()).unwrap_or_else(|| json!({}));
+    Ok(Json(json!({ "override": ov })))
+}
+
+/// Saves a correction (replacing any earlier one); an empty one removes it.
+async fn set_book_details(
+    S(st): S<State>,
+    Ip(ip): Ip,
+    Admin(s): Admin,
+    Path(id): Path<String>,
+    Json(b): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let cat = st.catalog().await?;
+    if !abshare_core::ids::is_valid_id(&id) || !cat.by_id.contains_key(&id) {
+        return Err(ApiError::not_found());
+    }
+    let o = abshare_core::metadata_override::Override::parse(&b).map_err(ApiError::bad)?;
+    let stored = o.to_json();
+    let (bid, by, data, empty) = (id.clone(), s.user, stored.to_string(), o.is_empty());
+    st.db
+        .run(move |c| {
+            if empty {
+                c.execute("DELETE FROM book_override WHERE book_id = ?1", [&bid]).map_err(crate::db::sql_err)?;
+            } else {
+                c.execute(
+                    "INSERT INTO book_override (book_id, data, updated_at, updated_by) VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(book_id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at, updated_by = excluded.updated_by",
+                    params![bid, data, now(), by],
+                )
+                .map_err(crate::db::sql_err)?;
+            }
+            Ok(())
+        })
+        .await?;
+    st.invalidate_catalog().await;
+    st.audit("book.details_changed", Some(s.user), Some(s.device), Some(ip), format!("book={id}")).await;
+    Ok(Json(json!({ "override": stored })))
+}
+
+async fn clear_book_details(
+    S(st): S<State>,
+    Ip(ip): Ip,
+    Admin(s): Admin,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    if !abshare_core::ids::is_valid_id(&id) {
+        return Err(ApiError::not_found());
+    }
+    let bid = id.clone();
+    st.db
+        .run(move |c| c.execute("DELETE FROM book_override WHERE book_id = ?1", [&bid]).map_err(crate::db::sql_err))
+        .await?;
+    st.invalidate_catalog().await;
+    st.audit("book.details_reset", Some(s.user), Some(s.device), Some(ip), format!("book={id}")).await;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ---------------------------------------------------------------- security status

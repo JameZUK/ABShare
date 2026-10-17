@@ -161,6 +161,12 @@ impl AppState {
         })
     }
 
+    /// Makes the next [`Self::catalog`] call look at the database again (after a change made
+    /// in this process, such as an admin's correction).
+    pub async fn invalidate_catalog(&self) {
+        self.catalog.write().await.1 = 0;
+    }
+
     /// The catalogue view, reloaded when the database has changed (checked at most every 5 s).
     pub async fn catalog(&self) -> Result<Arc<crate::library::Catalog>, ApiError> {
         {

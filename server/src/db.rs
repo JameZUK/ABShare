@@ -176,6 +176,13 @@ pub const MIGRATIONS: &[&str] = &[
         updated_at INTEGER NOT NULL
     );
     CREATE INDEX bookmark_user_book ON bookmark(user_id, book_id);",
+    // 5: admin corrections to book details, applied over the tags (the library is read-only).
+    "CREATE TABLE book_override (
+        book_id TEXT PRIMARY KEY,
+        data TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        updated_by INTEGER
+    );",
 ];
 
 pub fn sql_err(e: rusqlite::Error) -> String {

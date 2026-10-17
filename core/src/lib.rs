@@ -11,6 +11,7 @@ pub mod ffprobe;
 pub mod genre;
 pub mod ids;
 pub mod metadata;
+pub mod metadata_override;
 pub mod model;
 pub mod progress;
 pub mod range;

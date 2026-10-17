@@ -138,6 +138,24 @@ impl Catalogue {
         Ok(n)
     }
 
+    /// Admin corrections by book ID (unreadable rows are skipped).
+    pub fn overrides(
+        &self,
+    ) -> Result<std::collections::HashMap<String, abshare_core::metadata_override::Override>, String> {
+        let mut q = self.conn.prepare("SELECT book_id, data FROM book_override").map_err(sql_err)?;
+        let rows = q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(sql_err)?;
+        let mut out = std::collections::HashMap::new();
+        for row in rows {
+            let (id, data) = row.map_err(sql_err)?;
+            if let Some(o) =
+                serde_json::from_str(&data).ok().and_then(|v| abshare_core::metadata_override::Override::parse(&v).ok())
+            {
+                out.insert(id, o);
+            }
+        }
+        Ok(out)
+    }
+
     /// Replaces the library's books, groups and problems in one transaction. Books that
     /// disappeared are kept but marked missing (progress and bookmarks survive a remount).
     pub fn replace_library(
