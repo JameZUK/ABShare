@@ -14,6 +14,12 @@ the app loads nothing from other websites.
   is signed out.
 - **Listening:** for each book you've played, your position, whether you finished it and
   when that changed; your bookmarks and their notes.
+- **Listening history:** sessions of listening built from the positions your app reports:
+  the book, the device, when each session started and ended, and how long you listened. They
+  give your listening time (last 7 days, last 30 days, all time) in Settings → History.
+  Sessions are kept for 13 months, and at most 50,000 per person (the oldest go first). You
+  can clear them all at any time, or turn history off so nothing new is recorded; your place
+  in each book is kept either way. Listening while offline isn't counted.
 - **The audit log:** security events (sign-ins, failed attempts, account changes, admin
   actions) with time, account, device and IP address. Kept for at most a year.
 - **Start-up reports:** if the app is left showing a blank page (or the address has
@@ -23,7 +29,9 @@ the app loads nothing from other websites.
   server log. No account is involved.
 
 Admins can see the account list, devices, permissions and the audit log. They can't see your
-password, authenticator secret or recovery codes.
+password, authenticator secret, recovery codes or listening history: there is no admin view
+of anyone's history, and clearing or turning it off isn't written to the audit log. (Whoever
+runs the server can still read its database directly.)
 
 ## What your device stores
 

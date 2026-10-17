@@ -17,6 +17,7 @@
 	<SettingsRow href="#/settings/appearance" icon="palette" title="Appearance" summary={theme} />
 	<SettingsRow href="#/settings/account" icon="user" title="Account" summary="{session.user?.display_name ?? ''} · passkeys, two-step, recovery codes" />
 	<SettingsRow href="#/settings/devices" icon="device" title="Devices" summary="Where you’re signed in" />
+	<SettingsRow href="#/settings/history" icon="clock" title="History" summary="Your listening time and recent sessions" />
 	<SettingsRow href="#/settings/about" icon="info" title="About" summary="Version, privacy and storage" />
 	{#if session.user?.role === 'admin'}
 		<SettingsRow href="#/admin" icon="key" title="Admin" summary="People, invites, library scans, audit log and security" />

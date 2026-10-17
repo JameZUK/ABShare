@@ -19,7 +19,7 @@ Examples use `https://books.example.com` as the public origin, `10.0.0.10` as th
 | Prefix | Purpose | Auth |
 |---|---|---|
 | `POST /v1/auth/…` | Invites, enrolment, sign-in, refresh, sign-out, step-up | none, a ceremony token, the refresh cookie, or bearer; always the CSRF check |
-| `/v1/me/…` | Your profile, devices and sign-in methods | bearer (step-up for changes to sign-in methods) |
+| `/v1/me/…` | Your profile, devices, sign-in methods and listening history | bearer (step-up for changes to sign-in methods) |
 | `/v1/libraries`, `/v1/books…`, `/v1/genres`, `/v1/groups…`, `/v1/home`, `/v1/progress…`, `/v1/bookmarks/…` | Browsing, progress and bookmarks | bearer |
 | `GET /v1/media/…` | Audio, the preparation state, saved files and covers | media cookie or bearer |
 | `/v1/admin/…` | Users, invites, audit log, library, status, book corrections, start-up reports | bearer, admin role, step-up for changes |
@@ -95,7 +95,7 @@ Errors from ABShare itself look like this:
 | 403 | `tls_required` | The front guard's TLS check failed |
 | 403 | `csrf` | A `/v1/auth/*` request without `X-ABShare-Client: 1` or with the wrong `Origin` |
 | 403 | `step_up_required` | The action needs a step-up within the last 10 minutes |
-| 403 | `factor_required` | Signed in with a recovery code: only `/v1/me` and `/v1/auth` work until a new passkey or authenticator app is set up |
+| 403 | `factor_required` | Signed in with a recovery code: only `/v1/me` (except `/v1/me/history`) and `/v1/auth` work until a new passkey or authenticator app is set up |
 | 403 | `not_permitted` | Not an admin, or the account lacks the `offline` or `save_files` permission |
 | 404 | `not_found` | No such thing, or not one the caller may see. A book outside the caller's libraries is always 404, never 403 |
 | 408 | `timeout` | The request body took more than 15 s to arrive |
@@ -171,6 +171,8 @@ Every response, refusals from the guard included, carries:
 | Password hashing | 4 at once; others wait up to 2 s | `503 busy` |
 | Progress writes | 12 a minute per device per book | `429` |
 | Bookmarks | 1000 per book, 10 000 per user | `409 too_many_bookmarks` |
+| Listening-history changes (clear, turn on or off) | 10 a minute per device | `429` |
+| Listening-history sessions | 50,000 per user, kept 13 months | The oldest are removed |
 | Book list page | 1–100 items (default 50) | Clamped |
 | Search | 200 characters, 8 distinct words | `400` |
 | Data-saver response | 10 segments (about 10 minutes of audio) | A shorter `206` |
@@ -293,7 +295,7 @@ sequenceDiagram
 }
 ```
 
-`needs_factor` is `true` after a sign-in with a recovery code, and stays so (across refreshes) until the account sets up a new passkey or authenticator app. Meanwhile every bearer route outside `/v1/me` and `/v1/auth` answers `403 factor_required`, and media is refused. Signing in with a passkey or an authenticator code clears it, since nothing was lost.
+`needs_factor` is `true` after a sign-in with a recovery code, and stays so (across refreshes) until the account sets up a new passkey or authenticator app. Meanwhile every bearer route outside `/v1/me` and `/v1/auth`, and `/v1/me/history`, answers `403 factor_required`, and media is refused. Signing in with a passkey or an authenticator code clears it, since nothing was lost.
 
 They also send two `Set-Cookie` headers: `abshare_refresh` (path `/v1/auth`) and `abshare_media` (path `/v1/media`). Every sign-in creates a new **device**: an entry in the user's device list, with the client address and `User-Agent` (at most 200 characters, without control characters).
 
@@ -471,6 +473,50 @@ All routes need a **bearer** token and act only on the caller's own account. A s
 
 - **Body:** none.
 - **Response:** `{"recovery_codes": [ten codes]}`. They replace all earlier codes and are shown only this once.
+
+### Listening history
+
+Sessions are built from accepted `position` events (`PUT /v1/progress/{book_id}`), with the rules in `core/src/history.rs`:
+- A report extends your latest session for the same book on the same device when it comes within 2 minutes (by event time) of that session's last report; otherwise it starts a new session, with nothing heard yet.
+- Time heard grows by the smaller of the time since the last report and how far the position moved. A rewind, or a position moving more than 3 times faster than real time (a seek), adds nothing.
+- Nothing is recorded while history is off. Stale, duplicate and refused events record nothing. The web app sends only the latest queued position after being offline, so offline listening isn't counted.
+- Sessions are kept for 13 months, and at most 50,000 per user (the oldest go first). Deleting the account deletes them.
+
+Only you can read your history; there is no admin route for it. After a recovery-code sign-in it answers `403 factor_required` until a new factor is set up.
+
+#### `GET /v1/me/history?cursor=&limit=`
+
+- **Query:** `limit` 1–100 (default 50); `cursor`, the `next` from the previous page. Anything else is `400`.
+- **Response:**
+
+```json
+{
+  "enabled": true,
+  "totals": { "week_seconds": 12600, "month_seconds": 51000, "all_seconds": 402000, "books_finished": 14 },
+  "sessions": [
+    { "id": 912, "book": { "id": "…", "title": "…", "authors": ["…"], "cover": "media/covers/…" },
+      "started_at": 1792541000000, "ended_at": 1792544600000, "seconds": 3540 }
+  ],
+  "next": "911"
+}
+```
+
+- `week_seconds` and `month_seconds` cover sessions that ended in the last 7 and 30 days. Totals count all your sessions, including books you can no longer see.
+- `books_finished` counts the books marked finished in your progress that you can still see.
+- `sessions` are newest first (by when they started); times are event times in milliseconds. Sessions under a second are left out, and so are books you can no longer see, so a page may be short. `next` is `null` on the last page.
+
+#### `PATCH /v1/me/history`
+
+- **Body:** `{"enabled": false}` (an object with exactly this field).
+- **Effect:** turns recording off or on. Existing sessions are kept; clear them separately.
+- **Response:** `204`
+- **Errors:** `400`/`422` for any other body; `429`.
+
+#### `DELETE /v1/me/history`
+
+- **Effect:** removes all your sessions. Progress, finished marks and bookmarks are kept. Not written to the audit log.
+- **Response:** `204`
+- **Errors:** `429`.
 
 ---
 

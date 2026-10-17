@@ -59,7 +59,7 @@ The reverse proxy only terminates TLS and forwards requests. ABShare sets its ow
 
 | Component | Language | What it does |
 |---|---|---|
-| `core` | Rust, no I/O | Metadata normalisation and text cleaning, book assembly, series and show grouping, chapter maths, genre shelves, the progress merge, Range parsing, data-saver segment maths, ffprobe JSON parsing, auth rules (TOTP, lockout, validators, recovery codes), ID derivation, cache eviction choices, metadata overrides. |
+| `core` | Rust, no I/O | Metadata normalisation and text cleaning, book assembly, series and show grouping, chapter maths, genre shelves, the progress merge, listening-history sessions, Range parsing, data-saver segment maths, ffprobe JSON parsing, auth rules (TOTP, lockout, validators, recovery codes), ID derivation, cache eviction choices, metadata overrides. |
 | `server` (`abshare`) | Rust | HTTP (axum 0.8 on hyper 1), the request guard, auth and sessions, the SQLite store, the scanner, the jailed probe, covers, media jobs, the cache sweep, `doctor` and the admin CLI. |
 | `jail` (`abshare-jail`) | Rust | Applies Landlock, seccomp, `no_new_privs` and resource limits, checks its inputs, then replaces itself with ffmpeg or ffprobe (§7). |
 | `web/app` | TypeScript, Svelte 5 | The installable web app: Home, Library, Genres, book and series pages, the player, Downloads, Settings and Admin (§9). |
@@ -72,7 +72,7 @@ Every Rust crate forbids `unsafe` code, and the release build aborts on panic, s
 
 | Path | What |
 |---|---|
-| `core/src/` | The pure crate. `metadata.rs`, `text.rs`, `assemble.rs`, `series.rs`, `chapters.rs`, `genre.rs`, `progress.rs`, `range.rs`, `saver.rs`, `ffprobe.rs`, `cache.rs`, `metadata_override.rs`, `ids.rs`, and `auth/` (TOTP, lockout, validation, codes). |
+| `core/src/` | The pure crate. `metadata.rs`, `text.rs`, `assemble.rs`, `series.rs`, `chapters.rs`, `genre.rs`, `progress.rs`, `history.rs`, `range.rs`, `saver.rs`, `ffprobe.rs`, `cache.rs`, `metadata_override.rs`, `ids.rs`, and `auth/` (TOTP, lockout, validation, codes). |
 | `core/data/` | The bundled breached-password list, stored as hashed prefixes. |
 | `server/src/` | `main.rs` (subcommands), `config.rs`, `db.rs` (migrations), `walk.rs`, `probe.rs`, `scan.rs`, `catalogue.rs`, `library.rs`, `covers.rs`, `media.rs`, `tools.rs` (running the jail), `doctor.rs`, `admin.rs`, `auth/` (store, sessions, audit, crypto) and `http/` (router, guard and one file of routes per area). |
 | `jail/` | `abshare-jail`: `filter.rs` (seccomp), `landlock_policy.rs`, and escape tests in `tests/escape.rs`. |
@@ -285,7 +285,7 @@ abshare ──spawn──▶ abshare-jail --read <input>… --write <job dir> --
 
 | Path (in the data dir) | What |
 |---|---|
-| `abshare.db` | SQLite (WAL, foreign keys, secure delete): the catalogue (libraries, files and their probes, books, parts, chapters, groups, problems), accounts (users, passkeys, recovery codes, invites, devices, refresh tokens), listening (progress, idempotency keys, bookmarks), admin corrections to book details, and the audit log with its head and anchor. Schema changes are numbered migrations; a database newer than the binary is refused. |
+| `abshare.db` | SQLite (WAL, foreign keys, secure delete): the catalogue (libraries, files and their probes, books, parts, chapters, groups, problems), accounts (users, passkeys, recovery codes, invites, devices, refresh tokens), listening (progress, idempotency keys, bookmarks, listening-history sessions and each person's history switch), admin corrections to book details, and the audit log with its head and anchor. Schema changes are numbered migrations; a database newer than the binary is refused. |
 | `secret.key` | 32 random bytes (mode 0600), created at first start. Keys for book IDs, TOTP seed encryption and the audit chain are derived from it with distinct labels. Back it up with the database: without it, book IDs and authenticator enrolments are lost. |
 | `covers/` | Re-encoded cover JPEGs, keyed by book and source fingerprint. |
 | `copies/` | Playable `.m4b` copies. |
@@ -315,7 +315,7 @@ Every change ships with tests, security first. The full strategy is in [`SPEC.md
 
 - **Security.** Negative tests for every externally reachable surface: about 75 HTTP tests over the real router, many of them checking several refusals each (forged, expired and revoked tokens; other people's books; CSRF and `Origin`; wrong `Host`; spoofed `X-Forwarded-For`; oversize and slow bodies; rate limits), jail escape tests, and a mutation check that removes each security control and confirms a test fails. Every security fix has a regression test that fails without it.
 - **Parsers.** Each parser of untrusted bytes has a `cargo-fuzz` target and robustness tests and must never panic. CI runs every target on every push.
-- **Stability.** Unit and property-style tests for the progress merge, Range requests, data-saver segment maths, book assembly and the lockout state machine.
+- **Stability.** Unit and property-style tests for the progress merge, listening-history sessions, Range requests, data-saver segment maths, book assembly and the lockout state machine.
 - **The demo library, end to end.** `tools/demo/make-library.sh` builds a library of every shape and quirk; a test scans it with the real jail and ffmpeg, then browses, streams the original with Range requests, builds a playable copy, streams data saver, downloads for offline listening and syncs progress through the real router. CI requires Landlock, so the jail tests and this one can't skip there.
 - **The web app.** Type checks with warnings as errors, unit tests for the player rules, offline storage, downloads and themes, the HTML-injection source scan, and the build-time inline-script check.
 - **Deployment.** CI builds the image, runs it behind nginx with TLS and checks redirects, the single CSP, cookie flags, the `Host` check and spoofed client addresses; scans the image for known vulnerabilities; and checks the systemd units' exposure scores.

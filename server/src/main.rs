@@ -173,6 +173,7 @@ async fn run() -> Result<(), String> {
             });
             let state = std::sync::Arc::new(state);
             http::spawn_revocation_sync(state.clone());
+            http::history_routes::spawn_prune(state.clone());
             let app = http::router(state);
             let listener =
                 tokio::net::TcpListener::bind(&cfg.listen).await.map_err(|e| format!("bind {}: {e}", cfg.listen))?;

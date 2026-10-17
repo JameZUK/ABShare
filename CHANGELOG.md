@@ -7,7 +7,7 @@ What changed and when, newest first. Each entry says how it is tested. The desig
 The first tagged release: everything from Phases 0 to 6, plus the work below. Device tests (SPEC §11, Phases 3 and 4) and an independent security review are still to come before 1.0.0.
 
 ### Added
-- **Listening history.** Settings → History shows your listening time this week, this month and in all, books finished, and recent sessions. You can turn it off or clear it. It is kept 13 months, and admins can't read it.
+- **Listening history.** Settings → History shows your listening time over the last 7 and 30 days and in all, books finished, and recent sessions, built from your progress as you listen (offline listening isn't counted yet). You can turn it off or clear it. It is kept 13 months, and admins can't read it (schema 8).
 - **Author and narrator pages.** Every author and narrator on a book page links to all their books, with search and sorting.
 - **Bookmark notes** can be added and edited in the app.
 - **Admin → Jobs:** the media lanes, playable copies being built, failed copies with *Retry now*, the cache size and *Clear data-saver cache*.

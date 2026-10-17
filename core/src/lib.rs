@@ -9,6 +9,7 @@ pub mod cache;
 pub mod chapters;
 pub mod ffprobe;
 pub mod genre;
+pub mod history;
 pub mod ids;
 pub mod metadata;
 pub mod metadata_override;
