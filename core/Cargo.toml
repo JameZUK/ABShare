@@ -11,6 +11,8 @@ name = "abshare_core"
 
 [dependencies]
 unicode-normalization = "0.1.26"
+hmac = "0.13"
+sha2 = "0.11"
 
 [lints]
 workspace = true
