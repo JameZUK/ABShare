@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "abshare-core"
-version = "0.0.1"
+version = "0.9.0"
 dependencies = [
  "hmac",
  "serde",
@@ -17,7 +17,7 @@ dependencies = [
 
 [[package]]
 name = "abshare-jail"
-version = "0.0.1"
+version = "0.9.0"
 dependencies = [
  "landlock",
  "libc",
@@ -27,7 +27,7 @@ dependencies = [
 
 [[package]]
 name = "abshare-saver-spike"
-version = "0.0.1"
+version = "0.9.0"
 dependencies = [
  "abshare-core",
  "axum",
@@ -41,7 +41,7 @@ dependencies = [
 
 [[package]]
 name = "abshare-server"
-version = "0.0.1"
+version = "0.9.0"
 dependencies = [
  "abshare-core",
  "argon2",
