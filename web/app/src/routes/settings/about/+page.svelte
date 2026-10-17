@@ -12,6 +12,10 @@
 	<h1>About ABShare</h1>
 	<p>A private audiobook server for friends and family.</p>
 	<p class="muted">App version {version}</p>
+	<h2>Why it exists</h2>
+	<p>Because your audiobooks shouldn’t have to orbit Jeff Bezos to reach your ears. Amazon owns Audible; ABShare is owned by whoever runs it, and it answers to nobody’s shareholders.</p>
+	<p>Bezos spent years and billions on rockets. New Shepard pops up past the edge of space for about ten minutes, then falls back down again, and New Glenn reached orbit years after it was first promised. ABShare reaches every device in your house and keeps your place in every book. It also launches on time, and it’s a far less embarrassing shape.</p>
+	<p class="muted">No billionaires were consulted in the making of this app. None of your listening data goes to Amazon, and none of it goes into orbit.</p>
 	<h2>Privacy</h2>
 	<p>ABShare keeps what you listen to and where you are in each book, so you can carry on from any device. Nothing is shared with anyone else, and the app loads nothing from other websites.</p>
 	<h2>Storage on this device</h2>
