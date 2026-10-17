@@ -14,8 +14,10 @@ web_dir = "/usr/share/abshare/web"
 ffmpeg = "/usr/bin/ffmpeg"
 ffprobe = "/usr/bin/ffprobe"
 jail = "/usr/local/bin/abshare-jail"
-# Debian's ffmpeg is dynamically linked: the jail may load its libraries and nothing else.
-libs = ["/usr/lib", "/etc/ld.so.cache"]
+# Directories the jailed tools may load code from. The image's ffmpeg and ffprobe are
+# statically linked, so they need none. A dynamically linked ffmpeg (a systemd install using
+# the distribution's) needs its library directories here, for example ["/usr/lib"].
+libs = []
 # Cores for background encoding (downloads, read-ahead). Playback always has its own lane.
 jobs = 2
 

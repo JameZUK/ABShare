@@ -43,7 +43,7 @@ Status: **Built** = implemented and tested; **Designed** = specified, not built 
 | T8 | Resource exhaustion through huge or odd libraries | Walk depth (8) and file (200 000) caps; ffprobe output capped at 4 MiB; tag, chapter and people caps; jail rlimits and wall-clock timeouts; job concurrency caps; read-ahead cap and latest-seek-wins for data saver. | **Built** (scan, spike); request limits **Designed** |
 | T9 | Credential stuffing, phishing, stolen devices, CSRF | Invite-only; passkeys preferred; password + TOTP; lockout; opaque rotating tokens; media cookie; step-up; audit log. | **Designed** (Phase 2); passkeys spiked |
 | T10 | Stolen database backup | Hashes only for tokens and passwords; TOTP seeds encrypted with a key from the separately stored secret; the secret file is 0600 and refused if readable. | Secret **Built**; the rest **Designed** (Phase 2) |
-| T11 | Supply-chain compromise | cargo-deny (licences, advisories, bans, sources) in CI; CI actions pinned by SHA; no runtime JS dependencies; minimal crates. Base images pinned by digest at release. | **Built** (CI); digests **Designed** |
+| T11 | Supply-chain compromise | cargo-deny (licences, advisories, bans, sources) in CI; CI actions pinned by SHA; no runtime JS dependencies; minimal crates. Docker base images pinned by digest; ffmpeg and LAME built from source tarballs with pinned SHA-256 sums. | **Built** |
 | T12 | Proxy misconfiguration (spoofed client address, double CSP, plain HTTP) | Trusted-proxy list; `X-Forwarded-For` read from the right; `403 TLS required`; on the deployment, Cloudflare real-IP rewriting is off for this site and the site has a LAN allow-list. | Deployment **Built**; server side **Designed** (Phase 3) |
 | T13 | Information leaks in errors and logs | Paths only in admin diagnostics; redacted `Debug` for secrets (tested for the server secret). | Partly **Built** |
 
@@ -51,5 +51,5 @@ Status: **Built** = implemented and tested; **Designed** = specified, not built 
 
 - **The kernel.** Landlock and seccomp depend on the host kernel. A kernel exploit from inside ffmpeg would bypass the jail. Mitigated by keeping the host patched and by the container and LXC layers outside the jail.
 - **OpenSSL in the passkey path** (D25): C code, used only for signature verification on data already parsed in Rust.
-- **The seccomp filter is a deny-list** until the bundled minimal ffmpeg is fixed and an allow-list can be tuned to it.
-- **Debian's ffmpeg** has a large attack surface (every demuxer and decoder) until the minimal build replaces it. The forced demuxer and the jail bound the exposure.
+- **The seccomp filter is a deny-list.** An allow-list tuned to the bundled minimal ffmpeg is still to do.
+- **ffmpeg's parsers are still C.** The image's build has only five demuxers (mov, mp3, ogg, flac, wav), the audio decoders ABShare accepts and no network protocols, so a crafted file reaches far less code than with a distribution's ffmpeg. A systemd install that uses the distribution's ffmpeg has the full attack surface; the forced demuxer and the jail bound the exposure either way.

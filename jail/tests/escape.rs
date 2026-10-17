@@ -289,8 +289,20 @@ fn x32_system_calls_cannot_bypass_the_filter() {
 fn connecting_to_a_unix_socket_outside_the_jail_is_refused() {
     need_landlock!();
     let s = Scratch::new();
-    let path = s.root.join("elsewhere/listener.sock");
+    // A socket path must fit in sun_path (108 bytes), which the target directory of a deep
+    // checkout can exceed, so the listener lives in the system temporary directory: still
+    // outside everything the jail may reach.
+    struct Unlink(PathBuf);
+    impl Drop for Unlink {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let name = s.root.file_name().expect("scratch name").to_string_lossy().into_owned();
+    let path = std::env::temp_dir().join(format!("abshare-{name}.sock"));
+    let _ = std::fs::remove_file(&path);
     let _listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+    let _unlink = Unlink(path.clone());
     let script = format!(
         "import socket\ntry:\n s=socket.socket(socket.AF_UNIX)\n s.connect({:?})\n print('ok')\nexcept OSError as e:\n print('denied')",
         path.to_string_lossy()
