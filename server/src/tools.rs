@@ -47,6 +47,10 @@ pub async fn run_jailed(
     }
     cmd.args(["--mem-mib", &limits.mem_mib.to_string(), "--cpu-secs", &limits.cpu_secs.to_string()]);
     cmd.args(["--fsize-mib", &limits.fsize_mib.to_string()]);
+    // Enough descriptors for every input (a book in 200 parts opens 200 files), bounded
+    // (review M5).
+    let nofile = (64 + 2 * read.len()).min(4_096);
+    cmd.args(["--nofile", &nofile.to_string()]);
     cmd.arg("--").arg(program).args(args);
     cmd.env_clear().stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     let mut child = cmd.spawn().map_err(|e| format!("cannot start {}: {e}", ff.jail.display()))?;

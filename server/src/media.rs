@@ -25,6 +25,9 @@ pub struct Media {
     copies: Semaphore,
     locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     copying: Mutex<HashSet<String>>,
+    /// Books whose playable copy failed: (failures, don't retry before). Backs off, so a
+    /// hostile book can't keep the copy lane busy for everyone (review M5).
+    copy_failed: Mutex<HashMap<String, (u32, i64)>>,
     /// Latest seek per device: a queued encode superseded by a newer request is dropped.
     seeks: Mutex<HashMap<i64, u64>>,
     seek_counter: AtomicU64,
@@ -111,6 +114,21 @@ pub fn read_inside(root: &Path, rel: &str, max: u64) -> Result<Vec<u8>, String> 
     Ok(out)
 }
 
+/// Removes a key from the encode-lock map however the encode ends (review M4: early returns
+/// used to leave entries behind).
+struct LockKey<'a> {
+    map: &'a Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    key: String,
+}
+
+impl Drop for LockKey<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut l) = self.map.lock() {
+            l.remove(&self.key);
+        }
+    }
+}
+
 fn unix_now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
@@ -161,6 +179,7 @@ impl Media {
             copies: Semaphore::new(1),
             locks: Mutex::default(),
             copying: Mutex::default(),
+            copy_failed: Mutex::default(),
             seeks: Mutex::default(),
             seek_counter: AtomicU64::new(0),
             silent: Mutex::default(),
@@ -172,6 +191,27 @@ impl Media {
 
     pub fn copy_path(&self, book: &str) -> PathBuf {
         self.data_dir.join("copies").join(format!("{book}.m4b"))
+    }
+
+    /// Whether the last attempt to build this book's playable copy failed (and is waiting
+    /// before trying again).
+    pub fn copy_failed(&self, book: &str) -> bool {
+        self.copy_failed.lock().ok().and_then(|m| m.get(book).copied()).is_some_and(|(_, until)| until > unix_now())
+    }
+
+    /// Clears job directories left by an earlier run of the server (only its own kinds, and
+    /// only old ones: the scanner shares the directory).
+    pub fn clean_jobs(&self) {
+        let Ok(rd) = std::fs::read_dir(self.data_dir.join("jobs")) else { return };
+        let cutoff = std::time::SystemTime::now() - Duration::from_secs(3600);
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let ours = ["seg-", "copy-", "silent-"].iter().any(|p| name.starts_with(p));
+            let old = e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t < cutoff);
+            if ours && old {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
     }
 
     /// Whether a book can be played now (originals always; copies once built).
@@ -200,11 +240,30 @@ impl Media {
                 return;
             }
         }
+        if self
+            .copy_failed
+            .lock()
+            .ok()
+            .and_then(|m| m.get(&src.book_id).copied())
+            .is_some_and(|(_, until)| until > unix_now())
+        {
+            if let Ok(mut c) = self.copying.lock() {
+                c.remove(&src.book_id);
+            }
+            return;
+        }
         let me = self.clone();
         tokio::spawn(async move {
             let id = src.book_id.clone();
             if let Err(e) = me.build_copy(&src).await {
                 eprintln!("abshare: playable copy for {id} failed: {e}");
+                if let Ok(mut m) = me.copy_failed.lock() {
+                    let n = m.get(&id).map_or(0, |e| e.0) + 1;
+                    let wait = (300i64 << n.min(8)).min(24 * 3600);
+                    m.insert(id.clone(), (n, unix_now() + wait));
+                }
+            } else if let Ok(mut m) = me.copy_failed.lock() {
+                m.remove(&id);
             }
             if let Ok(mut c) = me.copying.lock() {
                 c.remove(&id);
@@ -334,9 +393,15 @@ impl Media {
         })
         .await
         .map_err(|e| e.to_string())?;
+        let total: u64 = found.iter().map(|(_, b, _)| *b).sum();
         for (key, bytes, mtime) in found {
-            let last_used = used.get(&key).copied().unwrap_or(0).max(mtime);
-            entries.push(abshare_core::cache::Entry { pinned: now - last_used < 30 * 60, key, bytes, last_used });
+            // In use = served to someone in the last 30 minutes (not merely made recently, so
+            // a burst of new encodes can't pin itself past the limit). Past twice the limit,
+            // even books in use can go: a full disk would stop everything (review M4).
+            let served = used.get(&key).copied();
+            let pinned = served.is_some_and(|t| now - t < 30 * 60) && total <= limit.saturating_mul(2);
+            let last_used = served.unwrap_or(0).max(mtime);
+            entries.push(abshare_core::cache::Entry { pinned, key, bytes, last_used });
         }
         let mut freed = 0;
         for key in abshare_core::cache::evict(&entries, limit) {
@@ -405,6 +470,7 @@ impl Media {
         let key = format!("{book}/{kbps}/{index}");
         let lock = { self.locks.lock().map_err(|_| "poisoned")?.entry(key.clone()).or_default().clone() };
         let _g = lock.lock().await;
+        let _release = LockKey { map: &self.locks, key: key.clone() };
         if let Ok(b) = tokio::fs::read(&path).await {
             return Ok(b.into());
         }
@@ -421,9 +487,6 @@ impl Media {
         let tmp = path.with_extension("tmp");
         tokio::fs::write(&tmp, &kept).await.map_err(|e| e.to_string())?;
         tokio::fs::rename(&tmp, &path).await.map_err(|e| e.to_string())?;
-        if let Ok(mut l) = self.locks.lock() {
-            l.remove(&key);
-        }
         Ok(kept.into())
     }
 
@@ -445,11 +508,8 @@ impl Media {
         let key = format!("span:{book}/{kbps}/{first}");
         let lock = { self.locks.lock().map_err(|_| "poisoned")?.entry(key.clone()).or_default().clone() };
         let _g = lock.lock().await;
-        let r = self.fill_span_locked(file, book, layout, &dir, first, count).await;
-        if let Ok(mut l) = self.locks.lock() {
-            l.remove(&key);
-        }
-        r
+        let _release = LockKey { map: &self.locks, key };
+        self.fill_span_locked(file, book, layout, &dir, first, count).await
     }
 
     async fn fill_span_locked(
@@ -706,6 +766,17 @@ mod tests {
         assert!(base.join("saver").join(&new).exists());
         assert!(c.exists(), "a copy in use is never evicted");
         assert!(base.join("saver").join("notes.txt").exists());
+        // Review M4: encoded a moment ago but never served is not "in use"...
+        let fresh = "f".repeat(26);
+        let dir = base.join("saver").join(&fresh).join("k48");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(dir.join("000000.mp3"), vec![0u8; 5000]).expect("write");
+        assert!(m.sweep(2_500).await.expect("sweep") >= 5000);
+        assert!(!base.join("saver").join(&fresh).exists(), "a burst of new encodes can't pin itself");
+        // ...and past twice the limit even a book in use goes (the disk must not fill).
+        assert!(c.exists());
+        assert!(m.sweep(400).await.expect("sweep") > 0);
+        assert!(!c.exists(), "over twice the limit, in-use entries are evicted too");
         let _ = std::fs::remove_dir_all(&base);
     }
 

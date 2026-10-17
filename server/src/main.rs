@@ -158,6 +158,7 @@ async fn run() -> Result<(), String> {
             state.web_dir = cfg.web_dir.clone();
             let engine = std::sync::Arc::new(media::Media::new(ff, cfg.data_dir.clone(), roots));
             state.media = Some(engine.clone());
+            engine.clean_jobs();
             // Keep the transcode cache within [cache] max_gib: a sweep at start and every 10 min.
             let limit = cfg.cache.max_gib.saturating_mul(1 << 30);
             tokio::spawn(async move {

@@ -151,7 +151,12 @@ class Player {
 				this.notice = 'This book isn’t downloaded. Connect to listen.';
 				return;
 			}
-			if (book.media.preparing && !(await this.#ready(book.id))) {
+			const ready = book.media.preparing ? await this.#ready(book.id) : true;
+			if (ready === null) {
+				this.notice = 'This book couldn’t be prepared for playback. The library may have a damaged file.';
+				return;
+			}
+			if (!ready) {
 				this.preparing = true;
 				this.notice = 'Preparing this book for playback. It starts by itself in a moment.';
 				this.#prepareTimer = setTimeout(() => void this.#load(at, play), 5_000);
@@ -170,9 +175,11 @@ class Player {
 		if (play) await this.play();
 	}
 
-	async #ready(id: string): Promise<boolean> {
+	/** Whether the book's playable copy is ready; null when building it failed. */
+	async #ready(id: string): Promise<boolean | null> {
 		try {
-			return (await api<{ ready: boolean }>(`v1/media/${id}/state`)).ready;
+			const r = await api<{ ready: boolean; failed?: boolean }>(`v1/media/${encodeURIComponent(id)}/state`);
+			return r.failed ? null : r.ready;
 		} catch {
 			return false;
 		}

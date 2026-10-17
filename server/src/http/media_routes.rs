@@ -129,6 +129,10 @@ fn unsatisfiable(len: u64) -> Response {
     r
 }
 
+fn unplayable() -> Response {
+    (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": "unplayable", "message": "This book couldn't be prepared for playback. The library may have a damaged file." }))).into_response()
+}
+
 fn preparing() -> Response {
     (
         StatusCode::CONFLICT,
@@ -161,6 +165,9 @@ async fn stream(
     }
     let m = media(&st)?.clone();
     if !m.ready(&src) {
+        if m.copy_failed(&src.book_id) {
+            return Ok(unplayable());
+        }
         m.ensure_copy(src);
         return Ok(preparing());
     }
@@ -286,10 +293,11 @@ async fn state(
     let (_, src) = resolve(&st, &s, &id).await?;
     let m = media(&st)?.clone();
     let ready = m.ready(&src);
-    if !ready {
+    let failed = !ready && m.copy_failed(&src.book_id);
+    if !ready && !failed {
         m.ensure_copy(src);
     }
-    Ok(Json(json!({ "ready": ready })))
+    Ok(Json(json!({ "ready": ready, "failed": failed })))
 }
 
 fn no_permission(message: &'static str) -> ApiError {
@@ -324,6 +332,9 @@ async fn save_file(
     }
     let m = media(&st)?.clone();
     if !m.ready(&src) {
+        if m.copy_failed(&src.book_id) {
+            return Ok(unplayable());
+        }
         m.ensure_copy(src);
         return Ok(preparing());
     }

@@ -52,8 +52,8 @@ Started 2026-10-17. It covers:
 | H8 | Group and show listings don't filter members by library permission. | **Fixed:** group and show-tile members are filtered by permitted libraries; test. |
 | H9 | Promoting a user to admin from the users screen skips the second confirmation that invites need. | **Fixed:** `confirm_admin` required; test. |
 | H10 | The cover route's own CSP is overwritten by the global one. | **Fixed:** a route's own CSP is kept; test. |
-| M4 | Cache "pinned" uses mtime, so new encodes can overrun `max_gib`. `jobs/` isn't cleaned, and lock entries leak. | Open |
-| M5 | Failed playable-copy builds retry without limit, and books with many parts hit the fd limit. | Open |
+| M4 | Cache "pinned" uses mtime, so new encodes can overrun `max_gib`. `jobs/` isn't cleaned, and lock entries leak. | **Fixed:** only books served in the last 30 minutes are pinned, and past twice the limit even those go; stale `jobs/` cleaned at start; lock keys released by a guard; tests. |
+| M5 | Failed playable-copy builds retry without limit, and books with many parts hit the fd limit. | **Fixed:** failed copies back off (5 min doubling to a day) and report `unplayable`; descriptor limit grows with the number of parts; test. |
 | C5 | Saver maths underflows for segments shorter than the pre-roll (latent). | **Fixed:** segments at least the pre-roll; saturating maths; fuzzed at any length. |
 | C6 | Invisible characters survive `clean_line` (U+061C, tag characters, variation selectors, Hangul fillers, unbounded combining marks). | **Fixed:** those characters removed; at most 4 combining marks per character; test. |
 | C7 | A successful fifth attempt still locks the address. | **Fixed:** the lock is decided when the next attempt starts; test. |

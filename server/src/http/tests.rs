@@ -1914,3 +1914,26 @@ async fn covers_keep_their_own_sandbox_policy_and_bookmark_edits_are_clamped() {
     let (_, v) = get_json(&m.t, &format!("/v1/books/{BOOK}/bookmarks"), &access).await;
     assert_eq!(v["bookmarks"][0]["position_ms"], 3_600_000);
 }
+
+#[tokio::test]
+async fn a_book_whose_copy_fails_is_reported_unplayable_not_retried_for_ever() {
+    // The test media engine's ffmpeg doesn't exist, so building the multi-part copy fails.
+    let m = setup_media();
+    let (access, _) = listener(&m).await;
+    let auth = format!("Bearer {access}");
+    let r = send(&m.t, "GET", &format!("/v1/media/{MULTI_BOOK}"), None, &[("authorization", &auth)]).await;
+    assert_eq!(r.status(), StatusCode::CONFLICT, "preparing at first");
+    let mut failed = false;
+    for _ in 0..50 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let (_, v) = get_json(&m.t, &format!("/v1/media/{MULTI_BOOK}/state"), &access).await;
+        if v["failed"] == true {
+            failed = true;
+            break;
+        }
+    }
+    assert!(failed, "the failure is reported");
+    let r = send(&m.t, "GET", &format!("/v1/media/{MULTI_BOOK}"), None, &[("authorization", &auth)]).await;
+    assert_eq!(r.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(json_of(r).await["error"], "unplayable");
+}
