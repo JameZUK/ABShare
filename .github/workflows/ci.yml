@@ -30,6 +30,24 @@ jobs:
       - run: cargo test --workspace
       - run: cargo test --workspace --release
 
+  web:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: web/app
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - run: npm ci --ignore-scripts
+      - name: Type check (strict, warnings fail)
+        run: npm run check
+      - name: Unit tests and the HTML-injection source scan
+        run: npm test
+      - name: Build (fails on any inline script, on* attribute or javascript: URL)
+        run: npm run build
+
   supply-chain:
     runs-on: ubuntu-24.04
     steps:

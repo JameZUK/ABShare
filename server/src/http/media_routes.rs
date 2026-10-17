@@ -192,6 +192,7 @@ async fn stream(
             let h = r.headers_mut();
             base(h, "audio/mpeg");
             h.insert(header::CONTENT_LENGTH, hv((end - start + 1).to_string()));
+            h.insert(header::ETAG, hv(format!("\"s{kbps}-{len:x}\"")));
             if status == StatusCode::PARTIAL_CONTENT {
                 h.insert(header::CONTENT_RANGE, hv(format!("bytes {start}-{end}/{len}")));
             }
@@ -214,7 +215,10 @@ async fn serve_file(src: &Source, file: &PathBuf, range_h: Option<&str>, m: &Med
         let root = m.roots.values().find(|r| file.starts_with(r)).cloned().ok_or_else(ApiError::not_found)?;
         open_inside(&root, file).map_err(|_| ApiError::not_found())?
     };
-    let len = f.metadata().map_err(ApiError::internal)?.len();
+    let md = f.metadata().map_err(ApiError::internal)?;
+    let len = md.len();
+    let mtime =
+        md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
     if len == 0 {
         return Err(ApiError::not_found());
     }
@@ -230,7 +234,7 @@ async fn serve_file(src: &Source, file: &PathBuf, range_h: Option<&str>, m: &Med
     let h = r.headers_mut();
     base(h, ctype);
     h.insert(header::CONTENT_LENGTH, hv((end - start + 1).to_string()));
-    h.insert(header::ETAG, hv(format!("\"{len:x}\"")));
+    h.insert(header::ETAG, hv(format!("\"{len:x}-{mtime:x}\"")));
     if status == StatusCode::PARTIAL_CONTENT {
         h.insert(header::CONTENT_RANGE, hv(format!("bytes {start}-{end}/{len}")));
     }

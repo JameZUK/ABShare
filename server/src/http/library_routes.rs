@@ -57,13 +57,14 @@ fn cover_url(b: &Book) -> Value {
     b.cover.as_ref().map_or(Value::Null, |h| json!(format!("media/covers/{}/{h}", b.id)))
 }
 
+/// Book → (position ms, finished, event time ms).
 type ProgressMap = HashMap<String, (u64, bool, i64)>;
 
 async fn user_progress(st: &State, uid: i64) -> Result<ProgressMap, ApiError> {
     st.db
         .run(move |c| {
             let mut stmt = c
-                .prepare("SELECT book_id, position_ms, finished, received_at FROM progress WHERE user_id = ?1")
+                .prepare("SELECT book_id, position_ms, finished, updated_at FROM progress WHERE user_id = ?1")
                 .map_err(crate::db::sql_err)?;
             let rows = stmt
                 .query_map([uid], |r| {

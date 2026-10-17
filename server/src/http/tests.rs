@@ -164,7 +164,11 @@ async fn plain_http_from_outside_is_refused_and_headers_are_always_sent() {
     r.extensions_mut().insert(Peer(SocketAddr::from(([198, 51, 100, 9], 5555))));
     let resp = call(&t.app, r).await;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    assert!(resp.headers().get("content-security-policy").is_some());
+    let csp = resp.headers().get("content-security-policy").and_then(|v| v.to_str().ok()).unwrap_or("");
+    // Trusted Types are enforced, and only the two named policies may ever be created.
+    assert!(csp.contains("require-trusted-types-for 'script'"), "{csp}");
+    assert!(csp.ends_with("trusted-types abshare-sw svelte-trusted-html"), "{csp}");
+    assert!(!csp.contains("unsafe-eval") && !csp.contains("script-src 'self' 'unsafe-inline'"), "{csp}");
     assert_eq!(resp.headers().get("x-frame-options").and_then(|v| v.to_str().ok()), Some("DENY"));
     // Via the trusted proxy with X-Forwarded-Proto: https it is accepted.
     let mut r = Request::builder()

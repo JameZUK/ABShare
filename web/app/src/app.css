@@ -1,0 +1,198 @@
+/* ABShare: design tokens and base styles. The theme (src/lib/theme) sets every token at
+   start-up; these are the defaults until then. */
+:root {
+	color-scheme: light dark;
+	--bg: #f6f5f2;
+	--bg-raised: #ffffff;
+	--bg-sunken: #ebe9e4;
+	--fg: #1c1b19;
+	--fg-muted: #6b6862;
+	--line: #dcd9d2;
+	--accent: #c2410c;
+	--accent-fg: #ffffff;
+	--accent-soft: #fde7da;
+	--accent-soft-fg: #1c1b19;
+	--danger: #b91c1c;
+	--shadow: 0 1px 2px rgb(0 0 0 / 6%), 0 8px 24px rgb(0 0 0 / 8%);
+	--radius: 16px;
+	--radius-sm: 12px;
+	--mini-h: 68px;
+	--tabs-h: 60px;
+	--font: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+	--app-h: 100vh;
+	--safe-b: env(safe-area-inset-bottom, 0px);
+}
+@supports (height: 100dvh) {
+	:root {
+		--app-h: 100dvh;
+	}
+}
+@media (prefers-color-scheme: dark) {
+	:root:not([data-mode='light']) {
+		--bg: #121212;
+		--bg-raised: #1c1c1c;
+		--bg-sunken: #0b0b0b;
+		--fg: #f2f1ee;
+		--fg-muted: #a39f97;
+		--line: #2e2d2b;
+		--accent: #fb923c;
+		--accent-fg: #1a0d05;
+		--accent-soft: #3a2316;
+		--accent-soft-fg: #f2f1ee;
+		--danger: #f87171;
+	}
+}
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+html,
+body {
+	margin: 0;
+	min-height: 100%;
+	background: var(--bg);
+	color: var(--fg);
+	font: 16px/1.45 var(--font);
+	-webkit-font-smoothing: antialiased;
+	-webkit-tap-highlight-color: transparent;
+}
+h1,
+h2,
+h3 {
+	line-height: 1.2;
+	margin: 0 0 0.5em;
+}
+h1 {
+	font-size: 1.6rem;
+}
+h2 {
+	font-size: 1.15rem;
+}
+a {
+	color: var(--accent);
+}
+p {
+	margin: 0 0 0.75em;
+}
+img {
+	display: block;
+	max-width: 100%;
+}
+
+button,
+input,
+select,
+textarea {
+	font: inherit;
+	color: inherit;
+}
+button {
+	cursor: pointer;
+}
+.btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 0.5em;
+	min-height: 44px;
+	padding: 0 1.2em;
+	border: 0;
+	border-radius: 999px;
+	background: var(--accent);
+	color: var(--accent-fg);
+	font-weight: 600;
+	text-decoration: none;
+}
+.btn.soft {
+	background: var(--accent-soft);
+	color: var(--accent-soft-fg);
+}
+.btn.plain {
+	background: transparent;
+	color: var(--fg);
+	border: 1px solid var(--line);
+}
+.btn:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+.icon-btn {
+	display: inline-grid;
+	place-items: center;
+	width: 44px;
+	height: 44px;
+	border: 0;
+	border-radius: 50%;
+	background: transparent;
+	color: inherit;
+	padding: 0;
+}
+.icon-btn:hover {
+	background: var(--bg-sunken);
+}
+:focus-visible {
+	outline: 3px solid var(--accent);
+	outline-offset: 2px;
+}
+
+label.field {
+	display: grid;
+	gap: 0.3em;
+	margin-bottom: 1em;
+	font-weight: 600;
+}
+label.field input,
+label.field select {
+	min-height: 44px;
+	padding: 0 0.8em;
+	border: 1px solid var(--line);
+	border-radius: var(--radius-sm);
+	background: var(--bg-raised);
+	font-weight: 400;
+}
+.muted {
+	color: var(--fg-muted);
+}
+.error {
+	color: var(--danger);
+	font-weight: 600;
+}
+.card {
+	background: var(--bg-raised);
+	border-radius: var(--radius);
+	box-shadow: var(--shadow);
+	padding: 1.2em;
+}
+.page {
+	max-width: 960px;
+	margin: 0 auto;
+	padding: 1rem 1rem calc(var(--mini-h) + var(--tabs-h) + var(--safe-b) + 1.5rem);
+}
+.narrow {
+	max-width: 440px;
+	margin: 0 auto;
+}
+.row {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+}
+.spacer {
+	flex: 1;
+}
+.visually-hidden {
+	position: absolute !important;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	white-space: nowrap;
+}
+@media (prefers-reduced-motion: reduce) {
+	* {
+		transition: none !important;
+		animation: none !important;
+	}
+}

@@ -99,7 +99,7 @@ pub fn headers_on(mut r: Response) -> Response {
     set(
         h,
         "content-security-policy",
-        "default-src 'none'; script-src 'self'; worker-src 'self'; manifest-src 'self'; connect-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self'; style-src-attr 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; require-trusted-types-for 'script'",
+        "default-src 'none'; script-src 'self'; worker-src 'self'; manifest-src 'self'; connect-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self'; style-src-attr 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; require-trusted-types-for 'script'; trusted-types abshare-sw svelte-trusted-html",
     );
     set(
         h,

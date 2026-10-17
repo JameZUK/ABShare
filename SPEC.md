@@ -505,7 +505,7 @@ Rules:
   - the boot-script externaliser, with a build that fails on any inline script, `on*=` attribute or `javascript:` URL;
   - the source scan that bans: Svelte's raw-HTML tag, the `innerHTML`/`outerHTML` setters, `insertAdjacentHTML`, the document `write`/`writeln` methods, `eval`, the `Function` constructor, string arguments to `setTimeout`/`setInterval`, `createContextualFragment`, `srcdoc`, `DOMParser`, and `on*` attributes set with `setAttribute`;
   - the theme system: Material 3 tonal palettes from one accent in OKLCH, light/dark/auto and high contrast, with WCAG contrast tested for every combination.
-- **Trusted Types** are enforced where supported (`require-trusted-types-for 'script'` with no policies defined), so any DOM-XSS sink use fails loudly in Chromium.
+- **Trusted Types** are enforced where supported (`require-trusted-types-for 'script'`), so any DOM-XSS sink use fails loudly in Chromium. Only two named policies may exist (`trusted-types abshare-sw svelte-trusted-html`): `abshare-sw` accepts exactly one value, the app's own `service-worker.js` URL, for `serviceWorker.register()`; `svelte-trusted-html` is Svelte's own, for its compiled (static) templates. Neither can be created twice, and no other code can create a policy.
 
 ### 7.2 Screens
 

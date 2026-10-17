@@ -8,8 +8,15 @@
 pub const MAX_FUTURE_MS: i64 = 5 * 60 * 1000;
 /// How old an event may be (offline listening queued for up to this long).
 pub const MAX_AGE_MS: i64 = 90 * 24 * 3600 * 1000;
-/// Within this much of the end, a book counts as finished.
+/// Within this much of the end, a book counts as finished (less for short items: see
+/// [`finish_margin`]).
 pub const FINISH_MARGIN_MS: u64 = 30_000;
+
+/// How close to the end counts as finished: 30 s, or 2% of a short item (a 3-minute episode
+/// finishes in its last 3.6 s, not its last 30).
+pub fn finish_margin(duration_ms: u64) -> u64 {
+    FINISH_MARGIN_MS.min(duration_ms / 50)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Progress {
@@ -71,7 +78,7 @@ pub fn merge(stored: Option<Progress>, event: Event, duration_ms: u64, now: i64,
     let next = match event.action {
         Action::Position(p) => {
             let position_ms = clamp(p);
-            let near_end = duration_ms > 0 && position_ms + FINISH_MARGIN_MS >= duration_ms;
+            let near_end = duration_ms > 0 && position_ms + finish_margin(duration_ms) >= duration_ms;
             Progress { position_ms, duration_ms, finished: prev.finished || near_end, updated_at: event.event_time }
         }
         Action::MarkFinished => Progress { finished: true, duration_ms, updated_at: event.event_time, ..prev },
@@ -123,6 +130,12 @@ mod tests {
         assert_eq!(accepted(merge(None, pos(u64::MAX, NOW), DUR, NOW, false)).position_ms, DUR);
         assert!(accepted(merge(None, pos(DUR - 29_000, NOW), DUR, NOW, false)).finished);
         assert!(!accepted(merge(None, pos(DUR - 31_000, NOW), DUR, NOW, false)).finished);
+        // A short item isn't finished two thirds of the way through.
+        assert!(!accepted(merge(None, pos(13_000, NOW), 20_000, NOW, false)).finished);
+        assert!(accepted(merge(None, pos(19_700, NOW), 20_000, NOW, false)).finished);
+        assert_eq!(finish_margin(DUR), FINISH_MARGIN_MS);
+        assert_eq!(finish_margin(180_000), 3_600);
+        assert_eq!(finish_margin(0), 0);
     }
 
     #[test]

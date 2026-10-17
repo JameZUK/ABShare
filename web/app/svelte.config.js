@@ -12,5 +12,7 @@ export default {
     // Relative asset paths: the app works under any base path.
     paths: { relative: true },
     output: { bundleStrategy: 'split' },
+    // Registered by the app (src/lib/pwa/update.svelte.ts), which never re-registers offline.
+    serviceWorker: { register: false },
   },
 };
