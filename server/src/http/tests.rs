@@ -1630,3 +1630,75 @@ async fn rotating_through_an_ipv6_64_does_not_dodge_the_anonymous_rate_limit() {
     }
     assert!(limited, "40 requests from one /64 must hit the 30-a-minute limit");
 }
+
+// ---------------------------------------------------------------- the connection layer (review H1)
+
+async fn listen(proxies: Vec<std::net::IpAddr>) -> SocketAddr {
+    let t = setup();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(super::serve(listener, t.app, proxies));
+    addr
+}
+
+/// Opens a connection that has started a request and then goes quiet.
+async fn stalled(addr: SocketAddr) -> tokio::net::TcpStream {
+    use tokio::io::AsyncWriteExt;
+    let mut s = tokio::net::TcpStream::connect(addr).await.expect("connect");
+    s.write_all(b"GET /healthz HTTP/1.1\r\nHost: books.example.com\r\n").await.expect("write");
+    s
+}
+
+async fn healthz(addr: SocketAddr) -> Option<String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut s = tokio::net::TcpStream::connect(addr).await.ok()?;
+    s.write_all(b"GET /healthz HTTP/1.1\r\nHost: books.example.com\r\nConnection: close\r\n\r\n").await.ok()?;
+    let mut out = Vec::new();
+    tokio::time::timeout(std::time::Duration::from_secs(5), s.read_to_end(&mut out)).await.ok()?.ok()?;
+    let text = String::from_utf8_lossy(&out).into_owned();
+    (!text.is_empty()).then_some(text)
+}
+
+#[tokio::test]
+async fn the_proxy_is_not_capped_like_a_single_client() {
+    // Behind a proxy every connection comes from its address: capping it at 64 would cap the
+    // whole service (and 64 slow bodies would take it down).
+    let addr = listen(vec!["127.0.0.1".parse().expect("ip")]).await;
+    let mut held = Vec::new();
+    for _ in 0..70 {
+        held.push(stalled(addr).await);
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(
+        healthz(addr).await.is_some_and(|r| r.contains("200 OK")),
+        "the 71st connection through the proxy is served"
+    );
+    // A single client that isn't a proxy is still capped.
+    let addr = listen(vec![]).await;
+    let mut held = Vec::new();
+    for _ in 0..super::MAX_PER_ADDRESS {
+        held.push(stalled(addr).await);
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(healthz(addr).await.is_none(), "one client can't open more than the cap");
+}
+
+#[tokio::test]
+async fn a_request_body_that_never_arrives_times_out() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let addr = listen(vec![]).await;
+    let mut s = tokio::net::TcpStream::connect(addr).await.expect("connect");
+    s.write_all(
+        b"POST /v1/auth/invite/inspect HTTP/1.1\r\nHost: books.example.com\r\nContent-Type: application/json\r\nContent-Length: 100\r\nX-ABShare-Client: 1\r\nOrigin: https://books.example.com\r\n\r\n{",
+    )
+    .await
+    .expect("write");
+    let started = std::time::Instant::now();
+    let mut buf = vec![0u8; 512];
+    let n = tokio::time::timeout(super::BODY_TIMEOUT + std::time::Duration::from_secs(5), s.read(&mut buf))
+        .await
+        .expect("the server answers instead of waiting for ever")
+        .expect("read");
+    assert!(String::from_utf8_lossy(&buf[..n]).starts_with("HTTP/1.1 408"), "{}", String::from_utf8_lossy(&buf[..n]));
+    assert!(started.elapsed() >= super::BODY_TIMEOUT - std::time::Duration::from_secs(1));
+}

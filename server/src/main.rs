@@ -144,6 +144,7 @@ async fn run() -> Result<(), String> {
                     p.parse::<std::net::IpAddr>().map_err(|_| format!("trusted_proxies: {p} is not an IP address"))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            let proxies: Vec<std::net::IpAddr> = trusted.iter().map(|ip| http::guard::canonical(*ip)).collect();
             let mut state =
                 http::AppState::new(conn, &secret, &cfg.public_origin, trusted, auth::crypto::Hasher::new())?;
             let roots = cfg.libraries.iter().map(|l| (l.name.clone(), l.path.clone())).collect();
@@ -176,7 +177,7 @@ async fn run() -> Result<(), String> {
                 tokio::net::TcpListener::bind(&cfg.listen).await.map_err(|e| format!("bind {}: {e}", cfg.listen))?;
             println!("abshare listening on {} for {}", cfg.listen, cfg.public_origin);
             tokio::select! {
-                r = http::serve(listener, app) => r,
+                r = http::serve(listener, app, proxies) => r,
                 _ = tokio::signal::ctrl_c() => Ok(()),
             }
         }

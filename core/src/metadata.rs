@@ -177,7 +177,9 @@ fn strip_edition_suffix(s: &str) -> String {
 
 /// "Lock In (Narrated by A Reader)" → ("Lock In", Some("A Reader")).
 fn split_narrated_by(title: String) -> (String, Option<String>) {
-    let lower = title.to_lowercase();
+    // ASCII lower case keeps byte offsets, so indices found in `lower` are valid in `title`
+    // (full lower case can change lengths: İ → i̇).
+    let lower = title.to_ascii_lowercase();
     for marker in ["(narrated by ", "(read by "] {
         if let Some(i) = lower.rfind(marker)
             && title.ends_with(')')
@@ -197,7 +199,7 @@ fn split_narrated_by(title: String) -> (String, Option<String>) {
 fn read_by(info: &[String]) -> Option<String> {
     info.iter().flat_map(|t| t.lines()).find_map(|l| {
         let l = l.trim();
-        let lower = l.to_lowercase();
+        let lower = l.to_ascii_lowercase();
         ["read by ", "narrated by "].iter().find_map(|m| lower.starts_with(m).then(|| l[m.len()..].trim().to_owned()))
     })
 }
@@ -299,7 +301,7 @@ fn split_qualifier(s: &str) -> (String, Option<String>) {
 
 /// "…, Book 6" or "… Book 2.5 …" → 6 / 2.5.
 fn book_number(s: &str) -> Option<Position> {
-    let lower = s.to_lowercase();
+    let lower = s.to_ascii_lowercase();
     let i = lower.rfind("book ")?;
     let rest = &s[i + 5..];
     let num: String = rest.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
@@ -308,6 +310,24 @@ fn book_number(s: &str) -> Option<Position> {
 
 #[cfg(test)]
 mod tests {
+
+    /// Characters whose lower case is longer or shorter in bytes (İ → i̇, K → k) must not
+    /// make the parser slice inside a character (review C1, C2): a panic aborts the scanner.
+    #[test]
+    fn titles_with_case_changing_characters_never_panic() {
+        assert_eq!(book_number("İbook é"), None);
+        assert_eq!(book_number("İ Book 3"), Position::parse("3"));
+        assert_eq!(book_number("\u{212A}book 2"), Position::parse("2"), "Kelvin sign: 3 bytes, lower-cases to 1");
+        let (t, n) = split_narrated_by("İ(narrated by é)".to_owned());
+        assert_eq!((t.as_str(), n.as_deref()), ("İ", Some("é")));
+        let (t, n) = split_narrated_by("ẞ big \u{2126} (Read by Ann)".to_owned());
+        assert_eq!(n.as_deref(), Some("Ann"), "{t}");
+        assert_eq!(read_by(&["\u{212A}read by x".to_owned(), "Read by İnés".to_owned()]), Some("İnés".to_owned()));
+        for weird in ["İİİİbook ", "book İ", "(narrated by İ", "İ(read by )", "\u{212A}\u{212A}book 9.5"] {
+            let _ = book_number(weird);
+            let _ = split_narrated_by(weird.to_owned());
+        }
+    }
     use super::*;
 
     fn tags(pairs: &[(&str, &str)]) -> Tags {

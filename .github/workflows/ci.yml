@@ -68,7 +68,8 @@ jobs:
         working-directory: fuzz
         run: |
           for t in $(cargo fuzz list); do
-            cargo fuzz run -O "$t" -- -max_total_time=60 -rss_limit_mb=2048
+            dict=""; [ -f "dicts/$t.dict" ] && dict="-dict=dicts/$t.dict"
+            cargo fuzz run -O "$t" -- -max_total_time=60 -rss_limit_mb=2048 $dict
           done
 
   image:

@@ -28,9 +28,19 @@ pub struct GuardConfig {
     pub origin: String,
 }
 
+/// An IPv4 address seen through an IPv6 socket (`::ffff:a.b.c.d`) as plain IPv4, so it
+/// matches `trusted_proxies` and rate-limit keys either way.
+pub fn canonical(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+        v4 => v4,
+    }
+}
+
 /// The client address: the peer itself, or, when the peer is a trusted proxy, the rightmost
 /// `X-Forwarded-For` entry that isn't itself a trusted proxy.
 pub fn client_ip(peer: IpAddr, headers: &HeaderMap, trusted: &[IpAddr]) -> IpAddr {
+    let peer = canonical(peer);
     if !trusted.contains(&peer) {
         return peer;
     }
@@ -39,7 +49,7 @@ pub fn client_ip(peer: IpAddr, headers: &HeaderMap, trusted: &[IpAddr]) -> IpAdd
         let Ok(s) = v.to_str() else { return peer };
         for part in s.split(',') {
             match part.trim().parse::<IpAddr>() {
-                Ok(ip) => hops.push(ip),
+                Ok(ip) => hops.push(canonical(ip)),
                 Err(_) => return peer,
             }
         }
@@ -50,6 +60,7 @@ pub fn client_ip(peer: IpAddr, headers: &HeaderMap, trusted: &[IpAddr]) -> IpAdd
 /// Whether the request reached the proxy over TLS: only a trusted proxy's word counts;
 /// loopback is accepted as-is (local tools and tests).
 pub fn is_tls(peer: IpAddr, headers: &HeaderMap, trusted: &[IpAddr]) -> bool {
+    let peer = canonical(peer);
     if trusted.contains(&peer) {
         return headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()) == Some("https");
     }

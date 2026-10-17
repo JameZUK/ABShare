@@ -25,7 +25,10 @@ services:
   abshare:
     <<: *hardening
     command: ["serve", "--config", "/etc/abshare/abshare.toml"]
-    ports: ["8743:8743"]
+    # Only the reverse proxy should reach this port. Docker's published ports bypass host
+    # firewalls such as ufw, so bind the address the proxy connects to: loopback when nginx
+    # runs on this host, or this host's LAN address (never all interfaces) when it doesn't.
+    ports: ["127.0.0.1:8743:8743"]
 
   # Rescans the library every hour (only changed files are probed), or at once when an admin
   # asks from the app.

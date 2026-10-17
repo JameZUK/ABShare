@@ -35,6 +35,29 @@ use tower::ServiceExt;
 pub const MAX_CONNECTIONS: usize = 1024;
 pub const MAX_PER_ADDRESS: usize = 64;
 const HEADER_TIMEOUT: Duration = Duration::from_secs(15);
+/// A request body must arrive within this (bodies are small: 64 KiB at most).
+pub const BODY_TIMEOUT: Duration = Duration::from_secs(15);
+/// A new connection must send its first byte within this.
+const FIRST_BYTE_TIMEOUT: Duration = Duration::from_secs(15);
+const MAX_BODY: usize = 64 * 1024;
+
+/// Reads a request's whole body up front, within [`BODY_TIMEOUT`] and [`MAX_BODY`], so a
+/// client trickling a body can't hold a connection or a handler (review H1).
+async fn read_body(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if matches!(*req.method(), axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS) {
+        return next.run(req).await;
+    }
+    let (parts, body) = req.into_parts();
+    match tokio::time::timeout(BODY_TIMEOUT, axum::body::to_bytes(body, MAX_BODY)).await {
+        Ok(Ok(bytes)) => next.run(axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes))).await,
+        Ok(Err(_)) => {
+            ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "That request is too large.").into_response()
+        }
+        Err(_) => ApiError::new(StatusCode::REQUEST_TIMEOUT, "timeout", "The request took too long to arrive.")
+            .into_response(),
+    }
+}
 
 pub fn now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
@@ -373,14 +396,15 @@ pub fn router(state: State) -> Router {
         .nest("/v1/media", media_routes::routes())
         .nest("/v1/admin", admin_routes::routes())
         .fallback(web::fallback)
-        .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
+        .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY))
+        .layer(axum::middleware::from_fn(read_body))
         .layer(axum::middleware::from_fn_with_state(g, guard::front))
         .with_state(state)
 }
 
-/// Accepts connections with caps (overall and per address) and a header timeout, so slow or
-/// greedy clients can't exhaust the server.
-pub async fn serve(listener: tokio::net::TcpListener, app: Router) -> Result<(), String> {
+/// Accepts connections with caps (overall, and per address except trusted proxies, which
+/// carry everyone's traffic) and timeouts, so slow or greedy clients can't exhaust the server.
+pub async fn serve(listener: tokio::net::TcpListener, app: Router, proxies: Vec<IpAddr>) -> Result<(), String> {
     let all = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     let per: Arc<Mutex<HashMap<IpAddr, usize>>> = Arc::default();
     loop {
@@ -392,9 +416,11 @@ pub async fn serve(listener: tokio::net::TcpListener, app: Router) -> Result<(),
             }
         };
         let Ok(permit) = all.clone().try_acquire_owned() else { continue };
-        {
+        let ip = guard::canonical(peer.ip());
+        let counted = !proxies.contains(&ip);
+        if counted {
             let Ok(mut m) = per.lock() else { continue };
-            let n = m.entry(peer.ip()).or_default();
+            let n = m.entry(ip).or_default();
             if *n >= MAX_PER_ADDRESS {
                 continue;
             }
@@ -404,12 +430,13 @@ pub async fn serve(listener: tokio::net::TcpListener, app: Router) -> Result<(),
         tokio::spawn(async move {
             let _permit = permit;
             serve_one(stream, peer, app).await;
-            if let Ok(mut m) = per.lock()
-                && let Some(n) = m.get_mut(&peer.ip())
+            if counted
+                && let Ok(mut m) = per.lock()
+                && let Some(n) = m.get_mut(&ip)
             {
                 *n -= 1;
                 if *n == 0 {
-                    m.remove(&peer.ip());
+                    m.remove(&ip);
                 }
             }
         });
@@ -417,6 +444,12 @@ pub async fn serve(listener: tokio::net::TcpListener, app: Router) -> Result<(),
 }
 
 async fn serve_one(stream: tokio::net::TcpStream, peer: SocketAddr, app: Router) {
+    // A connection that never speaks would otherwise hold its slot before hyper's own timers
+    // start (protocol detection waits for bytes).
+    let mut first = [0u8; 1];
+    if !matches!(tokio::time::timeout(FIRST_BYTE_TIMEOUT, stream.peek(&mut first)).await, Ok(Ok(n)) if n > 0) {
+        return;
+    }
     let svc = hyper::service::service_fn(move |mut req: hyper::Request<hyper::body::Incoming>| {
         req.extensions_mut().insert(Peer(peer));
         let app = app.clone();
