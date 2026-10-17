@@ -29,3 +29,4 @@ Every page of ABShare's documentation, with what each covers. Start with the pro
 | Document | What it covers |
 |---|---|
 | [`BUILDING.md`](BUILDING.md) | Building from source, every check, CI, fuzzing, a local demo with invented books, and the rules for contributing |
+| [`../CHANGELOG.md`](../CHANGELOG.md) | What changed and when, newest first |
