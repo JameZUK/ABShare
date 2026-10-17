@@ -176,13 +176,14 @@ fn strip_edition_suffix(s: &str) -> String {
 fn split_narrated_by(title: String) -> (String, Option<String>) {
     let lower = title.to_lowercase();
     for marker in ["(narrated by ", "(read by "] {
-        if let Some(i) = lower.rfind(marker) {
-            if title.ends_with(')') && title.is_char_boundary(i) {
-                let name = title[i + marker.len()..title.len() - 1].trim().to_owned();
-                let t = title[..i].trim_end().to_owned();
-                if !t.is_empty() && !name.is_empty() {
-                    return (t, Some(name));
-                }
+        if let Some(i) = lower.rfind(marker)
+            && title.ends_with(')')
+            && title.is_char_boundary(i)
+        {
+            let name = title[i + marker.len()..title.len() - 1].trim().to_owned();
+            let t = title[..i].trim_end().to_owned();
+            if !t.is_empty() && !name.is_empty() {
+                return (t, Some(name));
             }
         }
     }
