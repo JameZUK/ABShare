@@ -52,7 +52,23 @@ async fn read_body(req: axum::extract::Request, next: axum::middleware::Next) ->
     }
     let (parts, body) = req.into_parts();
     match tokio::time::timeout(BODY_TIMEOUT, axum::body::to_bytes(body, MAX_BODY)).await {
-        Ok(Ok(bytes)) => next.run(axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes))).await,
+        Ok(Ok(bytes)) => {
+            // Every JSON body is an object with named fields. serde would also read a struct
+            // from an array of its fields in order, which a strict schema must not allow.
+            let json = parts.headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).is_some_and(|v| {
+                v.split(';').next().is_some_and(|t| t.trim().eq_ignore_ascii_case("application/json"))
+            });
+            let first = bytes.iter().find(|b| !b.is_ascii_whitespace());
+            if json && first.is_some_and(|&b| b != b'{') {
+                return ApiError::new(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "invalid",
+                    "A request body must be a JSON object.",
+                )
+                .into_response();
+            }
+            next.run(axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes))).await
+        }
         Ok(Err(_)) => {
             ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "That request is too large.").into_response()
         }

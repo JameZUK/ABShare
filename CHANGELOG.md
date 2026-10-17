@@ -20,6 +20,7 @@ The first tagged release: everything from Phases 0 to 6, plus the work below. De
 - **Recovery codes force a new factor.** After signing in with one, only the account pages work until a new passkey or authenticator app is set up (schema 7).
 - **Removing or replacing a factor** signs out your other devices, as a password change does. **Signing out another device** needs a fresh confirmation, and is rate-limited.
 - **Media:** Content-Type comes from the probed container, never the file name, and a file whose size changed since the scan is refused (and rescanned).
+- **Request bodies must be JSON objects.** serde also reads a struct from an array of its fields in order, so `["name", "password", "device"]` could sign in; any non-object JSON body is now refused before the handler (found while building history).
 - **The password-only step-up route** (which could never succeed since review A4) is removed.
 - **Review D1** is closed: only the reverse proxy can reach the server's port on the test deployment.
 - **CI now really runs the jail tests.** The runners leak open descriptors, so the jail refused to start and its escape tests skipped silently. CI now closes them and requires Landlock (`ABSHARE_REQUIRE_LANDLOCK=1`).

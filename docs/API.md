@@ -59,7 +59,7 @@ There is no CORS. No route answers a preflight, so a cross-site page can't send 
 
 ### Requests and responses
 
-- Request bodies are JSON (`Content-Type: application/json`). Every body struct uses `deny_unknown_fields`, so unknown fields, missing required fields and wrong types are refused. Query strings are just as strict: an unknown query parameter is refused.
+- Request bodies are JSON (`Content-Type: application/json`) and must be objects: an array, number, string or `null` is `422 invalid` before any handler runs. Every body struct uses `deny_unknown_fields`, so unknown fields, missing required fields and wrong types are refused. Query strings are just as strict: an unknown query parameter is refused.
 - Those refusals come from the framework, not from ABShare's handlers, and are plain text, not the JSON error shape:
   - a malformed or schema-violating JSON body: `422`;
   - a missing or wrong `Content-Type`: `415`;

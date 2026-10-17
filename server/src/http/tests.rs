@@ -1809,11 +1809,11 @@ async fn admins_correct_book_details_and_everyone_sees_them_at_once() {
         as_user(&m.t, "PUT", &uri, Some(json!({"title": "Mine"})), &listener_token).await.status(),
         StatusCode::FORBIDDEN
     );
-    for bad in
-        [json!({"title": ""}), json!({"path": "/etc"}), json!({"series": {"name": "S", "position": "two"}}), json!([])]
-    {
+    for bad in [json!({"title": ""}), json!({"path": "/etc"}), json!({"series": {"name": "S", "position": "two"}})] {
         assert_eq!(as_user(&m.t, "PUT", &uri, Some(bad.clone()), &a).await.status(), StatusCode::BAD_REQUEST, "{bad}");
     }
+    // Not an object at all: refused before the handler.
+    assert_eq!(as_user(&m.t, "PUT", &uri, Some(json!([])), &a).await.status(), StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(
         as_user(&m.t, "PUT", "/v1/admin/books/zzzzzzzzzzzzzzzzzzzzzzzzzz/details", Some(json!({"title": "X"})), &a)
             .await
@@ -2794,4 +2794,27 @@ async fn the_jobs_page_shows_failed_copies_and_its_actions_need_an_admin_and_ste
     assert!(json_of(r).await["freed_bytes"].as_u64().expect("freed") >= 4096);
     assert!(!saver.exists());
     assert!(copy.exists());
+}
+
+#[tokio::test]
+async fn request_bodies_must_be_json_objects() {
+    let t = setup();
+    enrol(&t, "obi").await;
+    // serde would read a struct from an array of its fields in order; a strict schema means
+    // an object with named fields only.
+    for body in [r#"["obi","correct horse battery","x"]"#, r#" ["obi"]"#, "123", r#""text""#, "null"] {
+        let r = req("POST", "/v1/auth/login/password", Some(json!({}))).body(Body::from(body)).expect("req");
+        let r = call(&t.app, r).await;
+        assert_eq!(r.status(), StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    }
+    // An object still works.
+    let r = send(
+        &t,
+        "POST",
+        "/v1/auth/login/password",
+        Some(json!({"username":"obi","password":"correct horse battery","device_name":"x"})),
+        &[],
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
 }
