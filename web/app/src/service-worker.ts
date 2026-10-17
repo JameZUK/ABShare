@@ -16,7 +16,7 @@ sw.addEventListener('install', (event) => {
 		(async () => {
 			const cache = await caches.open(CACHE);
 			const base = scope();
-			const shell = [...build, '', 'manifest.webmanifest', 'favicon.svg', 'icons/icon-192.png'].map((p) => new URL(p.replace(/^\//, ''), base).href);
+			const shell = [...build, '', 'manifest.webmanifest', 'favicon.svg', 'diag.js', 'icons/icon-192.png'].map((p) => new URL(p.replace(/^\//, ''), base).href);
 			await cache.addAll(shell.filter((u) => strategyFor('GET', new URL(u), base) !== 'bypass'));
 			// The start-up script is moved out of index.html after the build (strict CSP), so it
 			// isn't in `build`: find it in the page just stored and keep it too, or the app
