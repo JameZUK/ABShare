@@ -37,7 +37,6 @@ jobs:
           ABSHARE_REQUIRE_LANDLOCK: "1"
         run: |
           for fd in /proc/$$/fd/*; do n=${fd##*/}; if [ "$n" -gt 2 ] && [ "$n" -lt 255 ]; then eval "exec $n>&-"; fi; done
-          ls -l /proc/$$/fd
           cargo test --workspace
           cargo test --workspace --release
 
