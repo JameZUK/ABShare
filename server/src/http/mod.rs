@@ -1,0 +1,357 @@
+//! The HTTP server (SPEC §5.1, §6): a hardened serve loop (header timeout, connection caps),
+//! the request guard, and the `/v1` API.
+
+pub mod auth_routes;
+pub mod guard;
+pub mod me_routes;
+pub mod passkeys;
+
+use crate::auth::crypto::{Hasher, SeedBox};
+use crate::auth::sessions::{CHALLENGE_TTL, Ceremonies, ENROL_TTL, Session, Sessions};
+use crate::auth::store::Perms;
+use crate::auth::{audit, store::Role};
+use crate::secret::Secret;
+use abshare_core::auth::lockout::Limiter;
+use axum::Router;
+use axum::extract::FromRequestParts;
+use axum::http::request::Parts;
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use guard::{Client, GuardConfig, Peer, RateLimit};
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use rusqlite::Connection;
+use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::sync::Semaphore;
+use tower::ServiceExt;
+
+pub const MAX_CONNECTIONS: usize = 1024;
+pub const MAX_PER_ADDRESS: usize = 64;
+const HEADER_TIMEOUT: Duration = Duration::from_secs(15);
+
+pub fn now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+/// The database, used from blocking threads only.
+#[derive(Clone)]
+pub struct Db(Arc<Mutex<Connection>>);
+
+impl Db {
+    pub fn new(conn: Connection) -> Self {
+        Self(Arc::new(Mutex::new(conn)))
+    }
+
+    /// Runs `f` with the connection on a blocking thread.
+    pub async fn run<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&mut Connection) -> Result<T, String> + Send + 'static,
+    ) -> Result<T, ApiError> {
+        let db = self.0.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut c = db.lock().map_err(|_| "database lock poisoned".to_string())?;
+            f(&mut c)
+        })
+        .await
+        .map_err(|_| ApiError::internal("database task failed"))?
+        .map_err(ApiError::internal)
+    }
+}
+
+/// Enrolment in progress (SPEC §5.5): nothing is written until it finishes.
+#[derive(Clone)]
+pub struct Enrol {
+    pub invite_hash: [u8; 32],
+    pub purpose: String,
+    pub for_user: Option<i64>,
+    pub username: String,
+    pub webauthn_id: webauthn_rs::prelude::Uuid,
+    pub display_name: String,
+    pub role: Role,
+    pub perms: Perms,
+    pub password_hash: Option<String>,
+    pub totp_seed: Option<Vec<u8>>,
+    pub totp_step: Option<i64>,
+    pub passkey: Option<(String, webauthn_rs::prelude::Passkey)>,
+    pub passkey_reg: Option<webauthn_rs::prelude::PasskeyRegistration>,
+}
+
+/// Password accepted, second factor pending.
+#[derive(Clone)]
+pub struct LoginPending {
+    pub user: i64,
+    pub device_name: String,
+    pub attempt: abshare_core::auth::lockout::Attempt,
+}
+
+pub enum PasskeyLogin {
+    Discoverable(webauthn_rs::prelude::DiscoverableAuthentication),
+    ForUser(i64, webauthn_rs::prelude::PasskeyAuthentication),
+}
+
+pub struct AppState {
+    pub db: Db,
+    pub hasher: Hasher,
+    pub sessions: Sessions,
+    pub limiter: Mutex<Limiter>,
+    pub seeds: SeedBox,
+    pub audit_key: [u8; 32],
+    pub webauthn: webauthn_rs::Webauthn,
+    pub enrol: Ceremonies<Enrol>,
+    pub login: Ceremonies<LoginPending>,
+    pub passkey_login: Ceremonies<PasskeyLogin>,
+    pub passkey_add: Ceremonies<(i64, webauthn_rs::prelude::PasskeyRegistration)>,
+    pub totp_add: Ceremonies<(i64, Vec<u8>)>,
+    pub anon_limit: RateLimit,
+    pub guard: Arc<GuardConfig>,
+    pub issuer: String,
+}
+
+pub type State = Arc<AppState>;
+
+impl AppState {
+    pub fn new(
+        conn: Connection,
+        secret: &Secret,
+        origin: &str,
+        trusted: Vec<IpAddr>,
+        hasher: Hasher,
+    ) -> Result<Self, String> {
+        let url = webauthn_rs::prelude::Url::parse(origin).map_err(|e| format!("public_origin: {e}"))?;
+        let host = url.host_str().ok_or("public_origin needs a host")?.to_owned();
+        let host_header = match url.port() {
+            Some(p) => format!("{host}:{p}"),
+            None => host.clone(),
+        };
+        let clean_origin = origin.trim_end_matches('/').to_owned();
+        let webauthn = webauthn_rs::WebauthnBuilder::new(&host, &url)
+            .and_then(|b| b.rp_name("ABShare").build())
+            .map_err(|e| format!("webauthn: {e}"))?;
+        Ok(Self {
+            db: Db::new(conn),
+            hasher,
+            sessions: Sessions::new(),
+            limiter: Mutex::new(Limiter::new()),
+            seeds: SeedBox::new(&secret.derive(crate::secret::purpose::TOTP_SEED)),
+            audit_key: secret.derive(crate::secret::purpose::AUDIT),
+            webauthn,
+            enrol: Ceremonies::new(ENROL_TTL),
+            login: Ceremonies::new(CHALLENGE_TTL * 2),
+            passkey_login: Ceremonies::new(CHALLENGE_TTL),
+            passkey_add: Ceremonies::new(CHALLENGE_TTL),
+            totp_add: Ceremonies::new(ENROL_TTL),
+            anon_limit: RateLimit::new(30),
+            guard: Arc::new(GuardConfig { trusted, host: host_header, origin: clean_origin }),
+            issuer: "ABShare".into(),
+        })
+    }
+
+    /// Writes an audit entry; failures to audit are logged but never block the request.
+    pub async fn audit(
+        &self,
+        event: &'static str,
+        user: Option<i64>,
+        device: Option<i64>,
+        ip: Option<IpAddr>,
+        detail: String,
+    ) {
+        let key = self.audit_key;
+        let ip = ip.map(|i| i.to_string());
+        let r = self
+            .db
+            .run(move |c| {
+                audit::append(
+                    c,
+                    &key,
+                    &audit::Entry { user_id: user, device_id: device, event, detail: &detail, ip: ip.as_deref() },
+                    now(),
+                )
+            })
+            .await;
+        if r.is_err() {
+            eprintln!("abshare: could not write audit entry {event}");
+        }
+    }
+}
+
+/// API errors: a stable code and a message safe to show. Internal details are logged with a
+/// correlation ID, never sent.
+#[derive(Debug)]
+pub struct ApiError {
+    pub status: StatusCode,
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl ApiError {
+    pub fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
+        Self { status, code, message: message.into() }
+    }
+
+    pub fn internal(detail: impl std::fmt::Display) -> Self {
+        let id: String = crate::auth::crypto::random::<6>().iter().map(|b| format!("{b:02x}")).collect();
+        eprintln!("abshare: internal error {id}: {detail}");
+        Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", format!("Something went wrong (reference {id})."))
+    }
+
+    pub fn bad(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::BAD_REQUEST, "invalid", message)
+    }
+
+    pub fn denied() -> Self {
+        Self::new(StatusCode::UNAUTHORIZED, "invalid_credentials", "Those details didn't work.")
+    }
+
+    pub fn unauthenticated() -> Self {
+        Self::new(StatusCode::UNAUTHORIZED, "unauthenticated", "Please sign in.")
+    }
+
+    pub fn not_found() -> Self {
+        Self::new(StatusCode::NOT_FOUND, "not_found", "Not found.")
+    }
+
+    pub fn too_many() -> Self {
+        Self::new(StatusCode::TOO_MANY_REQUESTS, "too_many_requests", "Too many attempts. Try again later.")
+    }
+
+    pub fn step_up() -> Self {
+        Self::new(StatusCode::FORBIDDEN, "step_up_required", "Confirm it's you first.")
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let body = serde_json::json!({ "error": self.code, "message": self.message }).to_string();
+        (self.status, [(header::CONTENT_TYPE, "application/json")], body).into_response()
+    }
+}
+
+impl From<crate::auth::crypto::HashError> for ApiError {
+    fn from(e: crate::auth::crypto::HashError) -> Self {
+        match e {
+            crate::auth::crypto::HashError::Busy => {
+                Self::new(StatusCode::SERVICE_UNAVAILABLE, "busy", "The server is busy. Try again in a moment.")
+            }
+            crate::auth::crypto::HashError::Internal => Self::internal("password hashing failed"),
+        }
+    }
+}
+
+/// The signed-in caller, from `Authorization: Bearer`.
+pub struct Authed(pub Session);
+
+impl FromRequestParts<State> for Authed {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &State) -> Result<Self, Self::Rejection> {
+        let token = parts
+            .headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .ok_or_else(ApiError::unauthenticated)?;
+        state.sessions.access(token, now()).map(Authed).ok_or_else(ApiError::unauthenticated)
+    }
+}
+
+/// The client address set by the guard.
+pub struct Ip(pub IpAddr);
+
+impl<S: Send + Sync> FromRequestParts<S> for Ip {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, _: &S) -> Result<Self, Self::Rejection> {
+        parts.extensions.get::<Client>().map(|c| Ip(c.ip)).ok_or_else(|| ApiError::internal("no client address"))
+    }
+}
+
+pub fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers.get_all(header::COOKIE).iter().filter_map(|v| v.to_str().ok()).flat_map(|v| v.split(';')).find_map(|kv| {
+        let (k, v) = kv.trim().split_once('=')?;
+        (k == name).then(|| v.to_owned())
+    })
+}
+
+pub fn set_cookie(name: &str, value: &str, path: &str, max_age: i64) -> HeaderValue {
+    HeaderValue::from_str(&format!("{name}={value}; Path={path}; Max-Age={max_age}; HttpOnly; Secure; SameSite=Strict"))
+        .unwrap_or_else(|_| HeaderValue::from_static("invalid=1; Max-Age=0"))
+}
+
+pub const REFRESH_COOKIE: &str = "abshare_refresh";
+pub const MEDIA_COOKIE: &str = "abshare_media";
+
+pub fn router(state: State) -> Router {
+    let g = state.guard.clone();
+    Router::new()
+        .route("/healthz", get(|| async { "ok" }))
+        .nest(
+            "/v1/auth",
+            auth_routes::routes(state.clone()).layer(axum::middleware::from_fn_with_state(g.clone(), guard::csrf)),
+        )
+        .nest("/v1/me", me_routes::routes())
+        .fallback(|| async { ApiError::not_found() })
+        .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
+        .layer(axum::middleware::from_fn_with_state(g, guard::front))
+        .with_state(state)
+}
+
+/// Accepts connections with caps (overall and per address) and a header timeout, so slow or
+/// greedy clients can't exhaust the server.
+pub async fn serve(listener: tokio::net::TcpListener, app: Router) -> Result<(), String> {
+    let all = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    let per: Arc<Mutex<HashMap<IpAddr, usize>>> = Arc::default();
+    loop {
+        let (stream, peer) = match listener.accept().await {
+            Ok(x) => x,
+            Err(_) => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                continue;
+            }
+        };
+        let Ok(permit) = all.clone().try_acquire_owned() else { continue };
+        {
+            let Ok(mut m) = per.lock() else { continue };
+            let n = m.entry(peer.ip()).or_default();
+            if *n >= MAX_PER_ADDRESS {
+                continue;
+            }
+            *n += 1;
+        }
+        let (app, per) = (app.clone(), per.clone());
+        tokio::spawn(async move {
+            let _permit = permit;
+            serve_one(stream, peer, app).await;
+            if let Ok(mut m) = per.lock()
+                && let Some(n) = m.get_mut(&peer.ip())
+            {
+                *n -= 1;
+                if *n == 0 {
+                    m.remove(&peer.ip());
+                }
+            }
+        });
+    }
+}
+
+async fn serve_one(stream: tokio::net::TcpStream, peer: SocketAddr, app: Router) {
+    let svc = hyper::service::service_fn(move |mut req: hyper::Request<hyper::body::Incoming>| {
+        req.extensions_mut().insert(Peer(peer));
+        let app = app.clone();
+        async move { app.oneshot(req.map(axum::body::Body::new)).await }
+    });
+    let mut b = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
+    b.http1().timer(hyper_util::rt::TokioTimer::new()).header_read_timeout(HEADER_TIMEOUT).keep_alive(true);
+    let _ = b.serve_connection_with_upgrades(TokioIo::new(stream), svc).await;
+}
+
+/// Helper for handlers: run a request through the router in tests.
+#[cfg(test)]
+pub async fn call(app: &Router, req: axum::extract::Request) -> Response {
+    app.clone().oneshot(req).await.expect("infallible")
+}
+
+#[cfg(test)]
+mod tests;

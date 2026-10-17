@@ -107,6 +107,7 @@ pub fn token_hash(text: &str) -> [u8; 32] {
 
 /// Encrypts TOTP seeds at rest (XChaCha20-Poly1305), bound to the user ID, so a copy of the
 /// database alone doesn't reveal them.
+#[derive(Clone)]
 pub struct SeedBox {
     cipher: XChaCha20Poly1305,
 }

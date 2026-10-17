@@ -116,6 +116,7 @@ impl Sessions {
         Self::lookup(&self.inner.lock().ok()?.access, token, now)
     }
 
+    #[allow(dead_code)] // Used by the media route (Phase 3).
     pub fn media(&self, token: &str, now: i64) -> Option<Session> {
         Self::lookup(&self.inner.lock().ok()?.media, token, now)
     }

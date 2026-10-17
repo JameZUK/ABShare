@@ -90,20 +90,9 @@ pub fn user_by_id(c: &Connection, id: i64) -> Result<Option<User>, String> {
         .map_err(sql_err)
 }
 
-pub fn user_by_webauthn_id(c: &Connection, wid: &str) -> Result<Option<User>, String> {
-    c.query_row(&format!("SELECT {USER_COLS} FROM user WHERE webauthn_id = ?1"), params![wid], user_row)
-        .optional()
-        .map_err(sql_err)
-}
-
 pub fn list_users(c: &Connection) -> Result<Vec<User>, String> {
     let mut st = c.prepare(&format!("SELECT {USER_COLS} FROM user ORDER BY username")).map_err(sql_err)?;
     st.query_map([], user_row).map_err(sql_err)?.collect::<Result<_, _>>().map_err(sql_err)
-}
-
-pub fn count_admins(c: &Connection) -> Result<i64, String> {
-    c.query_row("SELECT count(*) FROM user WHERE role = 'admin' AND disabled_at IS NULL", [], |r| r.get(0))
-        .map_err(sql_err)
 }
 
 /// Everything needed to create an account in one step at the end of enrolment.
@@ -322,13 +311,11 @@ pub fn consume_invite(tx: &Transaction<'_>, hash: &[u8; 32], now: i64) -> Result
 
 pub struct Device {
     pub id: i64,
-    pub user_id: i64,
     pub name: String,
     pub created_at: i64,
     pub last_seen: i64,
     pub last_ip: Option<String>,
     pub user_agent: Option<String>,
-    pub revoked: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -378,20 +365,18 @@ pub fn create_device(
 fn device_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Device> {
     Ok(Device {
         id: r.get(0)?,
-        user_id: r.get(1)?,
-        name: r.get(2)?,
-        created_at: r.get(3)?,
-        last_seen: r.get(4)?,
-        last_ip: r.get(5)?,
-        user_agent: r.get(6)?,
-        revoked: r.get::<_, Option<i64>>(7)?.is_some(),
+        name: r.get(1)?,
+        created_at: r.get(2)?,
+        last_seen: r.get(3)?,
+        last_ip: r.get(4)?,
+        user_agent: r.get(5)?,
     })
 }
 
 pub fn devices(c: &Connection, user: i64) -> Result<Vec<Device>, String> {
     let mut st = c
         .prepare(
-            "SELECT id, user_id, name, created_at, last_seen, last_ip, user_agent, revoked_at FROM device
+            "SELECT id, name, created_at, last_seen, last_ip, user_agent FROM device
              WHERE user_id = ?1 AND revoked_at IS NULL ORDER BY last_seen DESC",
         )
         .map_err(sql_err)?;
@@ -526,6 +511,7 @@ pub fn rotate_refresh(
     Ok(RefreshOutcome::Rotated { device, user })
 }
 
+#[cfg(test)]
 pub fn device_active(c: &Connection, device: i64) -> Result<bool, String> {
     let r: Option<Option<i64>> = c
         .query_row("SELECT revoked_at FROM device WHERE id = ?1", params![device], |r| r.get(0))

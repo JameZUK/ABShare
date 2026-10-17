@@ -18,6 +18,8 @@ impl std::fmt::Debug for Secret {
 /// Labels for derived keys. Changing one invalidates everything derived from it.
 pub mod purpose {
     pub const BOOK_ID: &[u8] = b"abshare v1 book id";
+    pub const TOTP_SEED: &[u8] = b"abshare v1 totp seed";
+    pub const AUDIT: &[u8] = b"abshare v1 audit chain";
 }
 
 impl Secret {
@@ -42,6 +44,11 @@ impl Secret {
         let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let arr: [u8; 32] = bytes.try_into().map_err(|_| format!("{} must hold exactly 32 bytes", path.display()))?;
         Ok(Self(arr))
+    }
+
+    #[cfg(test)]
+    pub fn for_tests(bytes: [u8; 32]) -> Self {
+        Self(bytes)
     }
 
     /// A 32-byte key for one purpose.
