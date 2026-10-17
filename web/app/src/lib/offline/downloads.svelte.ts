@@ -163,7 +163,9 @@ class Downloads {
 		let d = await get<Download>(db, 'books', id);
 		if (!d) return;
 		await this.#set(id, { state: 'downloading' });
-		const url = streamUrl(id, d.quality === 'original' ? 'original' : d.quality);
+		// dl=1: the server encodes each data-saver piece in one run (downloads read in order).
+		const base = streamUrl(id, d.quality === 'original' ? 'original' : d.quality);
+		const url = `${base}${base.includes('?') ? '&' : '?'}dl=1`;
 		const started = performance.now();
 		let fetched = 0;
 		let retried401 = false;

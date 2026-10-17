@@ -87,12 +87,14 @@ pub fn open_inside(root: &Path, path: &Path) -> Result<std::fs::File, String> {
 
 impl Media {
     pub fn new(ff: Ffmpeg, data_dir: PathBuf, roots: HashMap<String, PathBuf>) -> Self {
+        let lanes = ff.jobs.clamp(1, 8);
         Self {
             ff,
             data_dir,
             roots,
             fg: Semaphore::new(1),
-            prefetch: Semaphore::new(1),
+            // Background work (read-ahead, downloads) may use `jobs` cores; playback has its own lane.
+            prefetch: Semaphore::new(lanes),
             copies: Semaphore::new(1),
             locks: Mutex::default(),
             copying: Mutex::default(),
@@ -269,6 +271,89 @@ impl Media {
         Ok(kept.into())
     }
 
+    /// Encodes the uncached segments among `first..first + count` with as few ffmpeg runs as
+    /// possible (one per run of consecutive missing segments) and caches them. For downloads,
+    /// which read the book in order: one start-up per span instead of one per segment.
+    pub async fn fill_span(
+        self: &Arc<Self>,
+        file: &Path,
+        book: &str,
+        layout: &Layout,
+        first: u64,
+        count: u64,
+    ) -> Result<(), String> {
+        let kbps = layout.profile().bitrate().bits_per_second() / 1000;
+        let dir = self.seg_dir(book, kbps);
+        // One fill per span start at a time: a download's next request waits for the
+        // read-ahead already encoding it instead of encoding it again.
+        let key = format!("span:{book}/{kbps}/{first}");
+        let lock = { self.locks.lock().map_err(|_| "poisoned")?.entry(key.clone()).or_default().clone() };
+        let _g = lock.lock().await;
+        let r = self.fill_span_locked(file, book, layout, &dir, first, count).await;
+        if let Ok(mut l) = self.locks.lock() {
+            l.remove(&key);
+        }
+        r
+    }
+
+    async fn fill_span_locked(
+        self: &Arc<Self>,
+        file: &Path,
+        book: &str,
+        layout: &Layout,
+        dir: &Path,
+        first: u64,
+        count: u64,
+    ) -> Result<(), String> {
+        let end = first.saturating_add(count).min(layout.segment_count());
+        let missing: Vec<u64> = (first..end).filter(|i| !dir.join(format!("{i:06}.mp3")).exists()).collect();
+        let mut i = 0;
+        while i < missing.len() {
+            let mut j = i;
+            while j + 1 < missing.len() && missing[j + 1] == missing[j] + 1 {
+                j += 1;
+            }
+            let (a, n) = (missing[i], (j - i + 1) as u64);
+            if n == 1 {
+                self.segment(file, book, layout, a, true, None).await?;
+            } else {
+                let _p = self.prefetch.acquire().await.map_err(|e| e.to_string())?;
+                let w = layout.span_window(a, n).ok_or("no such span")?;
+                let kept = self.encode(file, dir, layout, &w).await?;
+                tokio::fs::create_dir_all(dir).await.map_err(|e| e.to_string())?;
+                let fb = layout.profile().bitrate().frame_bytes() as usize;
+                let mut at = 0;
+                for idx in a..a + n {
+                    let len = layout.segment_frames(idx) as usize * fb;
+                    let chunk = kept.get(at..at + len).ok_or("span shorter than its segments")?;
+                    at += len;
+                    let path = dir.join(format!("{idx:06}.mp3"));
+                    // A unique temporary name: a concurrent single-segment encode may race.
+                    let tmp = dir.join(format!(
+                        ".{idx:06}.{}.tmp",
+                        crate::auth::crypto::random::<4>().iter().map(|b| format!("{b:02x}")).collect::<String>()
+                    ));
+                    tokio::fs::write(&tmp, chunk).await.map_err(|e| e.to_string())?;
+                    tokio::fs::rename(&tmp, &path).await.map_err(|e| e.to_string())?;
+                }
+            }
+            i = j + 1;
+        }
+        Ok(())
+    }
+
+    /// Starts encoding the span after a download's current one in the background, so it is
+    /// ready (or nearly) when the next piece is asked for.
+    pub fn read_ahead(self: &Arc<Self>, file: PathBuf, book: String, layout: Layout, first: u64, count: u64) {
+        if first >= layout.segment_count() {
+            return;
+        }
+        let me = self.clone();
+        tokio::spawn(async move {
+            let _ = me.fill_span(&file, &book, &layout, first, count).await;
+        });
+    }
+
     pub fn prefetch(self: &Arc<Self>, file: PathBuf, book: String, layout: Layout, after: u64) {
         for i in after + 1..=after + 2 {
             if i >= layout.segment_count() {
@@ -410,6 +495,67 @@ impl Media {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A synthetic mono "book" of `secs` seconds, made with the system ffmpeg (not jailed:
+    /// test set-up, not untrusted input).
+    fn tone(dir: &Path, secs: u32) -> PathBuf {
+        let p = dir.join("book.mp3");
+        let ok = std::process::Command::new("/usr/bin/ffmpeg")
+            .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i"])
+            .arg(format!("sine=f=330:sample_rate=22050:d={secs}"))
+            .args(["-c:a", "libmp3lame", "-b:a", "64k", "-y"])
+            .arg(&p)
+            .status()
+            .is_ok_and(|s| s.success());
+        assert!(ok, "ffmpeg could not make the test tone");
+        p
+    }
+
+    #[tokio::test]
+    async fn a_batch_encoded_span_matches_the_layout_of_single_segments() {
+        let Some(ff) = crate::tools::test_ffmpeg().await else {
+            eprintln!("skipped: the jailed ffmpeg cannot run here");
+            return;
+        };
+        let base = std::env::temp_dir().join(format!("abshare-span-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (lib, one, many) = (base.join("lib"), base.join("one"), base.join("many"));
+        for d in [&lib, &one, &many] {
+            std::fs::create_dir_all(d.join("jobs")).expect("mkdir");
+        }
+        // 3.5 minutes: three full 60 s segments and a short last one.
+        let file = tone(&lib, 210);
+        let layout =
+            Profile::new(Bitrate::K48, 2_500).expect("profile").layout(samples_from_ms(210_000)).expect("layout");
+        assert_eq!(layout.segment_count(), 4);
+        let ff2 = Ffmpeg {
+            ffmpeg: ff.ffmpeg.clone(),
+            ffprobe: ff.ffprobe.clone(),
+            jail: ff.jail.clone(),
+            libs: ff.libs.clone(),
+            jobs: 1,
+        };
+        let a = Arc::new(Media::new(ff, one.clone(), HashMap::new()));
+        let b = Arc::new(Media::new(ff2, many.clone(), HashMap::new()));
+        let book = "aaaaaaaaaaaaaaaaaaaaaaaaaa";
+        b.fill_span(&file, book, &layout, 0, 4).await.expect("span");
+        let fb = Bitrate::K48.frame_bytes() as usize;
+        for i in 0..4 {
+            let single = a.segment(&file, book, &layout, i, false, None).await.expect("segment");
+            let batched = std::fs::read(b.seg_dir(book, 48).join(format!("{i:06}.mp3"))).expect("cached");
+            assert_eq!(batched.len(), single.len(), "segment {i}");
+            assert_eq!(batched.len(), layout.segment_frames(i) as usize * fb, "segment {i}");
+            assert!(batched.chunks_exact(fb).all(|f| f[..3] == Bitrate::K48.header_prefix()), "segment {i} frames");
+        }
+        // Already cached: nothing to do, and no error.
+        b.fill_span(&file, book, &layout, 0, 4).await.expect("cached span");
+        // The whole virtual file is exactly the layout's length.
+        let total: usize = (0..4)
+            .map(|i| std::fs::metadata(b.seg_dir(book, 48).join(format!("{i:06}.mp3"))).map_or(0, |m| m.len() as usize))
+            .sum();
+        assert_eq!(total as u64, layout.total_bytes());
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn files_outside_the_root_or_through_symlinks_are_refused() {

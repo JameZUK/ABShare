@@ -576,6 +576,15 @@ async fn login_passkey_finish(
 
 // ---------------------------------------------------------------- refresh, sign-out
 
+/// The device was signed out remotely: the app removes its downloads (SPEC §8.2).
+fn device_revoked() -> ApiError {
+    ApiError::new(
+        StatusCode::UNAUTHORIZED,
+        "device_revoked",
+        "This device was signed out. Downloaded books on it have been removed.",
+    )
+}
+
 async fn refresh(S(st): S<State>, Ip(ip): Ip, headers: HeaderMap) -> Result<Response, ApiError> {
     let old = cookie(&headers, REFRESH_COOKIE)
         .filter(|t| abshare_core::auth::codes::is_token(t))
@@ -616,9 +625,10 @@ async fn refresh(S(st): S<State>, Ip(ip): Ip, headers: HeaderMap) -> Result<Resp
                 "refresh token reused: device signed out".into(),
             )
             .await;
-            Err(ApiError::unauthenticated())
+            Err(device_revoked())
         }
         RefreshOutcome::TooFast => Err(ApiError::too_many()),
+        RefreshOutcome::Revoked => Err(device_revoked()),
         RefreshOutcome::Unknown | RefreshOutcome::Ended => Err(ApiError::unauthenticated()),
     }
 }

@@ -267,6 +267,21 @@ impl Layout {
         })
     }
 
+    /// What to feed the encoder for `count` consecutive segments from `first` in one run
+    /// (downloads: one ffmpeg start-up for many segments). The output is checked with
+    /// [`Self::check_segment`] like a single segment, then cut into segments of
+    /// [`Self::segment_frames`] each. `None` if `first` is past the end or `count` is 0.
+    pub fn span_window(&self, first: u64, count: u64) -> Option<SegmentWindow> {
+        if count == 0 {
+            return None;
+        }
+        let head = self.window(first)?;
+        let last_index = first.saturating_add(count - 1).min(self.segment_count() - 1);
+        let tail = self.window(last_index)?;
+        let keep_frames = (first..=last_index).map(|i| self.segment_frames(i)).sum();
+        Some(SegmentWindow { input_end: tail.input_end, keep_frames, last: tail.last, ..head })
+    }
+
     /// Checks an encoder's output for one segment and says which bytes to keep.
     ///
     /// Every frame header is checked. A middle segment must have at least
@@ -466,6 +481,32 @@ mod tests {
         assert_eq!(l.segments_for(10, 9), Err(SaverError::Unsatisfiable));
         assert_eq!(l.segments_for(0, u64::MAX), Err(SaverError::Unsatisfiable));
         assert!(l.segments_for(0, t - 1).is_ok());
+    }
+
+    #[test]
+    fn a_span_covers_its_segments_exactly() {
+        let l = Profile::DEFAULT.layout(HOUR).expect("layout");
+        let n = l.segment_count();
+        let w = l.span_window(3, 4).expect("span");
+        let (first, last) = (l.window(3).expect("w"), l.window(6).expect("w"));
+        assert_eq!((w.index, w.input_start, w.seek, w.skip_frames), (3, first.input_start, true, first.skip_frames));
+        assert_eq!((w.input_end, w.keep_frames, w.last), (last.input_end, 4 * 2_500, false));
+        // From the start: no seek and no pre-roll, like segment 0 alone.
+        let z = l.span_window(0, 2).expect("span");
+        assert_eq!((z.seek, z.skip_frames, z.input_start), (false, 0, 0));
+        // Running past the end stops at the last segment, which may be short.
+        let t = l.span_window(n - 2, 10).expect("span");
+        assert!(t.last && t.input_end.is_none());
+        assert_eq!(t.keep_frames, l.segment_frames(n - 2) + l.segment_frames(n - 1));
+        assert_eq!(l.span_window(n, 1), None);
+        assert_eq!(l.span_window(0, 0), None);
+        assert_eq!(l.span_window(u64::MAX, u64::MAX), None);
+        // One segment is exactly that segment's window.
+        assert_eq!(l.span_window(5, 1), l.window(5));
+        // The checked output cuts into whole segments.
+        let out = frames(Bitrate::K32, 45 + 4 * 2_500 + 7);
+        let a = l.check_segment(&w, &out).expect("accepted");
+        assert_eq!(a.end - a.start, 4 * 2_500 * 96);
     }
 
     #[test]

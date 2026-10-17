@@ -18,7 +18,10 @@
 	appearance.start();
 	updates.start();
 	player.start();
-	session.onEnd = () => player.close();
+	session.onEnd = (reason, user) => {
+		player.close();
+		if (reason === 'revoked' && user) void downloads.removeAll(user);
+	};
 	void session.start();
 
 	const inviting = $derived(page.url.hash.startsWith('#/invite/'));

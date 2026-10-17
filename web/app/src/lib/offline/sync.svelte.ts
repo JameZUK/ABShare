@@ -42,8 +42,11 @@ class Sync {
 			} else {
 				out.add(item);
 			}
-			const pos: LocalPosition = { book, position_ms: action === 'restart' ? 0 : item.body.position_ms ?? positionMs, at: now };
-			t.objectStore('positions').put(pos);
+			// Finished/unfinished marks carry no position: this device's position stays as it was.
+			if (action === 'position' || action === 'restart') {
+				const pos: LocalPosition = { book, position_ms: action === 'restart' ? 0 : (item.body.position_ms ?? 0), at: now };
+				t.objectStore('positions').put(pos);
+			}
 		});
 		void this.flush();
 	}

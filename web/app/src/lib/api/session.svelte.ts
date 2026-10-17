@@ -38,8 +38,9 @@ class Session {
 	#expires = 0;
 	#refreshing: Promise<boolean> | null = null;
 	#timer: ReturnType<typeof setTimeout> | undefined;
-	/** Called once whenever the session ends (sign-out, revocation, expiry). */
-	onEnd: ((reason: 'signed-out' | 'expired') => void) | null = null;
+	/** Called once whenever the session ends. `revoked`: this device was signed out remotely,
+	 *  so its downloads must go (SPEC §8.2); `user` is whose they are. */
+	onEnd: ((reason: 'signed-out' | 'expired' | 'revoked', user: string | null) => void) | null = null;
 
 	/** Signs in from the refresh cookie, or falls back to offline mode with the last user. */
 	async start() {
@@ -80,6 +81,12 @@ class Session {
 					return false;
 				}
 				if (e instanceof ApiError && e.status === 429) return this.#token !== null;
+				if (e instanceof ApiError && e.code === 'device_revoked') {
+					this.#end('revoked');
+					writeLastUser(null);
+					this.user = null;
+					return false;
+				}
 				this.#end('expired');
 				return false;
 			}
@@ -89,13 +96,15 @@ class Session {
 		return this.#refreshing;
 	}
 
-	#end(reason: 'signed-out' | 'expired') {
+	#end(reason: 'signed-out' | 'expired' | 'revoked') {
 		const was = this.status;
+		const user = this.user?.username ?? readLastUser()?.username ?? null;
 		this.#token = null;
 		this.#expires = 0;
 		clearTimeout(this.#timer);
 		this.status = 'signed-out';
-		if (was === 'signed-in' || was === 'offline') this.onEnd?.(reason);
+		// Revocation is acted on even at start-up, before anyone was signed in on this page.
+		if (was === 'signed-in' || was === 'offline' || reason === 'revoked') this.onEnd?.(reason, user);
 	}
 
 	/** An authenticated API call; renews the token once on 401. */

@@ -603,7 +603,7 @@ The spike tests both with a 2.5 GB, 85 h file on iOS 17/18 (installed PWA, scree
 - **Three findings:**
   1. A download runs only while the page is open: Firefox aborted the fetch when the page was hidden, and iOS has no background-fetch API. Downloads must resume cleanly, which they do (piece by piece, with an ETag check), and the UI must say "keep ABShare open while downloading".
   2. The service worker must not be re-registered while offline, because registering fetches the script. Register only when no worker controls the page.
-  3. On the target host, data-saver downloads were bottlenecked at about 0.34 MB/s by per-segment encoding (about 0.7 s per 240 KB segment). Downloads therefore encode many segments per ffmpeg run (§5.4), or a whole-book data-saver file is prepared once and served like a playable copy.
+  3. On the target host, data-saver downloads were bottlenecked at about 0.34 MB/s by per-segment encoding (about 0.7 s per 240 KB segment). Downloads therefore encode many segments per ffmpeg run (§5.4), or a whole-book data-saver file is prepared once and served like a playable copy. **Built (2026-10-17):** downloads ask with `dl=1`; the server encodes each response (up to 10 segments) in one ffmpeg run, starts encoding the next span while the current one is sent, and background work may use `[ffmpeg] jobs` cores.
 - **Safari:** `persist()` returns false in a browser tab (only Home Screen web apps get persistent storage); Firefox for Android returned true.
 
 ### 8.4 Sync-back

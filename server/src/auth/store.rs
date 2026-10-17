@@ -434,8 +434,11 @@ pub enum RefreshOutcome {
         user: i64,
     },
     Unknown,
-    /// Device revoked or session past its absolute lifetime.
+    /// Session past its lifetime (idle or absolute): sign in again; downloads stay.
     Ended,
+    /// The device was signed out remotely (or its user disabled): the app also removes this
+    /// device's downloads (SPEC §8.2).
+    Revoked,
     /// A used token was presented outside the grace: theft is assumed and the device revoked.
     Reused {
         device: i64,
@@ -464,13 +467,16 @@ pub fn rotate_refresh(
         .optional()
         .map_err(sql_err)?;
     let Some((device, user, used_at, issued_at, started, revoked)) = row else { return Ok(RefreshOutcome::Unknown) };
-    if revoked.is_some() || issued_at + REFRESH_LIFETIME <= now || started + ABSOLUTE_LIFETIME <= now {
+    if revoked.is_some() {
+        return Ok(RefreshOutcome::Revoked);
+    }
+    if issued_at + REFRESH_LIFETIME <= now || started + ABSOLUTE_LIFETIME <= now {
         return Ok(RefreshOutcome::Ended);
     }
     let disabled: Option<i64> =
         tx.query_row("SELECT disabled_at FROM user WHERE id = ?1", params![user], |r| r.get(0)).map_err(sql_err)?;
     if disabled.is_some() {
-        return Ok(RefreshOutcome::Ended);
+        return Ok(RefreshOutcome::Revoked);
     }
     let renewals: i64 = tx
         .query_row(
@@ -575,7 +581,7 @@ mod tests {
         // ...so the old token presented again is theft: the device is revoked for everyone.
         assert_eq!(rotate(&mut c, [1; 32], [5; 32], 1040), RefreshOutcome::Reused { device: d, user: u });
         assert!(!device_active(&c, d).expect("active"));
-        assert_eq!(rotate(&mut c, [4; 32], [6; 32], 1050), RefreshOutcome::Ended);
+        assert_eq!(rotate(&mut c, [4; 32], [6; 32], 1050), RefreshOutcome::Revoked);
     }
 
     #[test]
@@ -617,6 +623,19 @@ mod tests {
             cur = next;
         }
         assert_eq!(last, RefreshOutcome::Ended);
+    }
+
+    #[test]
+    fn a_remotely_revoked_device_is_told_so_but_expiry_is_not_revocation() {
+        let mut c = db();
+        let u = user(&mut c, "eve");
+        let d = device(&mut c, u, 1000);
+        issue_refresh(&c, d, &[1; 32], None, 1000).expect("issue");
+        assert!(revoke_device(&c, u, d, 1001).expect("revoke"));
+        assert_eq!(rotate(&mut c, [1; 32], [2; 32], 1002), RefreshOutcome::Revoked);
+        let d2 = device(&mut c, u, 1000);
+        issue_refresh(&c, d2, &[3; 32], None, 1000).expect("issue");
+        assert_eq!(rotate(&mut c, [3; 32], [4; 32], 1000 + REFRESH_LIFETIME), RefreshOutcome::Ended);
     }
 
     #[test]

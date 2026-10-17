@@ -16,7 +16,8 @@ ffprobe = "/usr/bin/ffprobe"
 jail = "/usr/local/bin/abshare-jail"
 # Debian's ffmpeg is dynamically linked: the jail may load its libraries and nothing else.
 libs = ["/usr/lib", "/etc/ld.so.cache"]
-jobs = 1
+# Cores for background encoding (downloads, read-ahead). Playback always has its own lane.
+jobs = 2
 
 [[library]]
 name = "Audiobooks"

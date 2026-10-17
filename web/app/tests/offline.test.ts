@@ -1,0 +1,152 @@
+// @vitest-environment node
+// Offline storage against a real IndexedDB implementation (fake-indexeddb): the progress
+// outbox, Range answers from stored pieces, and isolation between users on one browser.
+import 'fake-indexeddb/auto';
+import { ApiError, NetworkError } from '$lib/api/http';
+
+const fake = vi.hoisted(() => ({
+	session: { status: 'signed-in' as string, user: { username: 'ada', display_name: 'Ada', role: 'listener' } as { username: string } | null },
+	post: vi.fn(async (_path: string, _body: unknown, _method?: string): Promise<unknown> => ({ result: 'accepted' })),
+}));
+vi.mock('$lib/api/session.svelte', () => ({ session: fake.session, post: fake.post, api: vi.fn() }));
+
+const { sync } = await import('$lib/offline/sync.svelte');
+const { closeUserDb, userDb } = await import('$lib/offline/userdb');
+const { all, answerFromPieces, dbName, dropDb, openDb, reqP, tx } = await import('$lib/offline/db');
+import type { Download, OutboxItem } from '$lib/offline/db';
+
+const A = 'aaaaaaaaaaaaaaaaaaaaaaaaaa';
+const B = 'bbbbbbbbbbbbbbbbbbbbbbbbbb';
+
+async function outbox(): Promise<OutboxItem[]> {
+	return (await all<OutboxItem>(await userDb()!, 'outbox')).sort((x, y) => (x.seq ?? 0) - (y.seq ?? 0));
+}
+
+async function as(user: string) {
+	await closeUserDb();
+	fake.session.user = { username: user };
+}
+
+beforeEach(async () => {
+	fake.session.status = 'offline'; // record without flushing unless a test says so
+	fake.post.mockReset();
+	fake.post.mockImplementation(async () => ({ result: 'accepted' }));
+	for (const u of ['ada', 'bob']) {
+		await as(u);
+		await closeUserDb();
+		await dropDb(u);
+	}
+	await as('ada');
+});
+
+test('a newer position replaces unsent older ones, and is itself kept', async () => {
+	await sync.record(A, 'position', 1_000);
+	await sync.record(A, 'position', 2_000);
+	await sync.record(B, 'position', 5_000);
+	await sync.record(A, 'position', 3_000);
+	const items = await outbox();
+	expect(items.map((i) => [i.book, i.body.action, i.body.position_ms])).toEqual([
+		[B, 'position', 5_000],
+		[A, 'position', 3_000],
+	]);
+	expect((await sync.local(A))?.position_ms).toBe(3_000);
+});
+
+test('marks are never collapsed and keep their order', async () => {
+	await sync.record(A, 'position', 9_000);
+	await sync.record(A, 'restart');
+	await sync.record(A, 'position', 1_000);
+	await sync.record(A, 'finished');
+	const items = await outbox();
+	expect(items.map((i) => i.body.action)).toEqual(['restart', 'position', 'finished']);
+	expect(new Set(items.map((i) => i.body.key)).size, 'every event has its own idempotency key').toBe(3);
+	for (const i of items) expect(i.body.key).toMatch(/^[A-Za-z0-9_-]{8,64}$/);
+	expect((await sync.local(A))?.position_ms).toBe(1_000);
+});
+
+test('the outbox is sent oldest first and emptied only on the server’s answer', async () => {
+	await sync.record(A, 'restart');
+	await sync.record(A, 'position', 4_000);
+	fake.session.status = 'signed-in';
+	await sync.flush();
+	expect(fake.post.mock.calls.map((c) => [c[0], (c[1] as OutboxItem['body']).action, c[2]])).toEqual([
+		[`v1/progress/${A}`, 'restart', 'PUT'],
+		[`v1/progress/${A}`, 'position', 'PUT'],
+	]);
+	expect(await outbox()).toEqual([]);
+});
+
+test('offline or throttled: the item stays for later; refused for good: it is dropped', async () => {
+	await sync.record(A, 'position', 1_000);
+	await sync.record(B, 'position', 2_000);
+	fake.session.status = 'signed-in';
+	fake.post.mockImplementationOnce(async () => {
+		throw new NetworkError();
+	});
+	await sync.flush();
+	expect((await outbox()).length, 'nothing lost while offline').toBe(2);
+	fake.post.mockImplementationOnce(async () => {
+		throw new ApiError(429, 'too_many_requests', 'slow down', 5);
+	});
+	await sync.flush();
+	expect((await outbox()).length).toBe(2);
+	fake.post.mockImplementationOnce(async () => {
+		throw new ApiError(404, 'not_found', 'gone');
+	});
+	await sync.flush();
+	expect((await outbox()).map((i) => i.book), 'a book that no longer exists is dropped; the rest is sent').toEqual([]);
+	expect(fake.post).toHaveBeenCalledTimes(4);
+});
+
+test('another user on the same browser sees none of the first user’s data', async () => {
+	await sync.record(A, 'position', 7_000);
+	const db = await userDb()!;
+	await reqP(db.transaction('books', 'readwrite').objectStore('books').put({ id: A, next: 10 } as unknown as Download));
+	expect(dbName('ada')).not.toBe(dbName('bob'));
+	await as('bob');
+	expect(await sync.local(A)).toBeUndefined();
+	expect(await outbox()).toEqual([]);
+	expect(await all(await userDb()!, 'books')).toEqual([]);
+	// Removing Bob's data leaves Ada's alone.
+	await closeUserDb();
+	await dropDb('bob');
+	await as('ada');
+	expect((await sync.local(A))?.position_ms).toBe(7_000);
+});
+
+describe('playing from stored pieces', () => {
+	async function store(pieces: number[][]) {
+		const db = await openDb('ada');
+		const offsets: number[] = [];
+		let at = 0;
+		for (const p of pieces) {
+			offsets.push(at);
+			at += p.length;
+		}
+		const d = { id: A, detail: {}, quality: 'original', etag: 'x', type: 'audio/mpeg', total: 100, next: at, pieces: offsets, state: 'paused', added: 1 } as unknown as Download;
+		await tx(db, ['books', 'pieces'], 'readwrite', (t) => {
+			pieces.forEach((p, i) => t.objectStore('pieces').put(new Blob([new Uint8Array(p)]), [A, offsets[i]!]));
+			t.objectStore('books').put(d);
+		});
+		return db;
+	}
+	const bytes = async (r: Response) => [...new Uint8Array(await r.arrayBuffer())];
+
+	test('ranges are stitched across pieces, and a partial download plays as a shorter book', async () => {
+		const db = await store([[0, 1, 2, 3], [4, 5, 6, 7], [8, 9]]);
+		let r = await answerFromPieces(db, A, 'bytes=2-5');
+		expect(r.status).toBe(206);
+		expect(r.headers.get('content-range')).toBe('bytes 2-5/10');
+		expect(await bytes(r)).toEqual([2, 3, 4, 5]);
+		r = await answerFromPieces(db, A, null);
+		expect(r.status).toBe(200);
+		expect(await bytes(r)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+		r = await answerFromPieces(db, A, 'bytes=-3');
+		expect(await bytes(r)).toEqual([7, 8, 9]);
+		r = await answerFromPieces(db, A, 'bytes=10-');
+		expect(r.status).toBe(416);
+		expect(r.headers.get('content-range')).toBe('bytes */10');
+		expect((await answerFromPieces(db, B, null)).status, 'not downloaded').toBe(404);
+		db.close();
+	});
+});

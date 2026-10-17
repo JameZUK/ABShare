@@ -84,3 +84,34 @@ pub fn demuxer_for(ext: &str) -> Option<&'static str> {
         _ => return None,
     })
 }
+
+/// For tests: the real jail (built by the workspace) around the system ffmpeg, or `None`
+/// where it can't run (no Landlock ABI 6, or no ffmpeg). With ABSHARE_REQUIRE_LANDLOCK set,
+/// not being able to run is a failure instead of a skip.
+#[cfg(test)]
+pub async fn test_ffmpeg() -> Option<Ffmpeg> {
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../target"));
+    let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+    let ff = Ffmpeg {
+        ffmpeg: "/usr/bin/ffmpeg".into(),
+        ffprobe: "/usr/bin/ffprobe".into(),
+        jail: target.join(profile).join("abshare-jail"),
+        libs: ["/usr/lib", "/lib", "/lib64", "/etc/ld.so.cache"]
+            .map(Into::into)
+            .into_iter()
+            .filter(|p: &std::path::PathBuf| p.exists())
+            .collect(),
+        jobs: 1,
+    };
+    let limits = Limits { mem_mib: 2048, cpu_secs: 10, fsize_mib: 1, wall: Duration::from_secs(20), stdout_cap: 4096 };
+    let ok = ff.jail.exists()
+        && run_jailed(&ff, &[], None, &ff.ffmpeg, &["-hide_banner".into(), "-version".into()], &limits)
+            .await
+            .is_ok_and(|o| o.success);
+    if !ok && std::env::var_os("ABSHARE_REQUIRE_LANDLOCK").is_some() {
+        panic!("ABSHARE_REQUIRE_LANDLOCK is set but the jailed ffmpeg cannot run");
+    }
+    ok.then_some(ff)
+}

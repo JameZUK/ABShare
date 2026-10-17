@@ -551,6 +551,44 @@ async fn logout_revokes_everything_and_clears_the_cache() {
     );
 }
 
+#[tokio::test]
+async fn a_remotely_signed_out_device_learns_it_was_revoked() {
+    let t = setup();
+    let (seed, access, _, _) = enrol(&t, "kit").await;
+    reset_totp_step(&t, "kit");
+    let r = send(
+        &t,
+        "POST",
+        "/v1/auth/login/password",
+        Some(json!({"username":"kit","password":"correct horse battery","device_name":"Tablet"})),
+        &[],
+    )
+    .await;
+    let ch = json_of(r).await["challenge"].as_str().expect("challenge").to_owned();
+    let r = send(&t, "POST", "/v1/auth/login/totp", Some(json!({"challenge": ch, "code": code(&seed, 0)})), &[]).await;
+    let tablet_refresh = cookie_value(&r, "abshare_refresh");
+    let r = send(&t, "GET", "/v1/me/devices", None, &[("authorization", &format!("Bearer {access}"))]).await;
+    let devices = json_of(r).await["devices"].as_array().expect("devices").clone();
+    let tablet = devices.iter().find(|d| d["this_device"] == false).expect("tablet")["id"].as_i64().expect("id");
+    let r = send(
+        &t,
+        "DELETE",
+        &format!("/v1/me/devices/{tablet}"),
+        None,
+        &[("authorization", &format!("Bearer {access}"))],
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+    let r =
+        send(&t, "POST", "/v1/auth/refresh", None, &[("cookie", &format!("abshare_refresh={tablet_refresh}"))]).await;
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(json_of(r).await["error"], "device_revoked");
+    // A forged or unknown token is just "sign in", never "revoked".
+    let r =
+        send(&t, "POST", "/v1/auth/refresh", None, &[("cookie", &format!("abshare_refresh={}", "a".repeat(64)))]).await;
+    assert_eq!(json_of(r).await["error"], "unauthenticated");
+}
+
 // ---------------------------------------------------------------- step-up and account changes
 
 #[tokio::test]
@@ -856,6 +894,10 @@ async fn media_qualities_are_validated_and_copies_report_preparing() {
     }
     let r = send(&m.t, "GET", &format!("/v1/media/{BOOK}?q=48&x=1"), None, &[("authorization", &auth)]).await;
     assert_eq!(r.status(), StatusCode::BAD_REQUEST, "unknown parameters are refused");
+    for dl in ["2", "yes", "-1", "256"] {
+        let r = send(&m.t, "GET", &format!("/v1/media/{BOOK}?q=48&dl={dl}"), None, &[("authorization", &auth)]).await;
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "dl={dl}");
+    }
     let r = send(&m.t, "GET", &format!("/v1/media/{MULTI_BOOK}"), None, &[("authorization", &auth)]).await;
     assert_eq!(r.status(), StatusCode::CONFLICT);
     assert_eq!(json_of(r).await["error"], "preparing");
@@ -1004,4 +1046,40 @@ async fn progress_is_idempotent_validated_and_private() {
     assert_eq!(v["items"][0]["book"], BOOK);
     assert_eq!(v["items"][0]["position_ms"], 60_000);
     assert_eq!(get_json(&m.t, "/v1/progress", &amy).await.1["items"], json!([]));
+}
+
+#[tokio::test]
+async fn saving_files_and_downloading_follow_the_account_permissions() {
+    let m = setup_media();
+    let (access, _) = listener(&m).await;
+    let auth = format!("Bearer {access}");
+    let get = |uri: String| {
+        let (t, a) = (&m.t, auth.clone());
+        async move { send(t, "GET", &uri, None, &[("authorization", &a)]).await }
+    };
+    // Off by default.
+    let r = get(format!("/v1/media/{BOOK}/file")).await;
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    assert_eq!(json_of(r).await["error"], "not_permitted");
+    {
+        let c = m.t.st.db.0.lock().expect("db");
+        c.execute("UPDATE user SET can_save = 1 WHERE username = 'joe'", []).expect("perm");
+    }
+    let r = get(format!("/v1/media/{BOOK}/file")).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let cd = r.headers()["content-disposition"].to_str().expect("cd").to_owned();
+    assert!(cd.starts_with("attachment; filename=\"A Book.mp3\""), "{cd}");
+    assert_eq!(body_of(r).await.len(), 1000);
+    // Still only books the user may see.
+    assert_eq!(get(format!("/v1/media/{KIDS_BOOK}/file")).await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(get(format!("/v1/media/{ESCAPE_BOOK}/file")).await.status(), StatusCode::NOT_FOUND);
+    // Downloads (dl=1) need the offline permission.
+    assert_eq!(get(format!("/v1/media/{BOOK}?dl=1")).await.status(), StatusCode::OK);
+    {
+        let c = m.t.st.db.0.lock().expect("db");
+        c.execute("UPDATE user SET can_offline = 0 WHERE username = 'joe'", []).expect("perm");
+    }
+    let r = get(format!("/v1/media/{BOOK}?dl=1")).await;
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    assert_eq!(get(format!("/v1/media/{BOOK}")).await.status(), StatusCode::OK, "streaming is unaffected");
 }

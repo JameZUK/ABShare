@@ -22,7 +22,11 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 pub fn routes() -> Router<State> {
-    Router::new().route("/{id}", get(stream)).route("/{id}/state", get(state)).route("/covers/{id}/{hash}", get(cover))
+    Router::new()
+        .route("/{id}", get(stream))
+        .route("/{id}/state", get(state))
+        .route("/{id}/file", get(save_file))
+        .route("/covers/{id}/{hash}", get(cover))
 }
 
 /// The caller, from the media cookie or `Authorization: Bearer`.
@@ -51,6 +55,10 @@ fn media(st: &State) -> Result<&Arc<Media>, ApiError> {
 
 /// The book (if the caller may see it) and its audio files, resolved inside its library root.
 async fn resolve(st: &State, s: &Session, id: &str) -> Result<(Book, Source), ApiError> {
+    resolve_with_perms(st, s, id).await.map(|(b, src, _)| (b, src))
+}
+
+async fn resolve_with_perms(st: &State, s: &Session, id: &str) -> Result<(Book, Source, store::Perms), ApiError> {
     if !is_valid_id(id) {
         return Err(ApiError::not_found());
     }
@@ -59,10 +67,10 @@ async fn resolve(st: &State, s: &Session, id: &str) -> Result<(Book, Source), Ap
     let uid = s.user;
     let perms = st
         .db
-        .run(move |c| Ok(store::user_by_id(c, uid)?.map(|u| u.perms.libraries)))
+        .run(move |c| Ok(store::user_by_id(c, uid)?.map(|u| u.perms)))
         .await?
         .ok_or_else(ApiError::unauthenticated)?;
-    let ok = allowed(&cat, &perms);
+    let ok = allowed(&cat, &perms.libraries);
     let book = cat
         .by_id
         .get(id)
@@ -100,7 +108,7 @@ async fn resolve(st: &State, s: &Session, id: &str) -> Result<(Book, Source), Ap
         return Err(ApiError::not_found());
     }
     let src = Source { book_id: book.id.clone(), parts, duration_ms: book.duration_ms, needs_copy: book.needs_copy };
-    Ok((book, src))
+    Ok((book, src, perms))
 }
 
 fn base(h: &mut HeaderMap, ctype: &'static str) {
@@ -135,6 +143,9 @@ fn preparing() -> Response {
 #[serde(deny_unknown_fields)]
 struct StreamQuery {
     q: Option<String>,
+    /// `dl=1`: a download reading the book in order. Data saver then encodes the whole
+    /// response in one ffmpeg run before sending it.
+    dl: Option<u8>,
 }
 
 async fn stream(
@@ -144,7 +155,10 @@ async fn stream(
     Query(q): Query<StreamQuery>,
     req: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let (_, src) = resolve(&st, &s, &id).await?;
+    let (_, src, perms) = resolve_with_perms(&st, &s, &id).await?;
+    if q.dl.is_some() && !perms.can_offline {
+        return Err(no_permission("Downloads aren’t enabled for your account."));
+    }
     let m = media(&st)?.clone();
     if !m.ready(&src) {
         m.ensure_copy(src);
@@ -169,6 +183,13 @@ async fn stream(
             };
             let segs = layout.segments_for(start, end).map_err(|_| ApiError::bad("range"))?;
             let first = *segs.start();
+            if q.dl == Some(1) {
+                let count = segs.end() - segs.start() + 1;
+                m.fill_span(&file, &src.book_id, &layout, *segs.start(), count).await.map_err(ApiError::internal)?;
+                m.read_ahead(file.clone(), src.book_id.clone(), layout, segs.end() + 1, MAX_SEGMENTS_PER_RESPONSE);
+            } else if q.dl.is_some() {
+                return Err(ApiError::bad("Unknown download flag."));
+            }
             let generation = (status == StatusCode::PARTIAL_CONTENT).then(|| m.new_seek(s.device));
             let book = src.book_id.clone();
             let device = s.device;
@@ -255,6 +276,67 @@ async fn state(
     Ok(Json(json!({ "ready": ready })))
 }
 
+fn no_permission(message: &'static str) -> ApiError {
+    ApiError::new(StatusCode::FORBIDDEN, "not_permitted", message)
+}
+
+/// A name for a saved file: the title in plain characters, never a path.
+pub fn save_name(title: &str, ext: &str) -> String {
+    let mut name: String = title
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, ' ' | '-' | '_' | ',' | '(' | ')') { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    name.truncate(120);
+    let name = name.trim();
+    format!("{}.{ext}", if name.is_empty() { "audiobook" } else { name })
+}
+
+/// `GET /v1/media/{id}/file`: the book as one file to keep, for accounts allowed to save
+/// files (off by default). The original single file, or the playable copy.
+async fn save_file(
+    S(st): S<State>,
+    MediaAuthed(s): MediaAuthed,
+    Path(id): Path<String>,
+    req: HeaderMap,
+) -> Result<Response, ApiError> {
+    let (book, src, perms) = resolve_with_perms(&st, &s, &id).await?;
+    if !perms.can_save {
+        return Err(no_permission("Saving files isn’t enabled for your account."));
+    }
+    let m = media(&st)?.clone();
+    if !m.ready(&src) {
+        m.ensure_copy(src);
+        return Ok(preparing());
+    }
+    let file = m.play_file(&src).ok_or_else(ApiError::not_found)?;
+    let range_h = req.get(header::RANGE).and_then(|v| v.to_str().ok());
+    let mut r = serve_file(&src, &file, range_h, &m).await?;
+    let ext = file
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .filter(|e| e.len() <= 4 && e.bytes().all(|c| c.is_ascii_alphanumeric()))
+        .unwrap_or_else(|| "bin".into());
+    let ascii = save_name(&book.title, &ext);
+    // RFC 6266: a plain ASCII name for every browser, and the full title in UTF-8.
+    let utf8: String = format!("{}.{ext}", book.title.chars().take(120).collect::<String>())
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect();
+    r.headers_mut()
+        .insert("content-disposition", hv(format!("attachment; filename=\"{ascii}\"; filename*=UTF-8''{utf8}")));
+    Ok(r)
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CoverQuery {
@@ -301,4 +383,19 @@ async fn cover(
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=31536000, immutable"));
     h.insert("content-security-policy", HeaderValue::from_static("default-src 'none'; sandbox"));
     Ok(r)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::save_name;
+
+    #[test]
+    fn saved_file_names_are_plain_and_never_paths() {
+        assert_eq!(save_name("The Copper Tide", "m4b"), "The Copper Tide.m4b");
+        assert_eq!(save_name("../../etc/passwd", "mp3"), "etc passwd.mp3");
+        assert_eq!(save_name("Quote\" and\r\nnewline; x=1", "m4b"), "Quote and newline x 1.m4b");
+        assert_eq!(save_name("Ünïcödé", "m4b"), "n c d.m4b");
+        assert_eq!(save_name("***", "m4b"), "audiobook.m4b");
+        assert!(save_name(&"x".repeat(500), "m4b").len() <= 124);
+    }
 }

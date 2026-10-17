@@ -19,6 +19,7 @@
 	let book = $state<BookDetail | null>(null);
 	let error = $state('');
 	let canDownload = $state(true);
+	let canSave = $state(false);
 	let moreOpen = $state(false);
 	let dlOpen = $state(false);
 	let marksOpen = $state(false);
@@ -43,7 +44,10 @@
 	$effect(() => {
 		if (session.status !== 'signed-in') return;
 		api<Me>('v1/me')
-			.then((m) => (canDownload = m.permissions.offline))
+			.then((m) => {
+				canDownload = m.permissions.offline;
+				canSave = m.permissions.save_files;
+			})
 			.catch(() => {});
 	});
 
@@ -165,6 +169,9 @@
 		{/if}
 		<button class="btn plain" onclick={() => mark('restart')}>Start again</button>
 		<button class="btn plain" onclick={() => { moreOpen = false; marksOpen = true; }}>Bookmarks ({book?.bookmarks.length ?? 0})</button>
+		{#if canSave && session.status === 'signed-in'}
+			<a class="btn plain" href="v1/media/{id}/file" download onclick={() => (moreOpen = false)}>Save file</a>
+		{/if}
 		{#if dl}
 			<button class="btn plain danger" onclick={() => { void downloads.remove(id); moreOpen = false; }}>Remove download</button>
 		{/if}
