@@ -107,11 +107,14 @@ pub fn headers_on(mut r: Response) -> Response {
     let set = |h: &mut HeaderMap, k: &'static str, v: &'static str| {
         h.insert(k, HeaderValue::from_static(v));
     };
-    set(
-        h,
-        "content-security-policy",
-        "default-src 'none'; script-src 'self'; worker-src 'self'; manifest-src 'self'; connect-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self'; style-src-attr 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; require-trusted-types-for 'script'; trusted-types abshare-sw svelte-trusted-html",
-    );
+    // A route with a stricter policy of its own (covers, media) keeps it (review H10).
+    if !h.contains_key("content-security-policy") {
+        set(
+            h,
+            "content-security-policy",
+            "default-src 'none'; script-src 'self'; worker-src 'self'; manifest-src 'self'; connect-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self'; style-src-attr 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; require-trusted-types-for 'script'; trusted-types abshare-sw svelte-trusted-html",
+        );
+    }
     set(
         h,
         "permissions-policy",
@@ -132,17 +135,25 @@ pub fn headers_on(mut r: Response) -> Response {
 pub struct RateLimit<K = IpAddr> {
     per_minute: usize,
     hits: Mutex<HashMap<K, VecDeque<i64>>>,
+    /// When stale keys were last swept (at most once a second, review H5).
+    swept: std::sync::atomic::AtomicI64,
 }
+
+/// Keys tracked at most; beyond this (all active), new keys are refused: fail closed.
+const MAX_KEYS: usize = 50_000;
 
 impl<K: std::hash::Hash + Eq> RateLimit<K> {
     pub fn new(per_minute: usize) -> Self {
-        Self { per_minute, hits: Mutex::new(HashMap::new()) }
+        Self { per_minute, hits: Mutex::new(HashMap::new()), swept: std::sync::atomic::AtomicI64::new(0) }
     }
 
     pub fn allow(&self, ip: K, now: i64) -> bool {
         let Ok(mut m) = self.hits.lock() else { return false };
-        if m.len() > 10_000 {
+        if m.len() > 10_000 && self.swept.swap(now, std::sync::atomic::Ordering::Relaxed) != now {
             m.retain(|_, q| q.back().is_some_and(|&t| t > now - 60));
+        }
+        if m.len() >= MAX_KEYS && !m.contains_key(&ip) {
+            return false;
         }
         let q = m.entry(ip).or_default();
         while q.front().is_some_and(|&t| t <= now - 60) {
@@ -200,6 +211,17 @@ mod tests {
         assert!(!is_tls(ip("10.0.0.10"), &HeaderMap::new(), &t));
         assert!(is_tls(ip("127.0.0.1"), &HeaderMap::new(), &t));
         assert!(is_tls(ip("::1"), &HeaderMap::new(), &t));
+    }
+
+    #[test]
+    fn a_full_rate_limit_table_refuses_new_keys() {
+        let r: RateLimit<u32> = RateLimit::new(5);
+        for k in 0..MAX_KEYS as u32 {
+            assert!(r.allow(k, 0));
+        }
+        assert!(!r.allow(u32::MAX, 0), "fail closed when full of active keys");
+        assert!(r.allow(1, 0), "known keys still counted");
+        assert!(r.allow(u32::MAX, 120), "after a minute the stale keys are swept");
     }
 
     #[test]

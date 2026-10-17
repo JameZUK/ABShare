@@ -535,6 +535,13 @@ async fn add_bookmark(
             if n >= 1000 {
                 return Ok(None);
             }
+            // And a bound per person across all books (review H6).
+            let total: i64 = c
+                .query_row("SELECT count(*) FROM bookmark WHERE user_id = ?1", params![uid], |r| r.get(0))
+                .map_err(crate::db::sql_err)?;
+            if total >= 10_000 {
+                return Ok(None);
+            }
             c.execute(
                 "INSERT INTO bookmark (user_id, book_id, position_ms, note, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
                 params![uid, bid, pos, note, now()],
@@ -555,7 +562,19 @@ async fn edit_bookmark(
 ) -> Result<StatusCode, ApiError> {
     let uid = s.user;
     let note = b.note.map(|n| clean_paragraphs(&n, 2000));
-    let pos = b.position_ms.map(|p| p.min(i64::MAX as u64) as i64);
+    // Clamped to the book's length, as when a bookmark is added (review H6).
+    let owned: Option<String> = st
+        .db
+        .run(move |c| {
+            c.query_row("SELECT book_id FROM bookmark WHERE id = ?1 AND user_id = ?2", params![id, uid], |r| r.get(0))
+                .optional()
+                .map_err(crate::db::sql_err)
+        })
+        .await?;
+    let Some(book_id) = owned else { return Err(ApiError::not_found()) };
+    let cat = st.catalog().await?;
+    let max = cat.by_id.get(&book_id).map_or(0, |&i| cat.books[i].duration_ms);
+    let pos = b.position_ms.map(|p| p.min(max) as i64);
     let n = st
         .db
         .run(move |c| {

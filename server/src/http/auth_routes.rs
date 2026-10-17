@@ -509,31 +509,12 @@ async fn login_passkey_start(
     if !st.anon_limit.allow(ip.into(), now()) {
         return Err(ApiError::too_many());
     }
-    let (options, state) = match b.username.map(|u| u.trim().to_ascii_lowercase()).filter(|u| !u.is_empty()) {
-        Some(u) => {
-            let found = st
-                .db
-                .run(move |c| {
-                    let Some(user) = store::user_by_name(c, &u)? else { return Ok(None) };
-                    Ok(Some((user.id, store::passkeys(c, user.id)?)))
-                })
-                .await?;
-            let (uid, rows) = found.unwrap_or((0, vec![]));
-            let keys: Vec<_> = rows.iter().filter_map(|p| passkeys::from_json(&p.data)).collect();
-            if keys.is_empty() {
-                // Don't reveal whether the user exists: fall back to the discoverable flow.
-                let (o, s) = st.webauthn.start_discoverable_authentication().map_err(ApiError::internal)?;
-                (json!(o), PasskeyLogin::Discoverable(s))
-            } else {
-                let (o, s) = st.webauthn.start_passkey_authentication(&keys).map_err(ApiError::internal)?;
-                (json!(o), PasskeyLogin::ForUser(uid, s))
-            }
-        }
-        None => {
-            let (o, s) = st.webauthn.start_discoverable_authentication().map_err(ApiError::internal)?;
-            (json!(o), PasskeyLogin::Discoverable(s))
-        }
-    };
+    // Always the discoverable flow: answering a username with that account's credential IDs
+    // would tell anyone which accounts exist and have passkeys (review A3). The username, if
+    // sent, is ignored.
+    let _ = b.username;
+    let (o, s) = st.webauthn.start_discoverable_authentication().map_err(ApiError::internal)?;
+    let (options, state) = (json!(o), PasskeyLogin::Discoverable(s));
     let challenge = st.passkey_login.start(state, now()).ok_or_else(ApiError::too_many)?;
     Ok(Json(json!({ "challenge": challenge, "options": options })))
 }
@@ -714,9 +695,14 @@ async fn step_up_password(
         st.audit("step_up.failed", Some(uid), Some(s.device), Some(ip), "password".into()).await;
         return Err(ApiError::denied());
     }
-    // A password alone isn't enough for step-up when a second factor exists: TOTP follows.
+    // A password alone is never a step-up (it isn't a complete sign-in method): with an
+    // authenticator app, the code follows; otherwise the account has a passkey, which must be
+    // used (review A4).
     if user.totp_secret.is_some() {
         return Err(ApiError::new(StatusCode::FORBIDDEN, "totp_required", "Enter an authenticator code too."));
+    }
+    if user.totp_secret.is_none() {
+        return Err(ApiError::new(StatusCode::FORBIDDEN, "passkey_required", "Use your passkey to confirm."));
     }
     if let Ok(mut l) = st.limiter.lock() {
         l.succeeded(&attempt);

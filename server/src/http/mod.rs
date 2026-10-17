@@ -244,7 +244,9 @@ pub fn spawn_revocation_sync(st: State) {
         let mut since = now();
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-            let from = since;
+            // Overlap the windows a little, so a revocation committed at the boundary (or a small
+            // clock step) isn't missed; applying one twice is harmless (review H7).
+            let from = since - 5;
             since = now();
             let r = st
                 .db
@@ -369,10 +371,17 @@ impl<S: Send + Sync> FromRequestParts<S> for Ip {
 }
 
 pub fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
-    headers.get_all(header::COOKIE).iter().filter_map(|v| v.to_str().ok()).flat_map(|v| v.split(';')).find_map(|kv| {
-        let (k, v) = kv.trim().split_once('=')?;
-        (k == name).then(|| v.to_owned())
-    })
+    // A name sent twice means a cookie planted from elsewhere (a sibling subdomain can set one
+    // for a parent domain): neither is trusted (review A6).
+    let mut found =
+        headers.get_all(header::COOKIE).iter().filter_map(|v| v.to_str().ok()).flat_map(|v| v.split(';')).filter_map(
+            |kv| {
+                let (k, v) = kv.trim().split_once('=')?;
+                (k == name).then(|| v.to_owned())
+            },
+        );
+    let first = found.next()?;
+    found.next().is_none().then_some(first)
 }
 
 pub fn set_cookie(name: &str, value: &str, path: &str, max_age: i64) -> HeaderValue {

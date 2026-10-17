@@ -39,19 +39,19 @@ Started 2026-10-17. It covers:
 
 | ID | Finding | Status |
 |---|---|---|
-| A3 | Passkey sign-in start reveals whether a username exists and has passkeys. | Open |
-| A4 | Step-up accepts a password alone when the account also has a passkey. | Open |
+| A3 | Passkey sign-in start reveals whether a username exists and has passkeys. | **Fixed:** always the discoverable flow; test. |
+| A4 | Step-up accepts a password alone when the account also has a passkey. | **Fixed:** password-only step-up refused (`passkey_required`); the app shows password+code only; test. |
 | A5 | The audit chain can't detect a cut tail, and the prune anchor isn't authenticated. | Open |
-| A6 | Duplicate cookie names (planted from a sibling subdomain) are accepted, and the first one wins. | Open |
+| A6 | Duplicate cookie names (planted from a sibling subdomain) are accepted, and the first one wins. | **Fixed:** a cookie name sent twice is ignored; test. |
 | A7 | Audit-log flushing through unaudited-cost failures (summary rows, separate pruning). | Open |
 | H3 | The Compose example publishes 8743 on every interface. | **Fixed:** binds loopback by default, with guidance. |
-| H4 | Admin "scan now" and book-detail edits skip step-up. | Open |
-| H5 | The rate-limit map scans everything when full. | Open |
-| H6 | No per-user storage caps (bookmarks), and edited bookmark positions aren't clamped. | Open |
-| H7 | The revocation sync window can miss a commit at the boundary. | Open |
+| H4 | Admin "scan now" and book-detail edits skip step-up. | **Fixed:** step-up on every admin write; test. |
+| H5 | The rate-limit map scans everything when full. | **Fixed:** sweep at most once a second; full table refuses new keys; test. |
+| H6 | No per-user storage caps (bookmarks), and edited bookmark positions aren't clamped. | **Fixed:** 10,000 bookmarks per person; edits clamped to the book; test. |
+| H7 | The revocation sync window can miss a commit at the boundary. | **Fixed:** overlapping window. |
 | H8 | Group and show listings don't filter members by library permission. | **Fixed:** group and show-tile members are filtered by permitted libraries; test. |
-| H9 | Promoting a user to admin from the users screen skips the second confirmation that invites need. | Open |
-| H10 | The cover route's own CSP is overwritten by the global one. | Open |
+| H9 | Promoting a user to admin from the users screen skips the second confirmation that invites need. | **Fixed:** `confirm_admin` required; test. |
+| H10 | The cover route's own CSP is overwritten by the global one. | **Fixed:** a route's own CSP is kept; test. |
 | M4 | Cache "pinned" uses mtime, so new encodes can overrun `max_gib`. `jobs/` isn't cleaned, and lock entries leak. | Open |
 | M5 | Failed playable-copy builds retry without limit, and books with many parts hit the fd limit. | Open |
 | C5 | Saver maths underflows for segments shorter than the pre-roll (latent). | Open |

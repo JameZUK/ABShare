@@ -1801,3 +1801,116 @@ async fn series_never_list_books_from_libraries_the_user_cannot_see() {
     let ids: Vec<&str> = v["items"].as_array().expect("items").iter().filter_map(|b| b["id"].as_str()).collect();
     assert_eq!(ids, [BOOK], "the hidden library's book is not listed");
 }
+
+// ---------------------------------------------------------------- review batch: Low findings
+
+#[tokio::test]
+async fn passkey_sign_in_start_never_reveals_an_account() {
+    let t = setup();
+    let _ = enrol_passkey(&t, "pia").await;
+    for who in [Some("pia"), Some("nobody-here"), None] {
+        let (_, options) = passkey_challenge(&t, who).await;
+        let allow = &options["publicKey"]["allowCredentials"];
+        assert!(allow.is_null() || allow.as_array().is_some_and(Vec::is_empty), "{who:?}: {allow}");
+    }
+}
+
+#[tokio::test]
+async fn a_password_alone_is_never_a_step_up() {
+    let t = setup();
+    let (_, access) = enrol_passkey(&t, "pat").await;
+    {
+        let hash = t.st.hasher.hash("a long enough password".to_owned()).await.expect("hash");
+        let c = t.st.db.0.lock().expect("db");
+        c.execute("UPDATE user SET password_hash = ?1 WHERE username = 'pat'", [hash]).expect("set");
+    }
+    let r = send(
+        &t,
+        "POST",
+        "/v1/auth/step-up/password",
+        Some(json!({"password": "a long enough password"})),
+        &[("authorization", &format!("Bearer {access}"))],
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    assert_eq!(json_of(r).await["error"], "passkey_required");
+}
+
+#[tokio::test]
+async fn a_cookie_sent_twice_is_not_trusted() {
+    let t = setup();
+    let (_, _, refresh, _) = enrol(&t, "pam").await;
+    let both = format!("abshare_refresh={refresh}; abshare_refresh={refresh}");
+    let r = send(&t, "POST", "/v1/auth/refresh", None, &[("cookie", &both)]).await;
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+    let r = send(&t, "POST", "/v1/auth/refresh", None, &[("cookie", &format!("abshare_refresh={refresh}"))]).await;
+    assert_eq!(r.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn admin_writes_all_need_step_up_and_promotion_needs_confirmation() {
+    let m = setup_media();
+    let (_, plain, ..) = enrol_role(&m.t, "adm2", Role::Admin).await;
+    for (method, uri, body) in [
+        ("POST", "/v1/admin/library/scan".to_owned(), None),
+        ("PUT", format!("/v1/admin/books/{BOOK}/details"), Some(json!({"title": "X"}))),
+        ("DELETE", format!("/v1/admin/books/{BOOK}/details"), None),
+    ] {
+        let r = as_user(&m.t, method, &uri, body, &plain).await;
+        assert_eq!(r.status(), StatusCode::FORBIDDEN, "{method} {uri}");
+        assert_eq!(json_of(r).await["error"], "step_up_required");
+    }
+    let (_, a) = admin(&m.t, "chief2").await;
+    let (_, _, _, _) = enrol(&m.t, "lou").await;
+    let users = json_of(as_user(&m.t, "GET", "/v1/admin/users", None, &a).await).await;
+    let lou = users["users"].as_array().expect("users").iter().find(|u| u["username"] == "lou").expect("lou")["id"]
+        .as_i64()
+        .expect("id");
+    let r = as_user(&m.t, "PATCH", &format!("/v1/admin/users/{lou}"), Some(json!({"role": "admin"})), &a).await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    let r = as_user(
+        &m.t,
+        "PATCH",
+        &format!("/v1/admin/users/{lou}"),
+        Some(json!({"role": "admin", "confirm_admin": true})),
+        &a,
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn covers_keep_their_own_sandbox_policy_and_bookmark_edits_are_clamped() {
+    let m = setup_media();
+    let (access, media) = listener(&m).await;
+    let r = send(
+        &m.t,
+        "GET",
+        &format!("/v1/media/covers/{BOOK}/{COVER}"),
+        None,
+        &[("cookie", &format!("abshare_media={media}"))],
+    )
+    .await;
+    assert!(r.headers()["content-security-policy"].to_str().unwrap_or("").contains("sandbox"));
+    let auth = format!("Bearer {access}");
+    let r = send(
+        &m.t,
+        "POST",
+        &format!("/v1/books/{BOOK}/bookmarks"),
+        Some(json!({"position_ms": 1000})),
+        &[("authorization", &auth)],
+    )
+    .await;
+    let id = json_of(r).await["id"].as_i64().expect("id");
+    let r = send(
+        &m.t,
+        "PATCH",
+        &format!("/v1/bookmarks/{id}"),
+        Some(json!({"position_ms": 99_999_999_999u64})),
+        &[("authorization", &auth)],
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+    let (_, v) = get_json(&m.t, &format!("/v1/books/{BOOK}/bookmarks"), &access).await;
+    assert_eq!(v["bookmarks"][0]["position_ms"], 3_600_000);
+}

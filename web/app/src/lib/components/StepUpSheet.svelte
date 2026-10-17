@@ -44,8 +44,7 @@
 	const withPassword = (e: Event) => {
 		e.preventDefault();
 		return run(async () => {
-			if (me?.factors.totp) await post('v1/auth/step-up/totp', { password, code: code.trim() });
-			else await post('v1/auth/step-up/password', { password });
+			await post('v1/auth/step-up/totp', { password, code: code.trim() });
 		});
 	};
 </script>
@@ -55,12 +54,11 @@
 	{#if me?.factors.passkeys && passkeysSupported()}
 		<button class="btn wide" onclick={withPasskey} disabled={busy}>Use a passkey</button>
 	{/if}
-	{#if me?.factors.password}
+	<!-- A password alone is never a step-up: it needs the authenticator code too. -->
+	{#if me?.factors.password && me.factors.totp}
 		<form onsubmit={withPassword}>
 			<label class="field">Password <input type="password" bind:value={password} autocomplete="current-password" required maxlength="1024" /></label>
-			{#if me.factors.totp}
-				<label class="field">Authenticator code <input bind:value={code} inputmode="numeric" autocomplete="one-time-code" required maxlength="8" /></label>
-			{/if}
+			<label class="field">Authenticator code <input bind:value={code} inputmode="numeric" autocomplete="one-time-code" required maxlength="8" /></label>
 			<button class="btn plain wide" disabled={busy}>Confirm</button>
 		</form>
 	{/if}

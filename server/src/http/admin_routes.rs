@@ -130,6 +130,8 @@ struct EditUser {
     libraries: Option<Value>,
     offline: Option<bool>,
     save_files: Option<bool>,
+    /// Making someone an admin needs this second confirmation, as inviting one does (H9).
+    confirm_admin: Option<bool>,
 }
 
 /// Active admins other than `except`.
@@ -166,6 +168,7 @@ async fn edit_user(
             "You can't disable or demote yourself. Ask another admin.",
         ));
     }
+    let confirm_admin = b.confirm_admin == Some(true);
     let now_ = now();
     let (outcome, changes) =
         (b.disabled, format!("{:?}", (&b.role, b.disabled, &b.libraries, b.offline, b.save_files)));
@@ -174,6 +177,13 @@ async fn edit_user(
         .run(move |c| {
             let tx = c.transaction().map_err(crate::db::sql_err)?;
             let Some(u) = store::user_by_id(&tx, id)? else { return Ok(Err(ApiError::not_found())) };
+            if role == Some(Role::Admin) && u.role != Role::Admin && !confirm_admin {
+                return Ok(Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "confirm_admin",
+                    "Confirm that this person should be an admin.",
+                )));
+            }
             let losing_admin =
                 u.role == Role::Admin && !u.disabled && (role == Some(Role::Listener) || outcome == Some(true));
             if losing_admin && other_admins(&tx, id)? == 0 {
@@ -507,6 +517,7 @@ async fn library(S(st): S<State>, Admin(_): Admin) -> Result<Json<Value>, ApiErr
 /// Asks the scanner (`abshare scan --every`) to run now, through a file in the data
 /// directory: the web server itself never walks the library.
 async fn request_scan(S(st): S<State>, Ip(ip): Ip, Admin(s): Admin) -> Result<StatusCode, ApiError> {
+    step_up(&st, &s)?;
     let dir = st.media.as_ref().map(|m| m.data_dir.clone()).ok_or_else(ApiError::not_found)?;
     tokio::fs::write(dir.join("scan-requested"), b"1").await.map_err(ApiError::internal)?;
     st.audit("scan.requested", Some(s.user), Some(s.device), Some(ip), String::new()).await;
@@ -542,6 +553,7 @@ async fn set_book_details(
     Path(id): Path<String>,
     Json(b): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
+    step_up(&st, &s)?;
     let cat = st.catalog().await?;
     if !abshare_core::ids::is_valid_id(&id) || !cat.by_id.contains_key(&id) {
         return Err(ApiError::not_found());
@@ -575,6 +587,7 @@ async fn clear_book_details(
     Admin(s): Admin,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    step_up(&st, &s)?;
     if !abshare_core::ids::is_valid_id(&id) {
         return Err(ApiError::not_found());
     }
