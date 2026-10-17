@@ -81,8 +81,43 @@ pub fn assemble(files: &[ProbedFile]) -> Assembly {
         }
         assemble_dir(files, &dir, idx, &mut out);
     }
+    dedupe_across_folders(files, &mut out);
     out.books.sort_by(|a, b| natural_cmp(&a.key, &b.key));
     out
+}
+
+/// Single-file books in different folders with the same ASIN and durations within 1 % are
+/// the same book (for example two folders whose names differ only in case): the best copy
+/// is kept, the others are reported as duplicates.
+fn dedupe_across_folders(files: &[ProbedFile], out: &mut Assembly) {
+    let mut by_asin: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for (bi, b) in out.books.iter().enumerate() {
+        if let [only] = b.parts[..]
+            && let Some(a) = files[only].tags.get(&["audible_asin", "asin"])
+        {
+            by_asin.entry(a.trim()).or_default().push(bi);
+        }
+    }
+    let mut drop: Vec<usize> = Vec::new();
+    for books in by_asin.values().filter(|v| v.len() > 1) {
+        let mut idx: Vec<usize> = books.iter().map(|&bi| out.books[bi].parts[0]).collect();
+        if !are_alternates(files, &idx) {
+            continue;
+        }
+        idx.sort_by(|&a, &b| better(&files[a], &files[b]));
+        let kept = idx[0];
+        for &bi in books {
+            let f = out.books[bi].parts[0];
+            if f != kept {
+                out.ignored.push(Ignored { file: f, reason: IgnoreReason::Duplicate { kept } });
+                drop.push(bi);
+            }
+        }
+    }
+    drop.sort_unstable();
+    for bi in drop.into_iter().rev() {
+        out.books.remove(bi);
+    }
 }
 
 /// The folder a file's book is keyed on: its own folder, or the parent when the file sits
@@ -469,6 +504,26 @@ pub(crate) mod tests {
         let mut v = vec!["Part 10", "part 2", "Part 1", "Part 02b", "Epilogue"];
         v.sort_by(|a, b| natural_cmp(a, b));
         assert_eq!(v, ["Epilogue", "Part 1", "part 2", "Part 02b", "Part 10"]);
+    }
+
+    #[test]
+    fn the_same_book_in_two_folders_is_one_book() {
+        let t = [("audible_asin", "B0GGGGGGG7"), ("title", "Flowers")];
+        let mut low = file("Flowers For X [B0GGGGGGG7]/a.m4b", 8 * H, &t);
+        low.bitrate = 62_000;
+        let mut high = file("Flowers for X [B0GGGGGGG7]/a.m4b", 8 * H + 1000, &t);
+        high.bitrate = 125_000;
+        let a = assemble(&[low, high]);
+        assert_eq!(a.books.len(), 1);
+        assert_eq!(a.books[0].parts, [1]);
+        assert_eq!(a.ignored, [Ignored { file: 0, reason: IgnoreReason::Duplicate { kept: 1 } }]);
+    }
+
+    #[test]
+    fn same_asin_but_different_lengths_stays_two_books() {
+        let t = [("audible_asin", "B0HHHHHHH8")];
+        let a = assemble(&[file("A/x.m4b", 8 * H, &t), file("B/y.m4b", 2 * H, &t)]);
+        assert_eq!(a.books.len(), 2);
     }
 
     #[test]
