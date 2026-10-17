@@ -4,12 +4,16 @@
 use abshare_core::saver::{Bitrate, Profile};
 use libfuzzer_sys::fuzz_target;
 
-fuzz_target!(|i: (u8, u32, u16, &[u8])| {
-    let (b, dur, seg, data) = i;
+fuzz_target!(|i: (u8, u32, u16, u16, &[u8])| {
+    let (b, dur, seg, fps, data) = i;
     let bitrate = [Bitrate::K32, Bitrate::K40, Bitrate::K48][b as usize % 3];
-    let Ok(profile) = Profile::new(bitrate, 2_500) else { return };
+    // Any segment length, not just the server's 2500 frames (review C5).
+    let Ok(profile) = Profile::new(bitrate, 5 * u64::from(fps % 4000)) else { return };
     let Ok(layout) = profile.layout(u64::from(dur) * 1000 + 1) else { return };
     let Some(w) = layout.window(u64::from(seg) % layout.segment_count()) else { return };
+    if let Some(span) = layout.span_window(u64::from(seg) % layout.segment_count(), u64::from(fps % 12)) {
+        assert!(span.keep_frames >= w.keep_frames || span.index != w.index || fps % 12 == 0);
+    }
     if let Ok(a) = layout.check_segment(&w, data) {
         let fb = bitrate.frame_bytes();
         assert!(a.end as usize <= data.len());

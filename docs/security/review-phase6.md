@@ -54,8 +54,8 @@ Started 2026-10-17. It covers:
 | H10 | The cover route's own CSP is overwritten by the global one. | **Fixed:** a route's own CSP is kept; test. |
 | M4 | Cache "pinned" uses mtime, so new encodes can overrun `max_gib`. `jobs/` isn't cleaned, and lock entries leak. | Open |
 | M5 | Failed playable-copy builds retry without limit, and books with many parts hit the fd limit. | Open |
-| C5 | Saver maths underflows for segments shorter than the pre-roll (latent). | Open |
-| C6 | Invisible characters survive `clean_line` (U+061C, tag characters, variation selectors, Hangul fillers, unbounded combining marks). | Open |
+| C5 | Saver maths underflows for segments shorter than the pre-roll (latent). | **Fixed:** segments at least the pre-roll; saturating maths; fuzzed at any length. |
+| C6 | Invisible characters survive `clean_line` (U+061C, tag characters, variation selectors, Hangul fillers, unbounded combining marks). | **Fixed:** those characters removed; at most 4 combining marks per character; test. |
 | C7 | A successful fifth attempt still locks the address. | **Fixed:** the lock is decided when the next attempt starts; test. |
 | W1 | Route params are decoded and spliced into API paths (`%2F`). | Open |
 | W2 | Completing an invite while signed in as someone else keeps the old player and outbox. | Open |

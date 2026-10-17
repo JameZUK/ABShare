@@ -25,8 +25,21 @@ fn is_invisible(c: char) -> bool {
         | '\u{034F}'              // combining grapheme joiner
         | '\u{180E}'              // Mongolian vowel separator
         | '\u{FFF9}'..='\u{FFFB}' // interlinear annotation
+        | '\u{061C}'              // Arabic letter mark (a bidi control)
+        | '\u{2065}'              // reserved format character
+        | '\u{FE00}'..='\u{FE0F}' // variation selectors
+        | '\u{E0100}'..='\u{E01EF}' // variation selectors supplement
+        | '\u{E0000}'..='\u{E007F}' // tag characters (used to smuggle hidden text)
+        | '\u{1D173}'..='\u{1D17A}' // musical format controls
+        | '\u{115F}' | '\u{1160}' | '\u{3164}' | '\u{FFA0}' // Hangul fillers: blank-looking letters
+        | '\u{13430}'..='\u{1343F}' // Egyptian hieroglyph format controls
+        | '\u{1BCA0}'..='\u{1BCA3}' // shorthand format controls
     )
 }
+
+/// At most this many combining marks on one character: more is "Zalgo" text that spills
+/// over neighbouring lines (review C6).
+const MAX_MARKS: usize = 4;
 
 fn cap_input(s: &str) -> &str {
     if s.len() <= MAX_INPUT {
@@ -52,9 +65,18 @@ fn truncate_chars(s: &mut String, max: usize) {
 pub fn clean_line(s: &str, max: usize) -> String {
     let mut out = String::with_capacity(s.len().min(max * 4));
     let mut space = false;
+    let mut marks = 0;
     for c in cap_input(s).nfc() {
         if is_invisible(c) {
             continue;
+        }
+        if unicode_normalization::char::is_combining_mark(c) {
+            marks += 1;
+            if marks > MAX_MARKS {
+                continue;
+            }
+        } else {
+            marks = 0;
         }
         if c.is_whitespace() || c.is_control() {
             space = !out.is_empty();
@@ -266,6 +288,22 @@ fn decode_entity(name: &str) -> Option<char> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review C6: invisible and spoofing characters, and stacked combining marks.
+    #[test]
+    fn invisible_and_spoofing_characters_are_removed() {
+        for hidden in
+            ['\u{061C}', '\u{E0041}', '\u{FE0F}', '\u{E0100}', '\u{1D173}', '\u{115F}', '\u{3164}', '\u{FFA0}']
+        {
+            assert_eq!(clean_line(&format!("A{hidden}B"), 100), "AB", "{:X}", hidden as u32);
+        }
+        // A title of only Hangul fillers is empty, so callers fall back to "Untitled".
+        assert_eq!(clean_line("\u{3164}\u{3164}\u{3164}", 100), "");
+        let zalgo = format!("a{}b", "\u{0301}".repeat(500));
+        let cleaned = clean_line(&zalgo, 100);
+        assert!(cleaned.chars().count() <= 2 + MAX_MARKS, "{}", cleaned.chars().count());
+        assert_eq!(clean_line("café naïve", 100), "café naïve", "ordinary accents stay");
+    }
 
     #[test]
     fn lines_are_normalised_and_collapsed() {

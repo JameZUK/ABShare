@@ -146,7 +146,10 @@ impl Profile {
 
     /// A profile with the given segment length in frames.
     pub fn new(bitrate: Bitrate, frames_per_segment: u64) -> Result<Self, SaverError> {
-        if frames_per_segment == 0 || !frames_per_segment.is_multiple_of(5) || frames_per_segment > 100_000 {
+        // At least the pre-roll: a shorter segment would make its window start before zero
+        // (review C5).
+        if frames_per_segment < PREROLL_FRAMES || !frames_per_segment.is_multiple_of(5) || frames_per_segment > 100_000
+        {
             return Err(SaverError::BadSegmentLength);
         }
         Ok(Self { bitrate, frames_per_segment })
@@ -252,7 +255,7 @@ impl Layout {
             (0, 0, false)
         } else {
             let preroll = PREROLL_FRAMES * SAMPLES_PER_FRAME;
-            (start - preroll, PREROLL_FRAMES, true)
+            (start.saturating_sub(preroll), PREROLL_FRAMES, true)
         };
         let last = index + 1 == self.segment_count();
         let input_end = if last { None } else { Some(start + fps * SAMPLES_PER_FRAME + POSTROLL_SAMPLES) };
@@ -412,10 +415,12 @@ mod tests {
 
     #[test]
     fn segment_lengths_that_break_the_alignment_grid_are_refused() {
-        for bad in [0, 1, 4, 2_501, 100_005] {
+        // Shorter than the pre-roll is refused too (review C5).
+        for bad in [0, 1, 4, 5, 40, 2_501, 100_005] {
             assert_eq!(Profile::new(Bitrate::K32, bad), Err(SaverError::BadSegmentLength), "{bad}");
         }
-        assert!(Profile::new(Bitrate::K48, 5).is_ok());
+        assert!(Profile::new(Bitrate::K48, 45).is_ok());
+        assert!(Profile::new(Bitrate::K48, 50).is_ok());
     }
 
     #[test]
@@ -446,7 +451,7 @@ mod tests {
     fn segments_cover_the_whole_file_exactly_once() {
         let mut rng = Rng(0x5eed);
         for _ in 0..2_000 {
-            let fps = 5 * (1 + rng.below(1_000));
+            let fps = 45 + 5 * rng.below(1_000);
             let bitrate = [Bitrate::K32, Bitrate::K40, Bitrate::K48][rng.below(3) as usize];
             let p = Profile::new(bitrate, fps).expect("profile");
             let l = p.layout(1 + rng.below(90 * HOUR)).expect("layout");
