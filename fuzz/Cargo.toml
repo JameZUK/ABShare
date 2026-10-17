@@ -12,6 +12,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4.13"
 arbitrary = { version = "1.5", features = ["derive"] }
 abshare-core = { path = "../core" }
+serde_json = "1.0.154"
 
 # Not part of the main workspace (cargo-fuzz builds it with nightly and sanitizers).
 [workspace]
@@ -83,3 +84,17 @@ test = false
 doc = false
 bench = false
 
+
+[[bin]]
+name = "metadata_override"
+path = "fuzz_targets/metadata_override.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "genre"
+path = "fuzz_targets/genre.rs"
+test = false
+doc = false
+bench = false

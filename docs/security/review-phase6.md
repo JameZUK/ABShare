@@ -67,10 +67,10 @@ Started 2026-10-17. It covers:
 ## Informational
 
 - A Host with a trailing dot (`books.example.com.`) is accepted. It is the same host.
-- Offline mode serves the last user's downloads without the server. Per-user databases separate users in the UI but aren't a security boundary on a shared browser profile. Accepted by design (§8); to be stated in the SPEC.
+- Offline mode serves the last user's downloads without the server. Per-user databases separate users in the UI but aren't a security boundary on a shared browser profile. Accepted by design and recorded in SPEC §8.3.1.
 - axum's built-in body and query rejections return plain-text messages that name expected fields.
 - `login.failed` audit entries record the typed username, which may be a mistyped password.
 - Recovery codes can be lost if sign-in fails after enrolment commits.
-- SPEC §5.5 mentions a configurable refresh lifetime, but it is a constant.
+- ~~SPEC §5.5 mentions a configurable refresh lifetime, but it is a constant.~~ The SPEC now describes the real rules.
 - `/v1/admin/audit` re-verifies the whole chain on every request (admin only).
-- Fuzz targets are missing for metadata overrides, series grouping, genre shelves, chapter assembly, the auth validators and the lockout state machine.
+- Fuzz targets were missing for metadata overrides, series grouping, genre shelves, chapter assembly, the auth validators and the lockout state machine. **Added:** `metadata_override` and `genre` (which also exercises `clean_line`). The rest are covered by unit and robustness tests.

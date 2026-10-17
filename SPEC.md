@@ -356,7 +356,7 @@ As lyrion-anywhere, unless stated otherwise.
 
 **Tokens**
 - Access token: 256-bit, 15 min, held in memory on both sides, hashed in the server map.
-- Refresh token: 90 days by default (admin can set 1–365), rotated on every use, reuse revokes the device, 60 s grace, renewals capped at 30 a minute per device. Stored in the `abshare_refresh` cookie (`HttpOnly; Secure; SameSite=Strict; Path=/v1/auth`).
+- Refresh token: 90 days, rotated on every use. Spent tokens are kept for the session, so presenting an old one is always recognised. A spent token may be presented again (a lost response) until one of its replacements is used; after that, reuse revokes the device and answers `session_reused` (the app signs out and keeps downloads). Renewals are capped at 30 a minute per device. (Phase 6 review A1.) Stored in the `abshare_refresh` cookie (`HttpOnly; Secure; SameSite=Strict; Path=/v1/auth`).
 - Media cookie: D9.
 - An **absolute session lifetime** (default 90 days) applies even with continuous refresh; after it, the user signs in again.
 - Browser tabs take turns refreshing (`navigator.locks`).
@@ -605,6 +605,10 @@ The spike tests both with a 2.5 GB, 85 h file on iOS 17/18 (installed PWA, scree
   2. The service worker must not be re-registered while offline, because registering fetches the script. Register only when no worker controls the page.
   3. On the target host, data-saver downloads were bottlenecked at about 0.34 MB/s by per-segment encoding (about 0.7 s per 240 KB segment). Downloads therefore encode many segments per ffmpeg run (§5.4), or a whole-book data-saver file is prepared once and served like a playable copy. **Built (2026-10-17):** downloads ask with `dl=1`; the server encodes each response (up to 10 segments) in one ffmpeg run, starts encoding the next span while the current one is sent, and background work may use `[ffmpeg] jobs` cores.
 - **Safari:** `persist()` returns false in a browser tab (only Home Screen web apps get persistent storage); Firefox for Android returned true.
+
+### 8.3.1 Accepted risk: offline mode (Phase 6 review)
+
+Offline, the app plays the last user's downloads without the server, so a revocation can't take effect until the device is back online. Per-user databases keep users apart in the app, but they aren't a security boundary within one browser profile: anyone holding the unlocked browser can read its stored books. This is accepted for offline listening; people sharing a device should use separate browser profiles.
 
 ### 8.4 Sync-back
 
