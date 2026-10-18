@@ -34,12 +34,7 @@
 		</select>
 	</label>
 
-	<label class="field">Downloads
-		<select value={p.downloadQuality} onchange={(e) => settings.set({ downloadQuality: e.currentTarget.value as 'original' | 'saver' })}>
-			<option value="original">Original quality</option>
-			<option value="saver">Data saver (smaller)</option>
-		</select>
-	</label>
+	<p class="muted pointer">Download quality and Wi-Fi only are in <a href="#/settings/downloads">Settings → Downloads</a>.</p>
 
 	</div>
 	<h2 class="eyebrow section">Listening</h2>
@@ -113,5 +108,9 @@
 		border-top: 1px solid var(--line);
 		border-bottom: 1px solid var(--line);
 		margin-top: 0.5rem;
+	}
+	.pointer {
+		font-size: 0.875rem;
+		align-self: end;
 	}
 </style>

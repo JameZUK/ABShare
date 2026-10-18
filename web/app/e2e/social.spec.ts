@@ -90,3 +90,36 @@ test('admins see everyone’s listening, and each person’s books without posit
 	await page.goto('#/settings/history');
 	await expect(page.getByText(/administrators can’t/)).toHaveCount(0);
 });
+
+test('finishing a book asks once how it was', async ({ page }) => {
+	await page.goto('#/library');
+	await page.getByRole('link', { name: /The Year Without a Summer/ }).first().click();
+	await page.getByRole('main').getByRole('button', { name: 'More' }).click();
+	await page.getByRole('button', { name: 'Mark finished' }).click();
+	const prompt = page.getByRole('dialog', { name: 'How was it?' });
+	await expect(prompt).toContainText('The Year Without a Summer');
+	await prompt.getByRole('radio', { name: '4 stars' }).check();
+	await prompt.getByRole('button', { name: 'Save' }).click();
+	await expect(prompt).toBeHidden();
+	await expect(page.getByText(/4(\.0)? · 1 review/)).toBeVisible();
+	// Never asked again for that book.
+	await page.getByRole('main').getByRole('button', { name: 'More' }).click();
+	await page.getByRole('button', { name: 'Mark not finished' }).click();
+	await page.getByRole('main').getByRole('button', { name: 'More' }).click();
+	await page.getByRole('button', { name: 'Mark finished' }).click();
+	await page.waitForTimeout(1500);
+	await expect(page.getByRole('dialog', { name: 'How was it?' })).toBeHidden();
+});
+
+test('Downloads settings: quality, Wi-Fi only, and what this browser can tell', async ({ page }) => {
+	await page.goto('#/settings');
+	await page.locator('a[href="#/settings/downloads"]').click();
+	await expect(page.getByRole('heading', { level: 1, name: 'Downloads' })).toBeVisible();
+	const wifi = page.getByRole('checkbox', { name: /Download only on Wi-Fi/ });
+	await wifi.check();
+	// Desktop Chromium doesn't report the connection type, so nothing is held, and it says so.
+	await expect(page.getByText('This browser doesn’t say whether you’re on Wi-Fi, so downloads aren’t held.')).toBeVisible();
+	await page.reload();
+	await expect(page.getByRole('checkbox', { name: /Download only on Wi-Fi/ })).toBeChecked();
+	await page.getByRole('checkbox', { name: /Download only on Wi-Fi/ }).uncheck();
+});

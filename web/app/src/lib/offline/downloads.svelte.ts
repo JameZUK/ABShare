@@ -7,6 +7,7 @@ import { streamUrl } from '$lib/player/rules';
 import { all, dropDb, get, PIECE, reqP, tx, type Download, type Quality } from './db';
 import { closeUserDb, userDb } from './userdb';
 import { settings } from '$lib/settings.svelte';
+import { WAITING_FOR_WIFI, connection, shouldHold } from './wifi';
 
 /** A download without its blobs, for the UI. */
 export type DownloadInfo = Omit<Download, 'cover'>;
@@ -149,6 +150,18 @@ class Downloads {
 		await this.load();
 	}
 
+	/** Whether downloads are being held for Wi-Fi right now. */
+	get holding(): boolean {
+		return shouldHold(settings.prefs.wifiOnly, connection());
+	}
+
+	/** After the connection or the Wi-Fi preference changes: carry on with downloads that were
+	 *  waiting for Wi-Fi, if they no longer need to wait. */
+	async recheck() {
+		if (this.holding) return;
+		for (const d of this.list.filter((x) => x.state === 'paused' && x.error === WAITING_FOR_WIFI)) await this.resume(d.id);
+	}
+
 	/** Removes every download of the current user (sign-out with "Remove"). */
 	async removeAll(username: string) {
 		// Remembered until done, so a wipe interrupted (the app closed, another tab holding
@@ -186,6 +199,10 @@ class Downloads {
 			for (;;) {
 				const next = this.list.find((d) => d.state === 'queued' || d.state === 'downloading');
 				if (!next || session.status !== 'signed-in') break;
+				if (this.holding) {
+					for (const d of this.list.filter((x) => x.state === 'queued' || x.state === 'downloading')) await this.#set(d.id, { state: 'paused', error: WAITING_FOR_WIFI });
+					break;
+				}
 				await this.#fetchBook(next.id);
 			}
 		} finally {
@@ -209,6 +226,11 @@ class Downloads {
 		while (d.total === 0 || d.next < d.total) {
 			if (this.#stop.has(id)) {
 				await this.#set(id, { state: 'paused' });
+				return;
+			}
+			// Switched to mobile data mid-download: stop between pieces and wait for Wi-Fi.
+			if (this.holding) {
+				await this.#set(id, { state: 'paused', error: WAITING_FOR_WIFI });
 				return;
 			}
 			let resp: Response;
@@ -293,3 +315,7 @@ export async function sizeOf(book: string, quality: Quality): Promise<number | n
 	}
 }
 
+// Back on Wi-Fi (or off mobile data): carry on with downloads that were waiting.
+if (typeof window !== 'undefined') {
+	connection()?.addEventListener?.('change', () => void downloads.recheck());
+}

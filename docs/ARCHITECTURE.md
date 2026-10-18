@@ -1,6 +1,6 @@
 # Architecture
 
-How ABShare is put together: the components, the trust boundary, what happens on each kind of request, and where data lives. This describes what is built. The reasons behind each choice are recorded as decisions (D1–D31) in [`SPEC.md`](../SPEC.md); the wire format of every endpoint is in [`API.md`](API.md).
+How ABShare is put together: the components, the trust boundary, what happens on each kind of request, and where data lives. This describes what is built. The reasons behind each choice are recorded as decisions (D1–D34) in [`SPEC.md`](../SPEC.md); the wire format of every endpoint is in [`API.md`](API.md).
 
 ## Contents
 

@@ -59,6 +59,9 @@ class Player {
 	preparing = $state(false);
 	/** The full-screen player is open. */
 	expanded = $state(false);
+	/** A book just finished on this device, for whoever wants to know (the "How was it?"
+	 *  prompt). Set by the end of playback and by marking a book finished; the listener clears it. */
+	finishedNow = $state<{ id: string; title: string; cover: string | null } | null>(null);
 
 	#audio: HTMLAudioElement | null = null;
 	#pendingSeek: number | null = null;
@@ -109,7 +112,10 @@ class Player {
 		});
 		a.addEventListener('ended', () => {
 			this.playing = false;
-			if (this.book) void sync.record(this.book.id, 'finished');
+			if (this.book) {
+				void sync.record(this.book.id, 'finished');
+				this.finishedNow = { id: this.book.id, title: this.book.title, cover: this.book.cover };
+			}
 			this.#clearSleep();
 		});
 		a.addEventListener('error', () => void this.#onError());
@@ -271,6 +277,7 @@ class Player {
 		if (!this.book) return;
 		await sync.record(this.book.id, action);
 		if (action === 'restart') this.seek(0);
+		if (action === 'finished') this.finishedNow = { id: this.book.id, title: this.book.title, cover: this.book.cover };
 	}
 
 	/** Stops and forgets the open book (sign-out). */

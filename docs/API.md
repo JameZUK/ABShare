@@ -480,7 +480,8 @@ Sessions are built from accepted `position` events (`PUT /v1/progress/{book_id}`
 - A report extends your latest session for the same book on the same device when it comes within 2 minutes (by event time) of that session's last report; otherwise it starts a new session, with nothing heard yet.
 - Time heard grows by the smaller of the time since the last report and how far the position moved. A step back of up to 30 seconds adds nothing and keeps the session going.
 - A jump starts a new session at the new place: back by more than 30 seconds, or forward faster than 3 times real time (a seek). So each session is one continuous stretch of the book, from `start_position_ms` to `end_position_ms`.
-- Nothing is recorded while history is off. Stale, duplicate and refused events record nothing. The web app sends only the latest queued position after being offline, so offline listening isn't counted.
+- Nothing is recorded while history is off. Stale, duplicate and refused events record nothing, and the same report twice is recorded once.
+- Listening done offline arrives later through `POST /v1/me/history/replay` (below): the web app keeps the reports it couldn't send and replays them on reconnect, before sending the newest position as progress.
 - Sessions are kept for 13 months, and at most 50,000 per user (the oldest go first). Deleting the account deletes them.
 
 Your history here, and positions in it, are yours. Admins have a separate summary (§6, Listening) with totals, statuses and sessions but no positions. After a recovery-code sign-in these routes answer `403 factor_required` until a new factor is set up.
@@ -512,6 +513,14 @@ Your history here, and positions in it, are yours. Admins have a separate summar
 
 - **Response:** `{"enabled": true, "sessions": [{"id", "started_at", "ended_at", "start_position_ms", "end_position_ms", "seconds"}]}`. Times are event times in milliseconds; positions are clamped to the book's length. Sessions recorded before start positions were kept report a start of their end less the time heard.
 - **Errors:** `404` (unknown book, or one outside your libraries).
+
+#### `POST /v1/me/history/replay`
+
+Positions reported while offline, replayed into your history (SPEC D33). Progress is not changed.
+
+- **Body:** `{"book": "<id>", "key": "<8–64 of A–Z a–z 0–9 - _>", "reports": [{"event_time_ms", "position_ms"}, …]}`, with 1 to 200 reports in any order. They are applied in time order with the usual rules; reports more than 90 days old or over 5 minutes in the future are skipped, and positions are clamped to the book's length.
+- **Response:** `{"result": "accepted", "recorded": n}`, or `{"result": "duplicate", "recorded": 0}` for a key already used (a retried request). With history off, it is accepted and records nothing.
+- **Errors:** `400` (bad key, or no reports or too many); `404` (unknown book, or one outside your libraries); `422` (other malformed bodies); `429`.
 
 #### `PATCH /v1/me/history`
 

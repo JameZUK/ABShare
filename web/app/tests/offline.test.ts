@@ -39,17 +39,69 @@ beforeEach(async () => {
 	await as('ada');
 });
 
-test('a newer position replaces unsent older ones, and is itself kept', async () => {
+test('a newer position replaces unsent older ones as progress; they are kept as heard reports', async () => {
 	await sync.record(A, 'position', 1_000);
 	await sync.record(A, 'position', 2_000);
 	await sync.record(B, 'position', 5_000);
 	await sync.record(A, 'position', 3_000);
 	const items = await outbox();
 	expect(items.map((i) => [i.book, i.body.action, i.body.position_ms])).toEqual([
+		[A, 'heard', 1_000],
+		[A, 'heard', 2_000],
 		[B, 'position', 5_000],
 		[A, 'position', 3_000],
 	]);
 	expect((await sync.local(A))?.position_ms).toBe(3_000);
+});
+
+test('on reconnect, heard reports are replayed into history, by book and in order, before progress', async () => {
+	for (let p = 1; p <= 4; p++) await sync.record(A, 'position', p * 15_000);
+	await sync.record(B, 'position', 60_000);
+	await sync.record(B, 'position', 75_000);
+	fake.session.status = 'signed-in';
+	await sync.flush();
+	const calls = fake.post.mock.calls.map(([path, body]) => [path, body] as [string, Record<string, unknown>]);
+	const replays = calls.filter(([p]) => p === 'v1/me/history/replay');
+	expect(replays.map(([, b]) => [b.book, (b.reports as { position_ms: number }[]).map((r) => r.position_ms)])).toEqual([
+		[A, [15_000, 30_000, 45_000]],
+		[B, [60_000]],
+	]);
+	for (const [, b] of replays) expect(String(b.key)).toMatch(/^[A-Za-z0-9_-]{8,64}$/);
+	// Then the newest positions as progress, after every replay.
+	const progress = calls.map(([p]) => p).filter((p) => p.startsWith('v1/progress/'));
+	expect(progress).toEqual([`v1/progress/${A}`, `v1/progress/${B}`]);
+	expect(calls.findIndex(([p]) => p.startsWith('v1/progress/'))).toBeGreaterThan(calls.findLastIndex(([p]) => p === 'v1/me/history/replay'));
+	expect(await outbox()).toEqual([]);
+});
+
+test('a replay that fails for a moment is kept for later; one refused for good is dropped', async () => {
+	await sync.record(A, 'position', 1_000);
+	await sync.record(A, 'position', 2_000);
+	fake.session.status = 'signed-in';
+	fake.post.mockImplementation(async (path: string) => {
+		if (path === 'v1/me/history/replay') throw new NetworkError();
+		return { result: 'accepted' };
+	});
+	await sync.flush();
+	expect((await outbox()).map((i) => i.body.action)).toEqual(['heard', 'position']);
+	fake.post.mockImplementation(async (path: string) => {
+		if (path === 'v1/me/history/replay') throw new ApiError(404, 'not_found', 'Not found.');
+		return { result: 'accepted' };
+	});
+	await sync.flush();
+	expect(await outbox()).toEqual([]);
+});
+
+test('heard reports are batched and capped', async () => {
+	const { replayBatches, REPLAY_BATCH } = await import('$lib/offline/sync.svelte');
+	const items = Array.from({ length: REPLAY_BATCH * 2 + 1 }, (_, i) => ({ seq: i, book: A, body: { key: `k${i}`, event_time_ms: i, action: 'heard', position_ms: i } }));
+	const batches = replayBatches([...items, { seq: 999, book: B, body: { key: 'kb', event_time_ms: 1, action: 'heard', position_ms: 1 } }]);
+	expect(batches.map((b) => [b[0]!.book, b.length])).toEqual([
+		[A, REPLAY_BATCH],
+		[A, REPLAY_BATCH],
+		[A, 1],
+		[B, 1],
+	]);
 });
 
 test('marks are never collapsed and keep their order', async () => {
@@ -58,8 +110,9 @@ test('marks are never collapsed and keep their order', async () => {
 	await sync.record(A, 'position', 1_000);
 	await sync.record(A, 'finished');
 	const items = await outbox();
-	expect(items.map((i) => i.body.action)).toEqual(['restart', 'position', 'finished']);
-	expect(new Set(items.map((i) => i.body.key)).size, 'every event has its own idempotency key').toBe(3);
+	// The position replaced before the restart stays only as a heard report (for history).
+	expect(items.map((i) => i.body.action)).toEqual(['heard', 'restart', 'position', 'finished']);
+	expect(new Set(items.map((i) => i.body.key)).size, 'every event has its own idempotency key').toBe(4);
 	for (const i of items) expect(i.body.key).toMatch(/^[A-Za-z0-9_-]{8,64}$/);
 	expect((await sync.local(A))?.position_ms).toBe(1_000);
 });

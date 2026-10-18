@@ -99,7 +99,10 @@
 	async function mark(action: 'finished' | 'unfinished' | 'restart') {
 		if (!book) return;
 		if (isOpen) await player.mark(action);
-		else await sync.record(book.id, action);
+		else {
+			await sync.record(book.id, action);
+			if (action === 'finished') player.finishedNow = { id: book.id, title: book.title, cover: book.cover };
+		}
 		book = { ...book, progress: { position_ms: action === 'restart' ? 0 : position, finished: action === 'finished', updated_at: Date.now() } };
 		moreOpen = false;
 	}

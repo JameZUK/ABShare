@@ -27,12 +27,13 @@ It is built to face the internet. Security is the first requirement, and every d
 ## What it does
 
 - **Listen anywhere.** An installable web app (PWA) for iPhone, iPad, Android and desktop, with lock-screen and headset controls, chapters, a chapter-relative scrubber, skip back and forward, speed from 0.75× to 3× with pitch kept, a sleep timer (or end of chapter) that fades out, and bookmarks.
-- **Pick up where you left off.** Your place in each book follows you between devices. Listening done offline is queued and merged when the device is back online, and the newest listening wins.
+- **Pick up where you left off.** Your place in each book follows you between devices. Listening done offline is queued and merged when the device is back online, and the newest listening wins. "Where was I?" shows every stretch you listened to, by day, so you can play from where you were before you fell asleep.
 - **Data saver.** On mobile data, books stream as a small mono MP3 (48 kb/s by default, or 40 or 32) with exact seeking. Automatic mode picks it when the browser reports a cellular or data-saving connection.
 - **Offline.** Download a book in original quality or data saver and listen with no connection at all. Downloads resume if interrupted, and each person's downloads are kept apart.
 - **Browse the way people think.** Continue listening, the next book in your series, and recently added on Home. Search titles, authors and narrators. Series and podcast-style shows are grouped automatically, and messy store genre tags are sorted onto 17 familiar shelves, fiction and non-fiction.
+- **Share what you think.** Rate books from 1 to 5 stars with a short comment, see what others thought, and get asked once when you finish a book. Admins can recommend books, with a note on why, to everyone or to chosen people.
 - **Invite-only accounts.** Single-use invite links. Sign in with a passkey, or a password plus an authenticator app. Recovery codes, a list of your devices, and remote sign-out.
-- **Admin in the app.** People, invites, library scans and problems, a tamper-evident audit log, security status, and corrections to any book's details.
+- **Admin in the app.** People, invites, library scans and problems, everyone's listening at a glance, recommendations, a tamper-evident audit log, security status, and corrections to any book's details.
 - **Your library stays as it is.** ABShare reads your files in place and never writes, renames or deletes anything in them. Changes you make in the app live in its own database.
 
 The full list is in [`docs/FEATURES.md`](docs/FEATURES.md).
@@ -49,7 +50,7 @@ The full list is in [`docs/FEATURES.md`](docs/FEATURES.md).
 
 - **One Rust binary and one SQLite database.** The `abshare` server (axum on tokio and hyper) scans the library, serves the API, the audio and the web app, and owns accounts. It makes no outbound network connections at all: no metadata services, no update checks, no telemetry.
 - **ffmpeg runs only in a jail.** Every ffmpeg and ffprobe run goes through `abshare-jail`, a small helper of ours that applies Linux Landlock (read only the named inputs, write only the job directory, execute nothing else, no network), a seccomp filter (no sockets, no new processes, no foreign-architecture system calls) and resource limits before it becomes ffmpeg. A media file that exploits ffmpeg finds itself with nothing to reach.
-- **Untrusted bytes go through a pure, fuzzed core.** Tags, ffprobe output, chapters, sidecar text, Range headers and genre tags are interpreted by the `core` crate, which does no I/O. It has 11 `cargo-fuzz` targets and must never panic. Covers are decoded and re-encoded in Rust, never served raw.
+- **Untrusted bytes go through a pure, fuzzed core.** Tags, ffprobe output, chapters, sidecar text, Range headers and genre tags are interpreted by the `core` crate, which does no I/O. It has 12 `cargo-fuzz` targets and must never panic. Covers are decoded and re-encoded in Rust, never served raw.
 - **One timeline per book.** A single browser-friendly file plays as it is. Multi-part books and formats browsers can't play get one playable `.m4b` copy, built on demand in the jail. Data saver is a virtual constant-bitrate MP3 whose length is known exactly before any of it exists, so a Range request transcodes only the 60-second segments it touches.
 - **A web app with no runtime dependencies.** SvelteKit 2 and Svelte 5, built to static files and served by the same process. A strict Content Security Policy with no inline scripts and Trusted Types, a build that fails on inline script, and a source scan that bans every HTML-injection API.
 - **Sessions done carefully.** Opaque random tokens, never JWTs: a 15-minute access token held in memory, a refresh token rotated on every use with reuse detection, and a media cookie scoped to `/v1/media`, so no token ever appears in a URL. argon2id passwords, a breached-password check, lockouts that a stranger can't use to lock you out, and step-up for every sensitive change.
@@ -60,11 +61,11 @@ The detail, with request flows and diagrams, is in [`docs/ARCHITECTURE.md`](docs
 <summary><strong>More screenshots</strong></summary>
 
 <p align="center">
-  <img src="docs/images/web/book-desktop.png" alt="A book page on a desktop browser: cover, the series and book number, title, author, narrator, length, time left and number of chapters, a progress line, Resume and Download buttons, genre chips, a description in a serif face, and the numbered chapter list" width="820">
+  <img src="docs/images/web/book-desktop.png" alt="A book page on a desktop browser: cover, the series and book number, title, author, narrator, length, time left and number of chapters, a four-and-a-half star average from two reviews, a progress line, Resume and Download buttons, genre chips, a description in a serif face, and the Reviews section with your own four-star review" width="820">
 </p>
 
 <p align="center">
-  <img src="docs/images/web/home-phone.png" alt="Home on a phone in the light theme: the day and a Welcome back greeting, the book being read with its chapter and a Resume button, and a Continue listening row" width="250">
+  <img src="docs/images/web/home-phone.png" alt="Home on a phone in the light theme: the day and a Welcome back greeting, a Recommended for you note from an admin with the recommended book and a Not now button, and below it the book being read" width="250">
   &nbsp;
   <img src="docs/images/web/series-phone-dark.png" alt="A series page in the dark theme: The Meridian Cycle, 2 books, a Next button pointing at the book in progress, and both covers in order" width="250">
   &nbsp;
@@ -74,7 +75,7 @@ The detail, with request flows and diagrams, is in [`docs/ARCHITECTURE.md`](docs
 <p align="center">
   <img src="docs/images/web/downloads-phone-dark.png" alt="The Downloads page: storage used and available, and two downloaded books, one original and one data saver at 48 kb/s, each with its size and a remove button" width="250">
   &nbsp;
-  <img src="docs/images/web/settings-phone-dark.png" alt="Settings: the account name, then Playback, Appearance, Account, Devices, History, About and Admin rows, each with a one-line summary" width="250">
+  <img src="docs/images/web/settings-phone-dark.png" alt="Settings: the account name, then Playback, Downloads, Appearance, Account, Devices, History and About rows, each with a one-line summary" width="250">
   &nbsp;
   <img src="docs/images/web/invite.png" alt="The invite page: Welcome, Ada Lovelace, a prompt to choose a username, and a Continue button" width="250">
 </p>

@@ -2,6 +2,7 @@
 	// A book's reviews: your own (stars and up to 50 words), then everyone's. Names and comments
 	// come from other people, so they are shown only as text. Admins can remove someone's
 	// review (with a step-up).
+	import { reviewsChanged } from '$lib/reviewsChanged.svelte';
 	import { adminApi } from '$lib/api/admin';
 	import { messageOf } from '$lib/api/http';
 	import { api, post, session } from '$lib/api/session.svelte';
@@ -39,6 +40,8 @@
 
 	$effect(() => {
 		void bookId;
+		// Reload when this book's reviews change elsewhere (the "How was it?" prompt).
+		if (reviewsChanged.book === bookId) void reviewsChanged.n;
 		if (session.status === 'signed-in') void load();
 	});
 

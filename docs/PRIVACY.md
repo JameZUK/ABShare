@@ -19,7 +19,7 @@ the app loads nothing from other websites.
   give your listening time (last 7 days, last 30 days, all time) in Settings → History.
   Sessions are kept for 13 months, and at most 50,000 per person (the oldest go first). You
   can clear them all at any time, or turn history off so nothing new is recorded; your place
-  in each book is kept either way. Listening while offline isn't counted.
+  in each book is kept either way. Listening done offline is kept on your device and added when it reconnects.
 - **The audit log:** security events (sign-ins, failed attempts, account changes, admin
   actions) with time, account, device and IP address. Kept for at most a year.
 - **Start-up reports:** if the app is left showing a blank page (or the address has

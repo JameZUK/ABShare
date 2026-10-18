@@ -11,9 +11,11 @@ export interface Prefs {
 	quality: QualityMode;
 	saverKbps: SaverKbps;
 	downloadQuality: 'original' | 'saver';
+	/** Hold downloads while the browser reports mobile data. */
+	wifiOnly: boolean;
 }
 
-export const DEFAULTS: Prefs = { skipBack: 15, skipForward: 30, speed: 1, autoRewind: true, quality: 'auto', saverKbps: 48, downloadQuality: 'original' };
+export const DEFAULTS: Prefs = { skipBack: 15, skipForward: 30, speed: 1, autoRewind: true, quality: 'auto', saverKbps: 48, downloadQuality: 'original', wifiOnly: false };
 export const SKIPS = [5, 10, 15, 30, 45, 60];
 export const SPEEDS = [0.75, 0.9, 1, 1.1, 1.2, 1.3, 1.5, 1.75, 2, 2.5, 3];
 export const KBPS: SaverKbps[] = [48, 40, 32];
@@ -35,6 +37,7 @@ export function sanitise(v: unknown): Prefs {
 		quality: pick(o.quality, ['auto', 'original', 'saver'] as const, DEFAULTS.quality),
 		saverKbps: pick(o.saverKbps, KBPS, DEFAULTS.saverKbps),
 		downloadQuality: pick(o.downloadQuality, ['original', 'saver'] as const, DEFAULTS.downloadQuality),
+		wifiOnly: typeof o.wifiOnly === 'boolean' ? o.wifiOnly : DEFAULTS.wifiOnly,
 	};
 }
 

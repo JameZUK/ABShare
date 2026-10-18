@@ -2,15 +2,21 @@
 
 What changed and when, newest first. Each entry says how it is tested. The design and the reasons behind it are in [`SPEC.md`](SPEC.md); what differs from the design is in SPEC §16.
 
-## Unreleased
+## 0.10.0 (2026-10-18)
+
+The Paperback redesign, browser tests in CI, reviews, recommendations, "Where was I?", admin listening, offline listening in history, a review prompt and Downloads settings.
 
 ### Added
 - **Reviews.** Rate any book from 1 to 5 stars with an optional comment of up to 50 words. Everyone who can see the book sees the reviews, each with the reviewer's name, and the average on the book page. Change or delete yours at any time; admins can remove any (SPEC D28).
 - **Recommendations.** Admins recommend up to 10 books with a note on why, to everyone or to chosen people (Admin → Recommend). They show at the top of Home until the person chooses *Not now* or starts the book (SPEC D29).
 - **"Where was I?"** In a book's menu and the player: your stretches of listening of that book, grouped by day, each with where in the book it began and ended. Tap either to play from there. Only you can see it (SPEC D31).
+- **Offline listening counts.** Listening done without a connection is kept on the device and added to your history, "Where was I?" and the admin totals when it reconnects (SPEC D33).
+- **"How was it?"** When you finish a book, ABShare asks once for a rating (SPEC D32).
+- **Settings → Downloads:** default quality, *Download only on Wi-Fi* (where the browser reports the connection), space used and *Remove all downloads* (SPEC D34).
 - **Admin → Listening.** Each person's listening time, books finished, in progress and abandoned (started, not finished, nothing heard for 30 days), and recent sessions; never their position in a book (SPEC D30). The History page no longer says admins can't see it.
 
 ### Fixed
+- After rating a book in the "How was it?" prompt, the open book page now updates at once.
 - An app page starting up while its device had renewed its session too often in the last minute (several tabs, quick reloads) signed out instead of waiting a moment and trying again.
 
 ### Changed
@@ -21,7 +27,7 @@ What changed and when, newest first. Each entry says how it is tested. The desig
 - The fonts are bundled into the app and served by ABShare, so the only change to the Content-Security-Policy is `font-src 'self'` (fonts were previously blocked by `default-src 'none'`). No font CDN, no third-party request (SPEC D27).
 
 **Tests:**
-- Server tests for every new route: reviews limited to the book's readers, validated and owned; recommendations reaching only their audience and only books each person can see; dismissing only your own; admin-only creation, withdrawal and review removal with step-up and audit; the timeline private and ordered; the admin view never containing a position. Core: the word limit (with fuzzing), the abandoned rule, and the history rule that a jump starts a new stretch (property-tested). Browser tests for reviews, recommendations, "Where was I?" and the admin listening pages. Schema 9.
+- Server tests for every new route: reviews limited to the book's readers, validated and owned; recommendations reaching only their audience and only books each person can see; dismissing only your own; admin-only creation, withdrawal and review removal with step-up and audit; the timeline private and ordered; the admin view never containing a position. Core: the word limit (with fuzzing), the abandoned rule, and the history rule that a jump starts a new stretch (property-tested). Browser tests for reviews, recommendations, "Where was I?", the admin listening pages, the review prompt, Downloads settings, and offline listening reaching history. Unit tests for the heard-report outbox, replay batching, the Wi-Fi rule and the prompt's memory. Schema 9.
 - **Browser tests** (Playwright) run the built app against a fresh server on the demo library, in CI on every push: sign-up from an invite (a wrong authenticator code refused), browsing and search, play, chapter skip, speed, resuming after a reload, switching to data saver, downloading a book and playing it with the connection cut, appearance, the bundled fonts, and screenshots of the main screens in light and dark compared with references.
 - The theme tests now check every theme and mode for WCAG contrast, including the accent as text and the ink buttons, and that old saved themes are migrated; the CSP test pins `font-src 'self'`. The screenshots were retaken from the demo library.
 

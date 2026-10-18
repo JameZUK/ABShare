@@ -12,6 +12,7 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import MiniPlayer from '$lib/components/MiniPlayer.svelte';
 	import PlayerView from '$lib/components/PlayerView.svelte';
+	import ReviewPrompt from '$lib/components/ReviewPrompt.svelte';
 	import SignIn from '$lib/components/SignIn.svelte';
 
 	let { children } = $props();
@@ -102,6 +103,7 @@
 		{/each}
 	</nav>
 	{#if player.expanded}<PlayerView />{/if}
+	<ReviewPrompt />
 {/if}
 
 <style>

@@ -7,16 +7,20 @@ use super::admin_routes::Admin;
 use super::library_routes::{cover_url, view};
 use super::{ApiError, Authed, State, now};
 use abshare_core::history::{self, BookStatus, KEEP_MS, MAX_SESSIONS, Step, Tail, book_status};
+use abshare_core::progress::{MAX_AGE_MS, MAX_FUTURE_MS};
 use axum::extract::{Path, Query, State as S};
 use axum::http::StatusCode;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 pub fn routes() -> Router<State> {
-    Router::new().route("/", get(list).delete(clear).patch(set_enabled)).route("/books/{id}", get(book_timeline))
+    Router::new()
+        .route("/", get(list).delete(clear).patch(set_enabled))
+        .route("/books/{id}", get(book_timeline))
+        .route("/replay", post(replay))
 }
 
 /// Sessions shorter than this aren't listed (a report on pause, or a seek, starts one).
@@ -51,6 +55,11 @@ pub(super) fn record(
         .optional()
         .map_err(crate::db::sql_err)?;
     let pos = |p: u64| i64::try_from(p).unwrap_or(i64::MAX);
+    // The same report again (an offline report replayed, then the same position sent as
+    // progress): nothing to add.
+    if tail.is_some_and(|(_, t)| t.ended_at == event_time && t.position_ms == position_ms) {
+        return Ok(());
+    }
     match (history::step(tail.map(|t| t.1), event_time, position_ms), tail) {
         (Step::Extend { ended_at, position_ms, heard_ms }, Some((id, _))) => {
             c.execute(
@@ -230,6 +239,83 @@ async fn book_timeline(S(st): S<State>, Authed(s): Authed, Path(id): Path<String
         })
         .collect();
     Ok(Json(json!({ "enabled": enabled, "sessions": sessions })))
+}
+
+/// At most this many offline reports in one replay request (they fit well within the 16 KiB
+/// body limit of `/v1/me`).
+const MAX_REPLAY: usize = 200;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Heard {
+    event_time_ms: i64,
+    position_ms: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReplayBody {
+    book: String,
+    key: String,
+    reports: Vec<Heard>,
+}
+
+/// `POST /v1/me/history/replay`: positions reported while offline, which the app could only
+/// keep locally (the progress outbox sends just the newest), replayed into the caller's own
+/// history in time order with the usual rules (SPEC D33). Idempotent by `key`. Progress itself
+/// is unchanged: it still follows the newest position, sent as before.
+async fn replay(S(st): S<State>, Authed(s): Authed, Json(b): Json<ReplayBody>) -> Result<Json<Value>, ApiError> {
+    let (cat, ok) = view(&st, &s).await?;
+    let book = super::library_routes::find(&cat, &ok, &b.book)?;
+    if !(8..=64).contains(&b.key.len()) || !b.key.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_') {
+        return Err(ApiError::bad("Bad idempotency key."));
+    }
+    if b.reports.is_empty() || b.reports.len() > MAX_REPLAY {
+        return Err(ApiError::bad(format!("Send between 1 and {MAX_REPLAY} reports.")));
+    }
+    if !st.progress_limit.allow((s.device, "history-replay".to_owned()), now()) {
+        return Err(ApiError::too_many());
+    }
+    let now = now_ms();
+    let duration = book.duration_ms;
+    let mut reports: Vec<(i64, u64)> = b
+        .reports
+        .iter()
+        .filter(|r| {
+            r.event_time_ms >= now.saturating_sub(MAX_AGE_MS) && r.event_time_ms <= now.saturating_add(MAX_FUTURE_MS)
+        })
+        .map(|r| (r.event_time_ms, r.position_ms.min(duration)))
+        .collect();
+    reports.sort_unstable();
+    reports.dedup();
+    let (uid, device, bid, key) = (s.user, s.device, book.id.clone(), b.key);
+    let (duplicate, recorded) = st
+        .db
+        .run(move |c| {
+            let tx = c.transaction().map_err(crate::db::sql_err)?;
+            let seen: bool = tx
+                .query_row("SELECT 1 FROM progress_key WHERE user_id = ?1 AND key = ?2", params![uid, key], |_| {
+                    Ok(true)
+                })
+                .optional()
+                .map_err(crate::db::sql_err)?
+                .unwrap_or(false);
+            if seen {
+                return Ok((true, 0));
+            }
+            for &(at, position) in &reports {
+                record(&tx, uid, device, &bid, at, position)?;
+            }
+            tx.execute(
+                "INSERT INTO progress_key (user_id, key, at) VALUES (?1, ?2, ?3)",
+                params![uid, key, super::now()],
+            )
+            .map_err(crate::db::sql_err)?;
+            tx.commit().map_err(crate::db::sql_err)?;
+            Ok((false, reports.len()))
+        })
+        .await?;
+    Ok(Json(json!({ "result": if duplicate { "duplicate" } else { "accepted" }, "recorded": recorded })))
 }
 
 async fn clear(S(st): S<State>, Authed(s): Authed) -> Result<StatusCode, ApiError> {

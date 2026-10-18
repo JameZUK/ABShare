@@ -3177,3 +3177,101 @@ async fn admins_see_each_persons_listening_but_never_positions() {
     }
     assert_eq!(get_json(&m.t, "/v1/admin/users/424242/listening", &admin).await.0, StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn offline_listening_is_replayed_into_history_once_and_only_for_the_listener() {
+    let m = setup_media();
+    let (joe, _) = listener(&m).await;
+    let (_, amy, _, _) = enrol(&m.t, "amy").await;
+    let t0 = super::now() * 1000 - 3 * 3600 * 1000;
+    // Ninety seconds heard offline from 2:00, a report every 15 s, sent later out of order.
+    let mut reports: Vec<Value> =
+        (0..=6).map(|i| json!({"event_time_ms": t0 + i * 15_000, "position_ms": 120_000 + i * 15_000})).collect();
+    reports.reverse();
+    let body = json!({"book": BOOK, "key": "replay-0001", "reports": reports});
+    let r = as_user(&m.t, "POST", "/v1/me/history/replay", Some(body.clone()), &joe).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(json_of(r).await, json!({"result": "accepted", "recorded": 7}));
+    let uri = format!("/v1/me/history/books/{BOOK}");
+    let (_, v) = get_json(&m.t, &uri, &joe).await;
+    assert_eq!(v["sessions"].as_array().map(Vec::len), Some(1), "{v}");
+    let s0 = &v["sessions"][0];
+    assert_eq!(
+        (s0["start_position_ms"].clone(), s0["end_position_ms"].clone(), s0["seconds"].clone()),
+        (json!(120_000), json!(210_000), json!(90))
+    );
+    assert_eq!(s0["started_at"], t0);
+    // Sending the same batch again (a lost response) adds nothing.
+    let r = as_user(&m.t, "POST", "/v1/me/history/replay", Some(body), &joe).await;
+    assert_eq!(json_of(r).await["result"], "duplicate");
+    assert_eq!(get_json(&m.t, "/v1/me/history", &joe).await.1["totals"]["all_seconds"], 90);
+    // Then the newest position, sent as progress, continues the same stretch, not a new one.
+    assert_eq!(report(&m.t, &joe, BOOK, t0 + 105_000, 225_000).await, StatusCode::OK);
+    let (_, v) = get_json(&m.t, &uri, &joe).await;
+    assert_eq!((v["sessions"].as_array().map(Vec::len), v["sessions"][0]["seconds"].clone()), (Some(1), json!(105)));
+    // The same report twice is recorded once.
+    assert_eq!(report(&m.t, &joe, BOOK, t0 + 105_000, 225_000).await, StatusCode::OK);
+    assert_eq!(get_json(&m.t, &uri, &joe).await.1["sessions"][0]["seconds"], 105);
+    // It's Joe's alone.
+    assert_eq!(get_json(&m.t, &uri, &amy).await.1["sessions"], json!([]));
+
+    // Reports too old or in the future are skipped; positions are clamped to the book.
+    let odd = json!({"book": BOOK, "key": "replay-0002", "reports": [
+        {"event_time_ms": super::now() * 1000 - 100 * 86_400_000, "position_ms": 1},
+        {"event_time_ms": super::now() * 1000 + 3_600_000, "position_ms": 1},
+        {"event_time_ms": t0 + 600_000, "position_ms": 99_999_999_999u64},
+    ]});
+    let r = as_user(&m.t, "POST", "/v1/me/history/replay", Some(odd), &joe).await;
+    assert_eq!(json_of(r).await, json!({"result": "accepted", "recorded": 1}));
+    let ends: Vec<i64> = get_json(&m.t, &uri, &joe).await.1["sessions"]
+        .as_array()
+        .expect("s")
+        .iter()
+        .filter_map(|s| s["end_position_ms"].as_i64())
+        .collect();
+    assert!(ends.iter().all(|e| *e <= 3_600_000), "{ends:?}");
+
+    // A book outside his libraries, bad keys and bad batches are refused.
+    let kids = json!({"book": KIDS_BOOK, "key": "replay-0003", "reports": [{"event_time_ms": t0, "position_ms": 1}]});
+    assert_eq!(as_user(&m.t, "POST", "/v1/me/history/replay", Some(kids), &joe).await.status(), StatusCode::NOT_FOUND);
+    let many: Vec<Value> = (0..201).map(|i| json!({"event_time_ms": t0 + i, "position_ms": i})).collect();
+    for bad in [
+        json!({"book": BOOK, "key": "short", "reports": [{"event_time_ms": t0, "position_ms": 1}]}),
+        json!({"book": BOOK, "key": "replay-000%", "reports": [{"event_time_ms": t0, "position_ms": 1}]}),
+        json!({"book": BOOK, "key": "replay-0004", "reports": []}),
+        json!({"book": BOOK, "key": "replay-0005", "reports": many}),
+    ] {
+        assert_eq!(
+            as_user(&m.t, "POST", "/v1/me/history/replay", Some(bad), &joe).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    for bad in [
+        json!({"book": BOOK, "key": "replay-0006", "reports": [{"event_time_ms": t0}]}),
+        json!({"book": BOOK, "key": "replay-0007", "reports": [{"event_time_ms": t0, "position_ms": -1}]}),
+        json!({"book": BOOK, "key": "replay-0008", "reports": [], "extra": 1}),
+    ] {
+        assert!(
+            as_user(&m.t, "POST", "/v1/me/history/replay", Some(bad.clone()), &joe).await.status().is_client_error(),
+            "{bad}"
+        );
+    }
+    let r = send(
+        &m.t,
+        "POST",
+        "/v1/me/history/replay",
+        Some(json!({"book": BOOK, "key": "replay-0009", "reports": []})),
+        &[("authorization", "Bearer forged")],
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+
+    // With history off, a replay is accepted but records nothing.
+    assert_eq!(
+        as_user(&m.t, "PATCH", "/v1/me/history", Some(json!({"enabled": false})), &amy).await.status(),
+        StatusCode::NO_CONTENT
+    );
+    let r = as_user(&m.t, "POST", "/v1/me/history/replay", Some(json!({"book": BOOK, "key": "replay-0010", "reports": [{"event_time_ms": t0, "position_ms": 1000}, {"event_time_ms": t0 + 15_000, "position_ms": 16_000}]})), &amy).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(get_json(&m.t, &uri, &amy).await.1["sessions"], json!([]));
+}

@@ -34,7 +34,7 @@ Everything ABShare does today, by area. Only built and tested features are liste
 | Progress sync | Your position is saved every 15 seconds while playing, on pause and seek, and when the app goes to the background. |
 | Across devices | When another device has listened further, a paused player moves to the newer position. |
 | Offline | Positions and finished marks made offline are queued on the device and sent when it is back online. The newest listening wins, and a repeated or out-of-date update can't move you backwards. |
-| Listening history | Settings → History shows your listening time over the last 7 days, the last 30 days and all time, how many books you've finished, and your recent sessions. You can clear it, or turn it off. Sessions are kept for 13 months. Listening while offline isn't counted. |
+| Listening history | Settings → History shows your listening time over the last 7 days, the last 30 days and all time, how many books you've finished, and your recent sessions. You can clear it, or turn it off. Sessions are kept for 13 months. Listening done offline counts too: it is kept on the device and added when it reconnects. |
 | Where was I? | From a book's menu or the player: every stretch of listening of that book, newest first and grouped by day, with when you listened and where in the book it began and ended. Tap either place to play from there, for instance where you were before you fell asleep. A rewind or a jump starts a new stretch. Only you can see it. |
 
 ## Streaming quality
@@ -56,6 +56,7 @@ Everything ABShare does today, by area. Only built and tested features are liste
 | Downloads page | Each book's state and size, total storage used against what the browser allows, and remove buttons. |
 | Persistent storage | ABShare asks the browser to keep downloads. On iPhone and iPad, add ABShare to the Home Screen so Safari keeps them. |
 | Per person | Each person's downloads, queued progress and speeds are kept separately. Signing out offers to keep or remove them. A device signed out remotely wipes its downloads. |
+| Downloads settings | Settings → Downloads: the quality new downloads use, *Download only on Wi-Fi* (downloads wait on mobile data and carry on by themselves on Wi-Fi; only where the browser reports the connection, such as Chrome on Android), the space used, and *Remove all downloads*. |
 | Save file | People with the *save files* permission can save a book's audio file to their device. |
 
 ## Browsing
@@ -70,7 +71,7 @@ Everything ABShare does today, by area. Only built and tested features are liste
 | Shows | Podcast-style episodes are recognised and shown as one show, ordered by season and episode, with trailers and extras set aside. |
 | Authors and narrators | Every author and narrator on a book page is a link to all their books, with the Library's search and sorting. |
 | Book page | Cover, title, series, authors, narrators, genres, length, time left, average rating, description, reviews and chapters. Download, mark finished or unfinished, start again, bookmarks and save file. |
-| Reviews | Rate any book from 1 to 5 stars, with an optional comment of up to 50 words. Everyone who can see the book sees the reviews and the average, with each reviewer's name. Change or delete yours at any time. |
+| Reviews | Rate any book from 1 to 5 stars, with an optional comment of up to 50 words. Everyone who can see the book sees the reviews and the average, with each reviewer's name. Change or delete yours at any time. When you finish a book, ABShare asks once "How was it?" (not if you've already reviewed it). |
 | Recommendations | Books an admin recommends to you appear at the top of Home with their note, until you choose *Not now* or start the book. |
 | Covers | Embedded or folder artwork, resized for each screen. |
 | Themes | Paperback (paper and ink, serif titles, and a warm lamplight look in the dark) and High contrast; light, dark or following the system. On wide screens the tabs become a sidebar. |
@@ -121,6 +122,5 @@ Everything ABShare does today, by area. Only built and tested features are liste
 
 These are designed in [`SPEC.md`](../SPEC.md) but not built:
 
-- A "Downloads" settings page (default quality, Wi-Fi only).
 - An admin page for server settings (settings live in the config file).
 - Native apps.
