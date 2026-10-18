@@ -53,7 +53,8 @@ tools/check.sh > check.log 2>&1; echo "exit $?"
 1. `cargo fmt --check`
 2. `cargo clippy --workspace --all-targets -- -D warnings`
 3. `cargo test --workspace`
-4. In `web/app`: `npm run check` (svelte-check with warnings as errors), `npm test` (Vitest and the Node tests, including the HTML-injection source scan), and `npm run build` (which fails on any inline script, `on*=` attribute or `javascript:` URL).
+4. In `web/app`: `npm run check` (svelte-check with warnings as errors, and the browser tests' types), `npm test` (Vitest and the Node tests, including the HTML-injection source scan), and `npm run build` (which fails on any inline script, `on*=` attribute or `javascript:` URL).
+5. The browser tests (below), after `cargo build` of the server and jail.
 
 Check its exit status rather than reading the end of the log: a piped `| tail` hides failures.
 
@@ -69,7 +70,37 @@ Set `ABSHARE_REQUIRE_LANDLOCK=1` to make the jail and ffmpeg tests fail instead 
 | `web` | `npm ci`, the type check, the tests and the build. |
 | `supply-chain` | `cargo deny check`: licences, advisories, banned crates and sources. |
 | `fuzz` | Every fuzz target for 60 seconds. |
+| `e2e` | The browser tests (below), with the reports, any failures' traces and screenshots, and CI's reference screenshots kept as the `e2e-results` artifact for 14 days. |
 | `image` | Builds the image, runs it behind nginx with TLS and checks it from outside (`deploy/ci/run.sh`); scans the image with Trivy for high and critical vulnerabilities; checks that both systemd units score 1.5 or less with `systemd-analyze security`; checks that the image runs as non-root. |
+
+### Browser tests
+
+`web/app/e2e/` holds end-to-end tests: the built app in Chromium (Playwright) against a real server. Each run starts a fresh one (`e2e/server.ts`) on port 8744: the invented showcase library made read-only, a new data directory, a scan with the jailed ffmpeg, an admin invite and `abshare serve`. Nothing touches a real library.
+
+```sh
+cargo build --bin abshare --bin abshare-jail
+cd web/app
+npm run build
+npx playwright install chromium     # once
+npm run e2e                         # or: npx playwright test -g offline
+```
+
+They cover, in order:
+
+- **Sign-up** from the invite with a password and an authenticator app: a wrong code is refused, ten recovery codes are shown, and Home opens.
+- **Screenshots** of Home, the library, a book, the player, genres and settings in light and dark, and two desktop screens, compared with reference images (covers are masked, since the demo covers are drawn with the machine's own fonts).
+- **Browsing:** search (ignoring case and accents), the status switch, a book, its series and author, and genre shelves.
+- **Listening:** play, next chapter, speed, and resuming at the same place after a reload, paused; switching to data saver mid-book.
+- **Offline:** download a book, cut the connection, reload, and play it.
+- **Appearance:** dark and High contrast apply and survive a reload; the bundled fonts load from ABShare itself.
+
+The tests call the API as their own signed-in device, never through the browser's session, because two refreshes of one session's token would (rightly) be treated as theft.
+
+**Reference screenshots differ slightly between machines**, so each keeps its own: `e2e/__screenshots__/local/` (not committed) on yours, `e2e/__screenshots__/ci/` in the repository for CI. A screen with no reference is skipped, not failed. To make local references, run `npx playwright test --update-snapshots`. To make or refresh CI's after a deliberate design change:
+
+1. Run the CI workflow by hand (Actions → CI → Run workflow) with **update screenshots** ticked.
+2. Download its `e2e-results` artifact and copy `web/app/e2e/__screenshots__/ci/` into the repository.
+3. Look through the images, then commit them.
 
 ### Fuzzing
 

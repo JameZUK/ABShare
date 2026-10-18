@@ -11,7 +11,9 @@ What changed and when, newest first. Each entry says how it is tested. The desig
 ### Security
 - The fonts are bundled into the app and served by ABShare, so the only change to the Content-Security-Policy is `font-src 'self'` (fonts were previously blocked by `default-src 'none'`). No font CDN, no third-party request (SPEC D27).
 
-**Tests:** the theme tests now check every theme and mode for WCAG contrast, including the accent as text and the ink buttons, and that old saved themes are migrated; the CSP test pins `font-src 'self'`. The screenshots were retaken from the demo library.
+**Tests:**
+- **Browser tests** (Playwright) run the built app against a fresh server on the demo library, in CI on every push: sign-up from an invite (a wrong authenticator code refused), browsing and search, play, chapter skip, speed, resuming after a reload, switching to data saver, downloading a book and playing it with the connection cut, appearance, the bundled fonts, and screenshots of the main screens in light and dark compared with references.
+- The theme tests now check every theme and mode for WCAG contrast, including the accent as text and the ink buttons, and that old saved themes are migrated; the CSP test pins `font-src 'self'`. The screenshots were retaken from the demo library.
 
 ## 0.9.0 (2026-10-17)
 

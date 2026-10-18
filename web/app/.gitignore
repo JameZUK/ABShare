@@ -1,3 +1,7 @@
 node_modules/
 .svelte-kit/
 build/
+/e2e/.state/
+/e2e/__screenshots__/local/
+/test-results/
+/playwright-report/

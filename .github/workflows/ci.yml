@@ -3,6 +3,14 @@ name: CI
 on:
   push:
   pull_request:
+  # Run by hand with "update screenshots" to make the browser tests' reference screenshots
+  # on CI's own machine; they come back as the e2e-results artifact (docs/BUILDING.md).
+  workflow_dispatch:
+    inputs:
+      update_screenshots:
+        description: Make new reference screenshots for the browser tests
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -57,6 +65,51 @@ jobs:
         run: npm test
       - name: "Build (fails on any inline script, on* attribute or javascript: URL)"
         run: npm run build
+
+
+  # The built app in a real browser against a fresh server on the invented demo library:
+  # sign-up, browsing, playback, data saver, offline playback, appearance, and screenshots.
+  e2e:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99"
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: ffmpeg for the demo library and the jailed media jobs
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Landlock is available
+        run: cat /sys/kernel/security/lsm | grep -q landlock
+      - run: cargo build --bin abshare --bin abshare-jail
+      - name: Web app and browser
+        working-directory: web/app
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+          npx playwright install --with-deps chromium
+      # As in the test job: close the descriptors the runner leaks, or the jail (rightly)
+      # refuses to start and every media job fails.
+      - name: Browser tests
+        working-directory: web/app
+        env:
+          UPDATE: ${{ inputs.update_screenshots && '--update-snapshots' || '' }}
+        run: |
+          for fd in /proc/$$/fd/*; do n=${fd##*/}; if [ "$n" -gt 2 ] && [ "$n" -lt 255 ]; then eval "exec $n>&-"; fi; done
+          npx playwright test $UPDATE
+      - name: Keep the report, failures and screenshots
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-results
+          path: |
+            web/app/playwright-report/
+            web/app/test-results/
+            web/app/e2e/__screenshots__/ci/
+          retention-days: 14
 
   supply-chain:
     runs-on: ubuntu-24.04
