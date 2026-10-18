@@ -18,6 +18,7 @@ Every page of ABShare's documentation, with what each covers. Start with the pro
 |---|---|
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Components, repository layout, the trust boundary, scanning and book assembly, request flows with diagrams, the ffmpeg jail, media jobs and the cache, the web app, storage, configuration and testing |
 | [`API.md`](API.md) | The HTTP API (`/v1`) as built: conventions, errors, authentication, your account, the library, progress, media, admin |
+| [`DESIGN.md`](DESIGN.md) | The Paperback design: colours, type, layout, components, motion, and how to add a screen |
 | [`PERFORMANCE.md`](PERFORMANCE.md) | Memory, streaming, data-saver and offline measurements, and how to take them |
 | [`../SPEC.md`](../SPEC.md) | The specification: every design decision (D1–D27), goals, the threat model, milestones and the testing strategy |
 | [`security/`](security) | The threat model, the OWASP ASVS map, and the Phase 2 and Phase 6 reviews |
