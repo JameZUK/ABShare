@@ -28,10 +28,20 @@ the app loads nothing from other websites.
   kept in memory only (the newest 50, gone when the server restarts) and written to the
   server log. No account is involved.
 
-Admins can see the account list, devices, permissions and the audit log. They can't see your
-password, authenticator secret, recovery codes or listening history: there is no admin view
-of anyone's history, and clearing or turning it off isn't written to the audit log. (Whoever
-runs the server can still read its database directly.)
+Admins can see the account list, devices, permissions and the audit log. They can also see
+each person's listening: time heard (last 7 and 30 days and in all), when they last listened,
+which books they have finished, are listening to or have abandoned (started, not finished,
+nothing heard for 30 days), time heard per book, and recent sessions (which book, when, and
+for how long). They can't see your password, authenticator secret or recovery codes, or where
+you are in a book: positions, and the "Where was I?" timeline of where each stretch of
+listening began and ended, are only ever shown to you. Clearing or turning off your history
+isn't written to the audit log. (Whoever runs the server can still read its database directly.)
+
+- **Reviews:** a star rating and an optional comment of up to 50 words, with when it was
+  written. Everyone who can see the book sees your review with your display name. You can
+  change or delete it at any time; admins can remove it.
+- **Recommendations:** what an admin recommended to whom, with their note, and which ones you
+  dismissed.
 
 ## What your device stores
 

@@ -80,7 +80,49 @@ export interface JobsView {
 	cache_bytes: number;
 }
 
+export interface AdminRecommendation {
+	id: number;
+	from: string;
+	note: string;
+	created_at: number;
+	everyone: boolean;
+	users: { id: number; name: string }[];
+	books: { id: string; title: string }[];
+	dismissed: number;
+}
+
+export interface ListeningTotals {
+	week_seconds: number;
+	month_seconds: number;
+	all_seconds: number;
+	finished: number;
+	in_progress: number;
+	abandoned: number;
+}
+
+export interface PersonListening {
+	id: number;
+	username: string;
+	name: string;
+	history_on: boolean;
+	disabled: boolean;
+	totals: ListeningTotals;
+	last_listened_at: number | null;
+}
+
+export interface PersonListeningDetail {
+	id: number;
+	name: string;
+	history_on: boolean;
+	totals: ListeningTotals;
+	last_listened_at: number | null;
+	books: { book: { id: string; title: string | null; authors: string[]; cover: string | null; duration_ms: number | null }; status: 'finished' | 'in_progress' | 'abandoned'; heard_seconds: number; last_at: number }[];
+	sessions: { book: { id: string; title: string | null }; started_at: number; ended_at: number; seconds: number }[];
+}
+
 export const adminApi = {
+	listening: () => api<{ people: PersonListening[] }>('v1/admin/listening').then((r) => r.people),
+	personListening: (id: number) => api<PersonListeningDetail>(`v1/admin/users/${id}/listening`),
 	users: () => api<{ users: AdminUser[] }>('v1/admin/users').then((r) => r.users),
 	editUser: (id: number, change: Partial<{ display_name: string; role: string; disabled: boolean; libraries: Libraries; offline: boolean; save_files: boolean }>) =>
 		post<AdminUser>(`v1/admin/users/${id}`, change, 'PATCH'),
@@ -101,6 +143,10 @@ export const adminApi = {
 	retryCopy: (id: string) => post(`v1/admin/jobs/copies/${id}/retry`, {}),
 	clearCache: () => post<{ freed_bytes: number }>('v1/admin/cache/clear', {}),
 	diagnostics: () => api<{ reports: DiagReport[] }>('v1/admin/diagnostics').then((r) => r.reports),
+	recommendations: () => api<{ recommendations: AdminRecommendation[] }>('v1/admin/recommendations').then((r) => r.recommendations),
+	createRecommendation: (b: { books: string[]; note: string; everyone: boolean; users: number[] }) => post<{ id: number }>('v1/admin/recommendations', b),
+	withdrawRecommendation: (id: number) => api(`v1/admin/recommendations/${id}`, { method: 'DELETE' }),
+	removeReview: (bookId: string, userId: number) => api(`v1/admin/books/${encodeURIComponent(bookId)}/reviews/${userId}`, { method: 'DELETE' }),
 };
 
 /** "Every library" or the names. */

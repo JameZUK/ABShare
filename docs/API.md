@@ -20,9 +20,9 @@ Examples use `https://books.example.com` as the public origin, `10.0.0.10` as th
 |---|---|---|
 | `POST /v1/auth/…` | Invites, enrolment, sign-in, refresh, sign-out, step-up | none, a ceremony token, the refresh cookie, or bearer; always the CSRF check |
 | `/v1/me/…` | Your profile, devices, sign-in methods and listening history | bearer (step-up for changes to sign-in methods) |
-| `/v1/libraries`, `/v1/books…`, `/v1/genres`, `/v1/groups…`, `/v1/home`, `/v1/progress…`, `/v1/bookmarks/…` | Browsing, progress and bookmarks | bearer |
+| `/v1/libraries`, `/v1/books…`, `/v1/genres`, `/v1/groups…`, `/v1/home`, `/v1/progress…`, `/v1/bookmarks/…`, `/v1/recommendations/…` | Browsing, progress, bookmarks, reviews and recommendations | bearer |
 | `GET /v1/media/…` | Audio, the preparation state, saved files and covers | media cookie or bearer |
-| `/v1/admin/…` | Users, invites, audit log, library, status, book corrections, start-up reports | bearer, admin role, step-up for changes |
+| `/v1/admin/…` | Users, invites, audit log, library, status, book corrections, recommendations, reviews, listening, start-up reports | bearer, admin role, step-up for changes |
 | `POST /v1/diag` | A start-up report from a blank page | none; CSRF check; rate-limited |
 | `GET /healthz` | Liveness | none |
 | anything else | The built web app (static files) | none |
@@ -478,11 +478,12 @@ All routes need a **bearer** token and act only on the caller's own account. A s
 
 Sessions are built from accepted `position` events (`PUT /v1/progress/{book_id}`), with the rules in `core/src/history.rs`:
 - A report extends your latest session for the same book on the same device when it comes within 2 minutes (by event time) of that session's last report; otherwise it starts a new session, with nothing heard yet.
-- Time heard grows by the smaller of the time since the last report and how far the position moved. A rewind, or a position moving more than 3 times faster than real time (a seek), adds nothing.
+- Time heard grows by the smaller of the time since the last report and how far the position moved. A step back of up to 30 seconds adds nothing and keeps the session going.
+- A jump starts a new session at the new place: back by more than 30 seconds, or forward faster than 3 times real time (a seek). So each session is one continuous stretch of the book, from `start_position_ms` to `end_position_ms`.
 - Nothing is recorded while history is off. Stale, duplicate and refused events record nothing. The web app sends only the latest queued position after being offline, so offline listening isn't counted.
 - Sessions are kept for 13 months, and at most 50,000 per user (the oldest go first). Deleting the account deletes them.
 
-Only you can read your history; there is no admin route for it. After a recovery-code sign-in it answers `403 factor_required` until a new factor is set up.
+Your history here, and positions in it, are yours. Admins have a separate summary (§6, Listening) with totals, statuses and sessions but no positions. After a recovery-code sign-in these routes answer `403 factor_required` until a new factor is set up.
 
 #### `GET /v1/me/history?cursor=&limit=`
 
@@ -504,6 +505,13 @@ Only you can read your history; there is no admin route for it. After a recovery
 - `week_seconds` and `month_seconds` cover sessions that ended in the last 7 and 30 days. Totals count all your sessions, including books you can no longer see.
 - `books_finished` counts the books marked finished in your progress that you can still see.
 - `sessions` are newest first (by when they started); times are event times in milliseconds. Sessions under a second are left out, and so are books you can no longer see, so a page may be short. `next` is `null` on the last page.
+
+#### `GET /v1/me/history/books/{id}`
+
+"Where was I?": your own listening of one book, newest first by start time, at most 200, leaving out sessions under a second.
+
+- **Response:** `{"enabled": true, "sessions": [{"id", "started_at", "ended_at", "start_position_ms", "end_position_ms", "seconds"}]}`. Times are event times in milliseconds; positions are clamped to the book's length. Sessions recorded before start positions were kept report a start of their end less the time heard.
+- **Errors:** `404` (unknown book, or one outside your libraries).
 
 #### `PATCH /v1/me/history`
 
@@ -710,6 +718,58 @@ A bookmark is `{"id", "position_ms", "note", "created_at", "updated_at"}`. Notes
 - **Response:** `204`
 - **Errors:** `404`.
 
+### Reviews
+
+Anyone who can see a book can rate it from 1 to 5 stars, with an optional comment of at most 50 words (and 400 characters). Each person has at most one review per book; writing again replaces it. Reviews show the reviewer's display name to everyone who can see the book. Reviews by disabled accounts are not shown.
+
+#### `GET /v1/books/{id}/reviews`
+
+- **Response:**
+
+```json
+{
+  "average": 4.3, "count": 6,
+  "mine": { "rating": 4, "comment": "Gripping, but the middle drags.", "updated_at": 1792541234 },
+  "reviews": [ { "name": "Ada", "rating": 5, "comment": "…", "updated_at": 1792541000, "mine": false } ]
+}
+```
+
+  - `average` is `null` when there are no reviews; otherwise it is rounded to one decimal place.
+  - `mine` is `null` if the caller hasn't reviewed the book.
+  - `reviews` lists everyone's reviews (the caller's included, with `"mine": true`), newest first, at most 200. For admins each also carries `"user_id"`, for removing it.
+- **Errors:** `404` (unknown book, or one outside the caller's libraries).
+
+#### `PUT /v1/books/{id}/review`
+
+- **Body:** `{"rating": 1-5, "comment": "…"}`. `comment` is optional (default empty). It is cleaned like other free text (control and invisible characters removed, whitespace collapsed to one paragraph) and is shown only as text.
+- **Response:** `204`.
+- **Errors:** `400` (a rating outside 1–5); `422` (a rating that isn't a whole number, or unknown fields); `422 too_long` (over 50 words or 400 characters after cleaning); `404`.
+
+#### `DELETE /v1/books/{id}/review`
+
+- **Response:** `204`, removing the caller's own review. **Errors:** `404` (no review, or no such book).
+
+The book detail (`GET /v1/books/{id}`) also carries `"rating": {"average", "count"}`.
+
+### Recommendations
+
+Admins recommend one or more books to chosen people or to everyone, with a note saying why (§6). A recommendation appears at the top of the recipient's Home until they dismiss it; each book in it drops out once they have started it (or finished it), and the recommendation goes when none is left. Books the recipient can't see are left out for them, and a recommendation with none they can see is never shown.
+
+`GET /v1/home` carries:
+
+```json
+"recommended": [
+  { "id": 7, "from": "James", "note": "The best first-contact story I've heard in years.", "created_at": 1792541234, "books": [ <book summary>, … ] }
+]
+```
+
+Newest first, at most 20.
+
+#### `POST /v1/recommendations/{id}/dismiss`
+
+- **Body:** none. **Response:** `204`; the recommendation no longer appears for the caller.
+- **Errors:** `404` (no such recommendation, or one not addressed to the caller).
+
 ---
 
 ## 5. Media
@@ -903,6 +963,49 @@ Corrections are stored in the database and applied over the tags. The library it
 #### `DELETE /v1/admin/books/{id}/details` (step-up)
 
 - **Response:** `204`
+
+### Recommendations
+
+#### `GET /v1/admin/recommendations`
+
+- **Response:** `{"recommendations": [{"id", "from", "note", "created_at", "everyone": bool, "users": [{"id", "name"}], "books": [{"id", "title"}], "dismissed": n}]}`, newest first. `books` leaves out any no longer in the library; `dismissed` counts people who dismissed it.
+
+#### `POST /v1/admin/recommendations`
+
+- **Auth:** admin, with a fresh step-up. Audited (`recommendation.created`).
+- **Body:** `{"books": ["<id>", …], "note": "…", "everyone": bool, "users": [<user id>, …]}`.
+  - `books`: 1 to 10 distinct book IDs in the library.
+  - `note`: 1 to 100 words (at most 800 characters), cleaned like other free text and shown only as text.
+  - `everyone: true` addresses every account, including ones made later, and `users` must then be empty; otherwise `users` lists 1 to 100 distinct, existing accounts.
+- **Response:** `{"id": 7}`.
+- **Errors:** `400` (missing or invalid fields, unknown books or accounts); `422 too_long`; `409 too_many` (500 recommendations already); `403 step_up_required`.
+
+#### `DELETE /v1/admin/recommendations/{id}`
+
+- **Auth:** admin, with a fresh step-up. Audited (`recommendation.withdrawn`).
+- Withdraws it for everyone. **Response:** `204`. **Errors:** `404`.
+
+#### `DELETE /v1/admin/books/{id}/reviews/{user_id}`
+
+- **Auth:** admin, with a fresh step-up. Audited (`review.removed`).
+- Removes someone's review of a book. **Response:** `204`. **Errors:** `404`.
+
+### Listening
+
+Read-only: admin role, no step-up, not audited. Nothing here includes a position in a book.
+
+#### `GET /v1/admin/listening`
+
+- **Response:** `{"people": [{"id", "username", "name", "history_on", "disabled", "totals": {"week_seconds", "month_seconds", "all_seconds", "finished", "in_progress", "abandoned"}, "last_listened_at"}]}`.
+  - A book is *finished* when marked so, *in progress* when started and heard within 30 days, and *abandoned* when started, not finished and not heard for 30 days.
+  - Time heard counts only sessions recorded while that person's history was on.
+
+#### `GET /v1/admin/users/{id}/listening`
+
+- **Response:** `{"id", "name", "history_on", "totals", "last_listened_at", "books": [{"book": {"id", "title", "authors", "cover", "duration_ms"}, "status", "heard_seconds", "last_at"}], "sessions": [{"book", "started_at", "ended_at", "seconds"}]}`.
+  - `books` lists every book the person has started, whatever their library access, most recent activity first. A book no longer in the library has a `null` title.
+  - `sessions` are the latest 50.
+- **Errors:** `404`.
 
 ### Status
 

@@ -51,7 +51,7 @@ pub(super) async fn view(
     Ok((cat, ok))
 }
 
-fn find<'a>(cat: &'a Catalog, ok: &HashSet<i64>, id: &str) -> Result<&'a Book, ApiError> {
+pub(super) fn find<'a>(cat: &'a Catalog, ok: &HashSet<i64>, id: &str) -> Result<&'a Book, ApiError> {
     if !is_valid_id(id) {
         return Err(ApiError::not_found());
     }
@@ -63,9 +63,9 @@ pub(super) fn cover_url(b: &Book) -> Value {
 }
 
 /// Book → (position ms, finished, event time ms).
-type ProgressMap = HashMap<String, (u64, bool, i64)>;
+pub(super) type ProgressMap = HashMap<String, (u64, bool, i64)>;
 
-async fn user_progress(st: &State, uid: i64) -> Result<ProgressMap, ApiError> {
+pub(super) async fn user_progress(st: &State, uid: i64) -> Result<ProgressMap, ApiError> {
     st.db
         .run(move |c| {
             let mut stmt = c
@@ -84,7 +84,7 @@ async fn user_progress(st: &State, uid: i64) -> Result<ProgressMap, ApiError> {
         .await
 }
 
-fn summary(b: &Book, p: Option<&(u64, bool, i64)>) -> Value {
+pub(super) fn summary(b: &Book, p: Option<&(u64, bool, i64)>) -> Value {
     json!({
         "type": "book",
         "id": b.id,
@@ -228,7 +228,7 @@ async fn book(S(st): S<State>, Authed(s): Authed, Path(id): Path<String>) -> Res
     let (cat, ok) = view(&st, &s).await?;
     let b = find(&cat, &ok, &id)?.clone();
     let (uid, bid) = (s.user, b.id.clone());
-    let (chapters, prog, marks) = st
+    let (chapters, prog, marks, rating) = st
         .db
         .run(move |c| {
             let mut ch = c.prepare("SELECT start_ms, end_ms, title FROM chapter WHERE book_id = ?1 ORDER BY ord").map_err(crate::db::sql_err)?;
@@ -246,7 +246,8 @@ async fn book(S(st): S<State>, Authed(s): Authed, Path(id): Path<String>) -> Res
                 .optional()
                 .map_err(crate::db::sql_err)?;
             let marks = bookmarks_of(c, uid, &bid)?;
-            Ok((chapters, prog, marks))
+            let rating = super::social_routes::rating_of(c, &bid)?;
+            Ok((chapters, prog, marks, rating))
         })
         .await?;
     let groups: Vec<Value> = cat
@@ -260,7 +261,7 @@ async fn book(S(st): S<State>, Authed(s): Authed, Path(id): Path<String>) -> Res
         "series": b.meta["series"], "description": b.meta["description"], "genres": b.genres,
         "shelves": b.shelves.iter().map(|sh| json!({ "id": sh.id(), "name": sh.name() })).collect::<Vec<_>>(), "year": b.meta["year"],
         "publisher": b.meta["publisher"], "language": b.meta["language"], "duration_ms": b.duration_ms, "cover": cover_url(&b),
-        "added_at": b.added_at, "chapters": chapters, "progress": prog, "bookmarks": marks, "groups": groups,
+        "added_at": b.added_at, "chapters": chapters, "progress": prog, "bookmarks": marks, "groups": groups, "rating": rating,
         "media": { "original": format!("media/{}", b.id), "preparing": b.needs_copy },
     })))
 }
@@ -373,7 +374,12 @@ async fn home(S(st): S<State>, Authed(s): Authed) -> Result<Json<Value>, ApiErro
             next_up.push(json!({ "series": g.name, "book": summary(b, None) }));
         }
     }
+    let recommended = {
+        let (cat, ok, prog, uid) = (cat.clone(), ok.clone(), prog.clone(), s.user);
+        st.db.run(move |c| super::social_routes::recommended_for(c, uid, &cat, &ok, &prog)).await?
+    };
     Ok(Json(json!({
+        "recommended": recommended,
         "continue": cont.iter().take(12).map(|(b, p)| summary(b, Some(p))).collect::<Vec<_>>(),
         "series_next": next_up.into_iter().take(12).collect::<Vec<_>>(),
         "recently_added": recently_added(&cat, &ok, &recent, &prog),

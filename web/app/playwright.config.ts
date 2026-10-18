@@ -36,6 +36,7 @@ export default defineConfig({
 		locale: 'en-GB',
 		timezoneId: 'Europe/London',
 		trace: 'retain-on-failure',
+		screenshot: 'only-on-failure',
 		launchOptions: { args: ['--autoplay-policy=no-user-gesture-required'] },
 	},
 	projects: [

@@ -85,7 +85,22 @@ class Session {
 					this.#timer = setTimeout(() => void this.refresh(), 30_000);
 					return false;
 				}
-				if (e instanceof ApiError && e.status === 429) return this.#token !== null;
+				// Too many renewals in a minute (several tabs, or quick reloads): the token is still
+				// good. With a token in hand, carry on with it; with none yet (a page starting up),
+				// wait as asked and try again rather than signing out.
+				if (e instanceof ApiError && e.status === 429) {
+					if (this.#token !== null) return true;
+					for (let attempt = 0; attempt < 4; attempt++) {
+						await new Promise((r) => setTimeout(r, Math.min(e.retryAfter ?? 2, 15) * 1000));
+						try {
+							this.accept(await callJson<SignedIn>('v1/auth/refresh', { method: 'POST' }));
+							return true;
+						} catch (again) {
+							if (!(again instanceof ApiError && again.status === 429)) break;
+						}
+					}
+					return false;
+				}
 				// session_reused (a copied or replayed sign-in) signs out but keeps downloads; only
 				// an explicit remote sign-out removes them.
 				if (e instanceof ApiError && e.code === 'device_revoked') {

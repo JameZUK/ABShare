@@ -80,6 +80,8 @@ export interface BookDetail {
 	bookmarks: Bookmark[];
 	groups: { id: string; name: string; kind: string }[];
 	media: { original: string; preparing: boolean };
+	/** Everyone's ratings of the book. */
+	rating?: { average: number | null; count: number };
 }
 
 export interface GroupDetail {
@@ -95,6 +97,33 @@ export interface Home {
 	continue: BookSummary[];
 	series_next: { series: string; book: BookSummary }[];
 	recently_added: BookSummary[];
+	/** Books an admin recommended to you, newest first. */
+	recommended?: Recommendation[];
+}
+
+export interface Review {
+	name: string;
+	rating: number;
+	comment: string;
+	updated_at: number;
+	mine: boolean;
+	/** Sent to admins only, for removing a review. */
+	user_id?: number;
+}
+
+export interface ReviewsView {
+	average: number | null;
+	count: number;
+	mine: { rating: number; comment: string; updated_at: number } | null;
+	reviews: Review[];
+}
+
+export interface Recommendation {
+	id: number;
+	from: string;
+	note: string;
+	created_at: number;
+	books: BookSummary[];
 }
 
 export interface Page<T> {

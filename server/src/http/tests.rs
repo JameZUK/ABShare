@@ -1140,7 +1140,8 @@ async fn listening_history_is_built_from_progress_and_seen_only_by_its_owner() {
     let (_, amy, _, _) = enrol(&m.t, "amy").await;
     let t0 = super::now() * 1000 - 600_000;
     listen_to(&m.t, &joe, BOOK, t0, 60_000, 45).await;
-    // A seek forward and a pause add nothing; the session carries on.
+    // A seek forward starts a new stretch, and a pause there adds nothing: that stretch has
+    // no time heard, so it isn't listed.
     assert_eq!(report(&m.t, &joe, BOOK, t0 + 60_000, 900_000).await, StatusCode::OK);
     assert_eq!(report(&m.t, &joe, BOOK, t0 + 75_000, 900_000).await, StatusCode::OK);
     let (s, v) = get_json(&m.t, "/v1/me/history", &joe).await;
@@ -1150,7 +1151,7 @@ async fn listening_history_is_built_from_progress_and_seen_only_by_its_owner() {
     let session = &v["sessions"][0];
     assert_eq!(session["book"]["id"], BOOK);
     assert_eq!(session["book"]["title"], "A Book");
-    assert_eq!((session["started_at"].as_i64(), session["ended_at"].as_i64()), (Some(t0), Some(t0 + 75_000)));
+    assert_eq!((session["started_at"].as_i64(), session["ended_at"].as_i64()), (Some(t0), Some(t0 + 45_000)));
     assert_eq!(session["seconds"], 45);
     assert_eq!(v["totals"], json!({"week_seconds": 45, "month_seconds": 45, "all_seconds": 45, "books_finished": 0}));
     assert_eq!(v["next"], Value::Null);
@@ -2820,4 +2821,359 @@ async fn request_bodies_must_be_json_objects() {
     )
     .await;
     assert_eq!(r.status(), StatusCode::OK);
+}
+
+// ---------------------------------------------------------------- reviews, recommendations,
+// the listening timeline and the admin listening view (SPEC D28–D31)
+
+fn set_name(t: &T, username: &str, name: &str) -> i64 {
+    let c = t.st.db.0.lock().expect("db");
+    c.execute("UPDATE user SET display_name = ?2 WHERE username = ?1", rusqlite::params![username, name])
+        .expect("name");
+    c.query_row("SELECT id FROM user WHERE username = ?1", [username], |r| r.get(0)).expect("id")
+}
+
+fn audit_events(t: &T) -> Vec<String> {
+    let c = t.st.db.0.lock().expect("db");
+    let mut q = c.prepare("SELECT event FROM audit ORDER BY id").expect("q");
+    q.query_map([], |r| r.get(0)).expect("rows").collect::<Result<_, _>>().expect("events")
+}
+
+#[tokio::test]
+async fn reviews_are_shared_with_readers_validated_and_owned() {
+    let m = setup_media();
+    let (joe, _) = listener(&m).await;
+    let (_, amy, _, _) = enrol(&m.t, "amy").await;
+    set_name(&m.t, "joe", "Joe");
+    let amy_id = set_name(&m.t, "amy", "Amy");
+    let review = format!("/v1/books/{BOOK}/review");
+    let reviews = format!("/v1/books/{BOOK}/reviews");
+
+    let r = as_user(
+        &m.t,
+        "PUT",
+        &review,
+        Some(json!({"rating": 4, "comment": "  Gripping,\n but the\u{200B} middle drags. "})),
+        &joe,
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+    let (s, v) = get_json(&m.t, &reviews, &joe).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!((v["average"].clone(), v["count"].clone()), (json!(4.0), json!(1)));
+    assert_eq!(v["mine"]["comment"], "Gripping, but the middle drags.", "cleaned to one plain line");
+    assert_eq!(v["reviews"][0]["name"], "Joe");
+    assert_eq!(v["reviews"][0]["mine"], true);
+    assert!(v["reviews"][0].get("user_id").is_none(), "only admins see who to remove");
+
+    // Another reader sees it, with the name; their own review joins it.
+    let (_, v) = get_json(&m.t, &reviews, &amy).await;
+    assert_eq!((v["mine"].clone(), v["reviews"][0]["mine"].clone()), (Value::Null, json!(false)));
+    let r = as_user(&m.t, "PUT", &review, Some(json!({"rating": 5})), &amy).await;
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+    let (_, v) = get_json(&m.t, &reviews, &amy).await;
+    assert_eq!((v["average"].clone(), v["count"].clone()), (json!(4.5), json!(2)));
+    assert_eq!(
+        get_json(&m.t, &format!("/v1/books/{BOOK}"), &joe).await.1["rating"],
+        json!({"average": 4.5, "count": 2})
+    );
+    // Writing again replaces your review rather than adding one.
+    assert_eq!(as_user(&m.t, "PUT", &review, Some(json!({"rating": 3})), &amy).await.status(), StatusCode::NO_CONTENT);
+    assert_eq!(get_json(&m.t, &reviews, &amy).await.1["count"], 2);
+
+    // Bad ratings and long comments are refused; nothing is cut silently.
+    for bad in [json!({"rating": 0}), json!({"rating": 6}), json!({"rating": -1})] {
+        assert_eq!(
+            as_user(&m.t, "PUT", &review, Some(bad.clone()), &joe).await.status(),
+            StatusCode::BAD_REQUEST,
+            "{bad}"
+        );
+    }
+    for bad in [json!({"rating": "5"}), json!({"rating": 4.5}), json!({}), json!({"rating": 5, "stars": 5}), json!([5])]
+    {
+        let st = as_user(&m.t, "PUT", &review, Some(bad.clone()), &joe).await.status();
+        assert!(st.is_client_error(), "{bad}: {st}");
+    }
+    let fifty_one = vec!["word"; 51].join(" ");
+    for long in [fifty_one, "x".repeat(401)] {
+        let r = as_user(&m.t, "PUT", &review, Some(json!({"rating": 5, "comment": long})), &joe).await;
+        assert_eq!(r.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(json_of(r).await["error"], "too_long");
+    }
+    assert_eq!(get_json(&m.t, &reviews, &joe).await.1["mine"]["rating"], 4, "refused writes changed nothing");
+
+    // A book outside your libraries doesn't exist for you, reviews included.
+    for (method, uri) in [
+        ("GET", format!("/v1/books/{KIDS_BOOK}/reviews")),
+        ("PUT", format!("/v1/books/{KIDS_BOOK}/review")),
+        ("DELETE", format!("/v1/books/{KIDS_BOOK}/review")),
+    ] {
+        let r = as_user(&m.t, method, &uri, (method == "PUT").then(|| json!({"rating": 5})), &joe).await;
+        assert_eq!(r.status(), StatusCode::NOT_FOUND, "{method} {uri}");
+    }
+    assert_eq!(as_user(&m.t, "GET", "/v1/books/nope/reviews", None, &joe).await.status(), StatusCode::NOT_FOUND);
+
+    // A disabled account's review is no longer shown or counted.
+    m.t.st
+        .db
+        .0
+        .lock()
+        .expect("db")
+        .execute("UPDATE user SET disabled_at = 1 WHERE username = 'amy'", [])
+        .expect("disable");
+    let (_, v) = get_json(&m.t, &reviews, &joe).await;
+    assert_eq!((v["count"].clone(), v["reviews"].as_array().map(Vec::len)), (json!(1), Some(1)));
+    m.t.st
+        .db
+        .0
+        .lock()
+        .expect("db")
+        .execute("UPDATE user SET disabled_at = NULL WHERE username = 'amy'", [])
+        .expect("enable");
+
+    // You delete only your own.
+    assert_eq!(as_user(&m.t, "DELETE", &review, None, &joe).await.status(), StatusCode::NO_CONTENT);
+    assert_eq!(as_user(&m.t, "DELETE", &review, None, &joe).await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(get_json(&m.t, &reviews, &amy).await.1["count"], 1, "amy's review remains");
+    assert_eq!(
+        send(&m.t, "GET", &reviews, None, &[("authorization", "Bearer forged")]).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    // An admin sees who wrote each review and can remove one, with a fresh step-up, audited.
+    let (seed, admin, _, _, _) = enrol_role(&m.t, "boss", Role::Admin).await;
+    let (_, v) = get_json(&m.t, &reviews, &admin).await;
+    assert_eq!(v["reviews"][0]["user_id"], amy_id);
+    let remove = format!("/v1/admin/books/{BOOK}/reviews/{amy_id}");
+    assert_eq!(as_user(&m.t, "DELETE", &remove, None, &joe).await.status(), StatusCode::FORBIDDEN);
+    let r = as_user(&m.t, "DELETE", &remove, None, &admin).await;
+    assert_eq!(json_of(r).await["error"], "step_up_required");
+    step_up(&m.t, "boss", &seed, &admin).await;
+    assert_eq!(as_user(&m.t, "DELETE", &remove, None, &admin).await.status(), StatusCode::NO_CONTENT);
+    assert_eq!(as_user(&m.t, "DELETE", &remove, None, &admin).await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(get_json(&m.t, &reviews, &amy).await.1["count"], 0);
+    assert!(audit_events(&m.t).contains(&"review.removed".to_owned()));
+}
+
+#[tokio::test]
+async fn recommendations_reach_only_their_audience_and_books_they_can_see() {
+    let m = setup_media();
+    let (joe, _) = listener(&m).await;
+    let (_, amy, _, _) = enrol(&m.t, "amy").await;
+    let joe_id = set_name(&m.t, "joe", "Joe");
+    let amy_id = set_name(&m.t, "amy", "Amy");
+    let (seed, admin, _, _, _) = enrol_role(&m.t, "boss", Role::Admin).await;
+    set_name(&m.t, "boss", "James");
+    let recs = |who: &str| {
+        let (t, who) = (&m.t, who.to_owned());
+        async move { get_json(t, "/v1/home", &who).await.1["recommended"].clone() }
+    };
+    let create = |body: Value| {
+        let (t, a) = (&m.t, admin.clone());
+        async move { as_user(t, "POST", "/v1/admin/recommendations", Some(body), &a).await }
+    };
+
+    // Listeners can't recommend; admins need a fresh step-up.
+    let to_joe = json!({"books": [BOOK, KIDS_BOOK], "note": "The best <i>first-contact</i> story in years.", "everyone": false, "users": [joe_id]});
+    assert_eq!(
+        as_user(&m.t, "POST", "/v1/admin/recommendations", Some(to_joe.clone()), &joe).await.status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(json_of(create(to_joe.clone()).await).await["error"], "step_up_required");
+    step_up(&m.t, "boss", &seed, &admin).await;
+    let r = create(to_joe).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let first = json_of(r).await["id"].as_i64().expect("id");
+
+    // Joe sees it on Home, with only the book he can see; Amy doesn't see it at all.
+    let v = recs(&joe).await;
+    assert_eq!(v.as_array().map(Vec::len), Some(1), "{v}");
+    assert_eq!(
+        (v[0]["from"].clone(), v[0]["note"].clone()),
+        (json!("James"), json!("The best <i>first-contact</i> story in years."))
+    );
+    let books: Vec<&str> = v[0]["books"].as_array().expect("books").iter().filter_map(|b| b["id"].as_str()).collect();
+    assert_eq!(books, [BOOK], "a book outside his libraries is left out, not revealed");
+    assert_eq!(recs(&amy).await, json!([]));
+    // Nobody else can dismiss it (it isn't theirs); Joe can, and it's gone for him.
+    let dismiss = format!("/v1/recommendations/{first}/dismiss");
+    assert_eq!(as_user(&m.t, "POST", &dismiss, None, &amy).await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        as_user(&m.t, "POST", "/v1/recommendations/99999/dismiss", None, &joe).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(as_user(&m.t, "POST", &dismiss, None, &joe).await.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        as_user(&m.t, "POST", &dismiss, None, &joe).await.status(),
+        StatusCode::NO_CONTENT,
+        "dismissing twice is harmless"
+    );
+    assert_eq!(recs(&joe).await, json!([]));
+
+    // To everyone: both see it. Once Joe starts the book it moves aside for him only.
+    let r = create(json!({"books": [BOOK], "note": "For all of you.", "everyone": true})).await;
+    let everyone = json_of(r).await["id"].as_i64().expect("id");
+    assert_eq!(recs(&joe).await.as_array().map(Vec::len), Some(1));
+    assert_eq!(recs(&amy).await.as_array().map(Vec::len), Some(1));
+    assert_eq!(report(&m.t, &joe, BOOK, super::now() * 1000, 120_000).await, StatusCode::OK);
+    assert_eq!(recs(&joe).await, json!([]));
+    assert_eq!(recs(&amy).await[0]["id"], everyone);
+
+    // A recommendation of only books Joe can't see is never shown to him.
+    let r =
+        create(json!({"books": [KIDS_BOOK], "note": "Kids only.", "everyone": false, "users": [joe_id, amy_id]})).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(recs(&joe).await, json!([]));
+    assert_eq!(recs(&amy).await.as_array().map(Vec::len), Some(2));
+
+    // Validation: books, note, audience.
+    let long = vec!["why"; 101].join(" ");
+    for (bad, status) in [
+        (json!({"books": [], "note": "x", "everyone": true}), StatusCode::BAD_REQUEST),
+        (json!({"books": vec![BOOK; 11], "note": "x", "everyone": true}), StatusCode::BAD_REQUEST),
+        (json!({"books": [BOOK, BOOK], "note": "x", "everyone": true}), StatusCode::BAD_REQUEST),
+        (json!({"books": ["zzzzzzzzzzzzzzzzzzzzzzzzzz"], "note": "x", "everyone": true}), StatusCode::BAD_REQUEST),
+        (json!({"books": ["../../etc"], "note": "x", "everyone": true}), StatusCode::BAD_REQUEST),
+        (json!({"books": [BOOK], "note": "  ", "everyone": true}), StatusCode::BAD_REQUEST),
+        (json!({"books": [BOOK], "note": long, "everyone": true}), StatusCode::UNPROCESSABLE_ENTITY),
+        (json!({"books": [BOOK], "note": "x", "everyone": true, "users": [joe_id]}), StatusCode::BAD_REQUEST),
+        (json!({"books": [BOOK], "note": "x", "everyone": false}), StatusCode::BAD_REQUEST),
+        (json!({"books": [BOOK], "note": "x", "everyone": false, "users": [joe_id, joe_id]}), StatusCode::BAD_REQUEST),
+        (json!({"books": [BOOK], "note": "x", "everyone": false, "users": [424_242]}), StatusCode::BAD_REQUEST),
+    ] {
+        assert_eq!(create(bad.clone()).await.status(), status, "{bad}");
+    }
+    for bad in
+        [json!({"books": [BOOK], "note": "x"}), json!({"books": [BOOK], "note": "x", "everyone": true, "extra": 1})]
+    {
+        assert!(create(bad.clone()).await.status().is_client_error(), "{bad}");
+    }
+
+    // The admin list shows each with its audience and dismissals; withdrawing removes it.
+    let (s, v) = get_json(&m.t, "/v1/admin/recommendations", &admin).await;
+    assert_eq!(s, StatusCode::OK);
+    let list = v["recommendations"].as_array().expect("list");
+    assert_eq!(list.len(), 3);
+    let one = list.iter().find(|r| r["id"] == first).expect("first");
+    assert_eq!((one["everyone"].clone(), one["dismissed"].clone()), (json!(false), json!(1)));
+    assert_eq!(one["users"], json!([{"id": joe_id, "name": "Joe"}]));
+    assert_eq!(one["books"].as_array().map(Vec::len), Some(2), "admins see every book");
+    assert_eq!(get_json(&m.t, "/v1/admin/recommendations", &joe).await.0, StatusCode::FORBIDDEN);
+    let withdraw = format!("/v1/admin/recommendations/{everyone}");
+    assert_eq!(as_user(&m.t, "DELETE", &withdraw, None, &joe).await.status(), StatusCode::FORBIDDEN);
+    assert_eq!(as_user(&m.t, "DELETE", &withdraw, None, &admin).await.status(), StatusCode::NO_CONTENT);
+    assert_eq!(as_user(&m.t, "DELETE", &withdraw, None, &admin).await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(recs(&amy).await.as_array().map(Vec::len), Some(1));
+    let events = audit_events(&m.t);
+    assert_eq!(events.iter().filter(|e| *e == "recommendation.created").count(), 3);
+    assert!(events.contains(&"recommendation.withdrawn".to_owned()));
+}
+
+#[tokio::test]
+async fn the_listening_timeline_is_private_and_shows_where_each_stretch_began() {
+    let m = setup_media();
+    let (joe, _) = listener(&m).await;
+    let (_, amy, _, _) = enrol(&m.t, "amy").await;
+    let t0 = super::now() * 1000 - 900_000;
+    // Thirty seconds from 1:00, then a rewind of 50 s to 0:40 and thirty seconds more.
+    listen_to(&m.t, &joe, BOOK, t0, 60_000, 30).await;
+    listen_to(&m.t, &joe, BOOK, t0 + 45_000, 40_000, 30).await;
+    let uri = format!("/v1/me/history/books/{BOOK}");
+    let (s, v) = get_json(&m.t, &uri, &joe).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let sessions = v["sessions"].as_array().expect("sessions");
+    assert_eq!(sessions.len(), 2, "{v}");
+    assert_eq!(
+        (sessions[0]["start_position_ms"].clone(), sessions[0]["end_position_ms"].clone()),
+        (json!(40_000), json!(70_000)),
+        "newest first"
+    );
+    assert_eq!(
+        (sessions[1]["start_position_ms"].clone(), sessions[1]["end_position_ms"].clone()),
+        (json!(60_000), json!(90_000))
+    );
+    assert_eq!(sessions[1]["seconds"], 30);
+    // Listed by when each stretch began, not the order they were saved: one saved last but
+    // heard the day before comes last.
+    {
+        let c = m.t.st.db.0.lock().expect("db");
+        c.execute(
+            "INSERT INTO listening (user_id, book_id, device_id, started_at, ended_at, start_position_ms, end_position_ms, heard_ms)
+             SELECT id, ?1, NULL, ?2, ?2 + 60000, 0, 60000, 60000 FROM user WHERE username = 'joe'",
+            rusqlite::params![BOOK, t0 - 86_400_000],
+        )
+        .expect("older session");
+    }
+    let (_, v) = get_json(&m.t, &uri, &joe).await;
+    let starts: Vec<i64> =
+        v["sessions"].as_array().expect("sessions").iter().filter_map(|s| s["started_at"].as_i64()).collect();
+    assert_eq!(starts.len(), 3);
+    assert!(starts.windows(2).all(|w| w[0] >= w[1]), "newest first by start: {starts:?}");
+    assert_eq!(starts[2], t0 - 86_400_000);
+    // Another person sees only their own (none); a book you can't see is not found.
+    assert_eq!(get_json(&m.t, &uri, &amy).await.1["sessions"], json!([]));
+    assert_eq!(get_json(&m.t, &format!("/v1/me/history/books/{KIDS_BOOK}"), &joe).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(get_json(&m.t, &uri, "forged").await.0, StatusCode::UNAUTHORIZED);
+    // With history off, nothing new is recorded.
+    assert_eq!(
+        as_user(&m.t, "PATCH", "/v1/me/history", Some(json!({"enabled": false})), &joe).await.status(),
+        StatusCode::NO_CONTENT
+    );
+    listen_to(&m.t, &joe, BOOK, t0 + 400_000, 100_000, 30).await;
+    let (_, v) = get_json(&m.t, &uri, &joe).await;
+    assert_eq!((v["enabled"].clone(), v["sessions"].as_array().map(Vec::len)), (json!(false), Some(3)));
+}
+
+#[tokio::test]
+async fn admins_see_each_persons_listening_but_never_positions() {
+    let m = setup_media();
+    let (joe, _) = listener(&m).await;
+    let joe_id = set_name(&m.t, "joe", "Joe");
+    let (_, admin, _, _, _) = enrol_role(&m.t, "boss", Role::Admin).await;
+    let t0 = super::now() * 1000 - 900_000;
+    listen_to(&m.t, &joe, BOOK, t0, 60_000, 45).await;
+    // A book started long ago and left: abandoned (progress is written directly, as events
+    // that old are refused).
+    {
+        let c = m.t.st.db.0.lock().expect("db");
+        let old = t0 - 40 * 24 * 3600 * 1000;
+        c.execute(
+            "INSERT INTO progress (user_id, book_id, position_ms, duration_ms, finished, updated_at, received_at) VALUES (?1, ?2, 5000, 3600000, 0, ?3, ?4)",
+            rusqlite::params![joe_id, KIDS_BOOK, old, old / 1000],
+        )
+        .expect("old progress");
+    }
+    let (s, v) = get_json(&m.t, "/v1/admin/listening", &admin).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let joe_row = v["people"].as_array().expect("people").iter().find(|p| p["id"] == joe_id).expect("joe").clone();
+    assert_eq!(joe_row["name"], "Joe");
+    assert_eq!(
+        joe_row["totals"],
+        json!({"week_seconds": 45, "month_seconds": 45, "all_seconds": 45, "finished": 0, "in_progress": 1, "abandoned": 1})
+    );
+
+    let (s, v) = get_json(&m.t, &format!("/v1/admin/users/{joe_id}/listening"), &admin).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let statuses: Vec<(&str, &str)> = v["books"]
+        .as_array()
+        .expect("books")
+        .iter()
+        .filter_map(|b| Some((b["book"]["id"].as_str()?, b["status"].as_str()?)))
+        .collect();
+    assert_eq!(
+        statuses,
+        [(BOOK, "in_progress"), (KIDS_BOOK, "abandoned")],
+        "admins see every book, newest activity first"
+    );
+    assert_eq!(v["sessions"][0]["seconds"], 45);
+    // Where someone is in a book, and their timeline, stay theirs.
+    let text = v.to_string();
+    for private in ["position", "start_position_ms", "end_position_ms"] {
+        assert!(!text.contains(private), "{private} in {text}");
+    }
+    // Listeners can't see any of it; an unknown person is not found.
+    for uri in ["/v1/admin/listening".to_owned(), format!("/v1/admin/users/{joe_id}/listening")] {
+        assert_eq!(get_json(&m.t, &uri, &joe).await.0, StatusCode::FORBIDDEN, "{uri}");
+    }
+    assert_eq!(get_json(&m.t, "/v1/admin/users/424242/listening", &admin).await.0, StatusCode::NOT_FOUND);
 }

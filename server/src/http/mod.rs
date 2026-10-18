@@ -10,6 +10,7 @@ pub mod library_routes;
 pub mod me_routes;
 pub mod media_routes;
 pub mod passkeys;
+pub mod social_routes;
 pub mod web;
 
 use crate::auth::crypto::{Hasher, SeedBox};
@@ -491,9 +492,12 @@ pub fn router(state: State) -> Router {
         )
         .nest("/v1/diag", diag_routes::routes().layer(axum::middleware::from_fn_with_state(g.clone(), guard::csrf)))
         .nest("/v1/me", me_routes::routes())
-        .nest("/v1", library_routes::routes())
+        .nest("/v1", library_routes::routes().merge(social_routes::routes()))
         .nest("/v1/media", media_routes::routes())
-        .nest("/v1/admin", admin_routes::routes())
+        .nest(
+            "/v1/admin",
+            admin_routes::routes().merge(social_routes::admin_routes()).merge(history_routes::admin_routes()),
+        )
         .fallback(web::fallback)
         .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY))
         .layer(axum::middleware::from_fn(read_body))

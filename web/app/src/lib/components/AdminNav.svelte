@@ -7,7 +7,9 @@
 		['#/admin/users', 'Users'],
 		['#/admin/invites', 'Invites'],
 		['#/admin/library', 'Library'],
+		['#/admin/listening', 'Listening'],
 		['#/admin/jobs', 'Jobs'],
+		['#/admin/recommend', 'Recommend'],
 		['#/admin/audit', 'Audit log'],
 	] as const;
 </script>
@@ -17,7 +19,7 @@
 <h1>{title}</h1>
 <nav class="chips tabs" aria-label="Admin">
 	{#each LINKS as [href, label] (href)}
-		<a class="chip" {href} aria-current={page.url.hash === href ? 'page' : undefined}>{label}</a>
+		<a class="chip" {href} aria-current={page.url.hash === href || (href !== '#/admin' && page.url.hash.startsWith(href + '/')) ? 'page' : undefined}>{label}</a>
 	{/each}
 </nav>
 

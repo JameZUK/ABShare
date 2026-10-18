@@ -16,6 +16,10 @@
 	import Sheet from '$lib/components/Sheet.svelte';
 	import EditDetails from '$lib/components/EditDetails.svelte';
 	import PeopleLinks from '$lib/components/PeopleLinks.svelte';
+	import ListeningTimeline from '$lib/components/ListeningTimeline.svelte';
+	import Reviews from '$lib/components/Reviews.svelte';
+	import Stars from '$lib/components/Stars.svelte';
+	import StepUpSheet from '$lib/components/StepUpSheet.svelte';
 
 	const id = $derived(page.params.id ?? '');
 	let book = $state<BookDetail | null>(null);
@@ -23,17 +27,23 @@
 	let canDownload = $state(true);
 	let canSave = $state(false);
 	let moreOpen = $state(false);
+	let timelineOpen = $state(false);
 	let dlOpen = $state(false);
 	let marksOpen = $state(false);
 	let editOpen = $state(false);
 	let reloadKey = $state(0);
 	let dlQuality = $state<Quality>('original');
 	let dlSize = $state<number | null>(null);
+	let me = $state<Me | null>(null);
+	// Updated by the reviews section when someone saves or removes a review.
+	let summary = $state<{ average: number | null; count: number } | null>(null);
+	const rating = $derived(summary ?? book?.rating ?? null);
 
 	$effect(() => {
 		const bid = id;
 		void reloadKey;
 		book = null;
+		summary = null;
 		error = '';
 		void (async () => {
 			try {
@@ -50,6 +60,7 @@
 		if (session.status !== 'signed-in') return;
 		api<Me>('v1/me')
 			.then((m) => {
+				me = m;
 				canDownload = m.permissions.offline;
 				canSave = m.permissions.save_files;
 			})
@@ -142,6 +153,19 @@
 					{#if book.progress?.finished}<span>Finished</span>{:else if position > 0}<span>{timeLeft(book.duration_ms, position)}</span>{/if}
 					{#if book.chapters.length}<span>{book.chapters.length} chapters</span>{/if}
 				</p>
+				{#if rating}
+					<p class="rating">
+						{#if rating.count && rating.average !== null}
+							<a href="#reviews" onclick={(e) => { e.preventDefault(); document.getElementById('reviews')?.scrollIntoView({ behavior: 'smooth' }); }}>
+								<Stars value={rating.average} size={16} />
+								<span class="avg">{rating.average.toFixed(1)}</span>
+								<span class="muted">· {rating.count} {rating.count === 1 ? 'review' : 'reviews'}</span>
+							</a>
+						{:else}
+							<span class="muted">No reviews yet</span>
+						{/if}
+					</p>
+				{/if}
 				{#if position > 0 && !book.progress?.finished}
 					<span class="progress" aria-hidden="true"><span style:width="{Math.min(100, (position / Math.max(1, book.duration_ms)) * 100)}%"></span></span>
 				{/if}
@@ -174,6 +198,8 @@
 			</section>
 		{/if}
 
+		<Reviews bookId={book.id} onsummary={(v) => (summary = v)} />
+
 		{#if book.chapters.length}
 			<section>
 				<h2>Chapters</h2>
@@ -201,6 +227,7 @@
 			<button class="btn soft" onclick={() => mark('finished')}>Mark finished</button>
 		{/if}
 		<button class="btn soft" onclick={() => mark('restart')}>Start again</button>
+		<button class="btn soft" onclick={() => { moreOpen = false; timelineOpen = true; }}>Where was I? (your listening)</button>
 		<button class="btn soft" onclick={() => { moreOpen = false; marksOpen = true; }}>Bookmarks ({book?.bookmarks.length ?? 0})</button>
 		{#if session.user?.role === 'admin' && session.status === 'signed-in'}
 			<button class="btn soft" onclick={() => { moreOpen = false; editOpen = true; }}>Edit details</button>
@@ -231,6 +258,8 @@
 </Sheet>
 
 {#if book}<EditDetails {book} bind:open={editOpen} onsaved={() => reloadKey++} />{/if}
+{#if book}<ListeningTimeline {book} bind:open={timelineOpen} />{/if}
+{#if session.user?.role === 'admin'}<StepUpSheet {me} />{/if}
 
 <Sheet bind:open={marksOpen} title="Bookmarks">
 	{#if !book?.bookmarks.length}
@@ -312,6 +341,20 @@
 	.meta span + span::before {
 		content: '·';
 		margin-right: 0.5rem;
+	}
+	.rating {
+		margin: 0.5rem 0 0;
+		font-size: 0.9rem;
+	}
+	.rating a {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		color: inherit;
+		text-decoration: none;
+	}
+	.rating .avg {
+		font-weight: 600;
 	}
 	.progress {
 		display: block;

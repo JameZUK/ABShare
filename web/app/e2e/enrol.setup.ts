@@ -1,6 +1,6 @@
 // Signing up from an invite with a password and an authenticator app, as a new person would.
 import { expect, test } from '@playwright/test';
-import { AUTH, PASSWORD, invite, signInApiDevice, totp } from './helpers';
+import { AUTH, PASSWORD, invite, saveSecret, signInApiDevice, totp } from './helpers';
 
 test('a new person signs up from the invite', async ({ page }) => {
 	await page.goto(invite());
@@ -31,4 +31,5 @@ test('a new person signs up from the invite', async ({ page }) => {
 	await expect(page.getByRole('navigation', { name: 'Main' })).toBeVisible();
 	await page.context().storageState({ path: AUTH });
 	await signInApiDevice(secret);
+	saveSecret(secret);
 });

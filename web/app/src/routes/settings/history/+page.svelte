@@ -80,7 +80,7 @@
 		<button class="icon-btn" onclick={() => (moreOpen = true)} aria-label="More"><Icon name="more" /></button>
 	</div>
 	<h1>History</h1>
-	<p class="muted">Your listening time and recent sessions. Only you can see this; administrators can’t. Sessions are kept for 13 months.</p>
+	<p class="muted">Your listening time and recent sessions, kept for 13 months. To find your place in a book, open it and choose “Where was I?” from its menu.</p>
 	{#if error}<p class="error" role="alert">{error}</p>{/if}
 
 	{#if data}

@@ -8,6 +8,7 @@
 	import { downloads } from '$lib/offline/downloads.svelte';
 	import { player } from '$lib/player/player.svelte';
 	import { span } from '$lib/player/chapters';
+	import BookTile from '$lib/components/BookTile.svelte';
 	import Cover from '$lib/components/Cover.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import Shelf from '$lib/components/Shelf.svelte';
@@ -67,6 +68,17 @@
 	const rest = $derived((home?.continue ?? []).filter((b) => b.id !== current?.id));
 	const recent = $derived((home?.recently_added ?? []) as Tile[]);
 
+	const recommended = $derived(home?.recommended ?? []);
+
+	async function dismiss(id: number) {
+		if (home) home = { ...home, recommended: (home.recommended ?? []).filter((r) => r.id !== id) };
+		try {
+			await api(`v1/recommendations/${id}/dismiss`, { method: 'POST' });
+		} catch (e) {
+			error = messageOf(e);
+		}
+	}
+
 	async function resume() {
 		if (!current) return;
 		if (player.book?.id === current.id) return player.toggle();
@@ -90,6 +102,22 @@
 	<h1 class="hello">{#if firstName}Welcome back,<br /><em>{firstName}.</em>{:else}Welcome back.{/if}</h1>
 
 	{#if error}<p class="error" role="alert">{error}</p>{/if}
+
+	{#if recommended.length}
+		<section class="recs" aria-label="Recommended for you">
+			<h2>Recommended for you</h2>
+			{#each recommended as r (r.id)}
+				<article class="rec">
+					<span class="eyebrow accent">Recommended by {r.from}</span>
+					{#if r.note}<blockquote class="note serif">{r.note}</blockquote>{/if}
+					<div class="rec-books">
+						{#each r.books as b (b.id)}<BookTile tile={b} />{/each}
+					</div>
+					<button class="btn soft notnow" onclick={() => dismiss(r.id)}>Not now</button>
+				</article>
+			{/each}
+		</section>
+	{/if}
 
 	{#if current}
 		<section class="hero" aria-label="Currently reading">
@@ -171,6 +199,59 @@
 		font-weight: 600;
 	}
 
+	.recs {
+		margin-bottom: 1.75rem;
+		padding-bottom: 0.5rem;
+		border-bottom: 1px solid var(--line);
+	}
+	.recs h2 {
+		margin-bottom: 0.9rem;
+	}
+	.rec + .rec {
+		padding-top: 1.25rem;
+		border-top: 1px solid var(--line);
+	}
+	.rec {
+		padding-bottom: 1.25rem;
+	}
+	.note {
+		margin: 0.4rem 0 1rem;
+		padding: 0;
+		font-style: italic;
+		font-size: 1.12rem;
+		line-height: 1.5;
+		white-space: pre-line;
+		overflow-wrap: anywhere;
+	}
+	.note::before {
+		content: '“';
+	}
+	.note::after {
+		content: '”';
+	}
+	.rec-books {
+		display: grid;
+		grid-auto-flow: column;
+		grid-auto-columns: 132px;
+		gap: 1.1rem;
+		overflow-x: auto;
+		scrollbar-width: none;
+		margin: 0 calc(-1 * var(--gutter));
+		padding: 0.25rem var(--gutter) 1rem;
+	}
+	.rec-books::-webkit-scrollbar {
+		display: none;
+	}
+	@media (min-width: 1024px) {
+		.rec-books {
+			grid-auto-columns: 156px;
+			gap: 1.5rem;
+		}
+	}
+	.notnow {
+		min-height: 38px;
+		font-size: 0.875rem;
+	}
 	.hero {
 		display: grid;
 		grid-template-columns: 128px minmax(0, 1fr);

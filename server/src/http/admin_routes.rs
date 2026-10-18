@@ -55,7 +55,7 @@ impl FromRequestParts<State> for Admin {
     }
 }
 
-fn step_up(st: &State, s: &Session) -> Result<(), ApiError> {
+pub(super) fn step_up(st: &State, s: &Session) -> Result<(), ApiError> {
     if st.sessions.stepped_up(s.device, now()) { Ok(()) } else { Err(ApiError::step_up()) }
 }
 

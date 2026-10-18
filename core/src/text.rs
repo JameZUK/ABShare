@@ -115,6 +115,20 @@ pub fn clean_paragraphs(s: &str, max: usize) -> String {
     out
 }
 
+/// Words in a piece of text, as people count them: runs separated by whitespace.
+pub fn word_count(s: &str) -> usize {
+    s.split_whitespace().count()
+}
+
+/// Text a person writes for others to read (a review's comment, a recommendation's note):
+/// cleaned like [`clean_line`], so one paragraph with no controls or invisible characters,
+/// and then held to `max_words` words and `max_chars` characters. Longer text is refused
+/// (`None`) rather than cut, so nobody's words are silently shortened.
+pub fn limited_text(s: &str, max_words: usize, max_chars: usize) -> Option<String> {
+    let cleaned = clean_line(s, max_chars.saturating_add(1));
+    (cleaned.chars().count() <= max_chars && word_count(&cleaned) <= max_words).then_some(cleaned)
+}
+
 /// Folds text for searching: lower case, accents removed (é → e), whitespace collapsed.
 pub fn fold(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -290,6 +304,29 @@ mod tests {
     use super::*;
 
     /// Review C6: invisible and spoofing characters, and stacked combining marks.
+    #[test]
+    fn limited_text_cleans_and_refuses_rather_than_cuts() {
+        assert_eq!(
+            limited_text("  Gripping,\n\n but the\tmiddle drags.  ", 50, 400).as_deref(),
+            Some("Gripping, but the middle drags.")
+        );
+        assert_eq!(limited_text("", 50, 400).as_deref(), Some(""));
+        // Invisible and control characters go before counting.
+        assert_eq!(limited_text("a\u{200B}b\u{202E}c\u{0007}", 50, 400).as_deref(), Some("abc"));
+        // Exactly at the limits is accepted; one over is refused.
+        let fifty = vec!["word"; 50].join(" ");
+        assert_eq!(limited_text(&fifty, 50, 400).as_deref(), Some(fifty.as_str()));
+        assert_eq!(limited_text(&format!("{fifty} more"), 50, 400), None);
+        assert_eq!(limited_text(&"x".repeat(400), 50, 400).map(|t| t.len()), Some(400));
+        assert_eq!(limited_text(&"x".repeat(401), 50, 400), None);
+        // Markup is kept as text (it is only ever shown as text), never interpreted.
+        assert_eq!(limited_text("<b>bold</b>", 50, 400).as_deref(), Some("<b>bold</b>"));
+        // A huge input is refused, not truncated and accepted.
+        assert_eq!(limited_text(&"a ".repeat(1_000_000), 50, 400), None);
+        assert_eq!(word_count("one  two\nthree"), 3);
+        assert_eq!(word_count("   "), 0);
+    }
+
     #[test]
     fn invisible_and_spoofing_characters_are_removed() {
         for hidden in

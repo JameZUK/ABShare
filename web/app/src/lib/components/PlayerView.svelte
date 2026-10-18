@@ -10,6 +10,7 @@
 	import Cover from './Cover.svelte';
 	import Icon from './Icon.svelte';
 	import Sheet from './Sheet.svelte';
+	import ListeningTimeline from './ListeningTimeline.svelte';
 
 	const b = $derived(player.book);
 	const s = $derived(b ? span(b.chapters, player.position, player.duration) : { start: 0, end: 1, index: -1 });
@@ -26,6 +27,7 @@
 	let sleepOpen = $state(false);
 	let chaptersOpen = $state(false);
 	let moreOpen = $state(false);
+	let timelineOpen = $state(false);
 	let toast = $state<string | null>(null);
 
 	function sleepLabel(sl: Sleep): string {
@@ -46,7 +48,7 @@
 	}
 
 	function onKey(e: KeyboardEvent) {
-		if (e.key === 'Escape' && !speedOpen && !sleepOpen && !chaptersOpen && !moreOpen) player.expanded = false;
+		if (e.key === 'Escape' && !speedOpen && !sleepOpen && !chaptersOpen && !moreOpen && !timelineOpen) player.expanded = false;
 	}
 </script>
 
@@ -172,10 +174,13 @@
 		</div>
 		<p class="eyebrow">Book</p>
 		<div class="choices">
+			<button class="btn soft" onclick={() => { moreOpen = false; timelineOpen = true; }}>Where was I?</button>
 			<button class="btn soft" onclick={() => { void player.mark('finished'); moreOpen = false; }}>Mark finished</button>
 			<button class="btn soft" onclick={() => { void player.mark('restart'); moreOpen = false; }}>Start again</button>
 		</div>
 	</Sheet>
+
+	<ListeningTimeline book={b} bind:open={timelineOpen} />
 {/if}
 
 <style>

@@ -1,6 +1,6 @@
 //! Untrusted text and HTML: the cleaners must never emit markup, controls or overlong output.
 #![no_main]
-use abshare_core::text::{clean_line, clean_paragraphs, html_to_text, scrub_free_text};
+use abshare_core::text::{clean_line, clean_paragraphs, html_to_text, limited_text, scrub_free_text, word_count};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|s: &str| {
@@ -14,4 +14,10 @@ fuzz_target!(|s: &str| {
     assert!(!l.chars().any(char::is_control));
     assert!(!l.contains("\u{202E}") && !l.contains("\u{200B}"));
     let _ = scrub_free_text(&l);
+    // People's own text (reviews, notes): within both limits, clean, and stable when cleaned again.
+    if let Some(t) = limited_text(s, 50, 400) {
+        assert!(t.chars().count() <= 400 && word_count(&t) <= 50);
+        assert!(!t.chars().any(char::is_control));
+        assert_eq!(limited_text(&t, 50, 400).as_deref(), Some(t.as_str()));
+    }
 });

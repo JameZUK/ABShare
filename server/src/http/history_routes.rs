@@ -3,10 +3,11 @@
 //! owner can read them: there is no admin view. Books the caller can no longer see are left
 //! out of the list.
 
+use super::admin_routes::Admin;
 use super::library_routes::{cover_url, view};
 use super::{ApiError, Authed, State, now};
-use abshare_core::history::{self, KEEP_MS, MAX_SESSIONS, Step, Tail};
-use axum::extract::{Query, State as S};
+use abshare_core::history::{self, BookStatus, KEEP_MS, MAX_SESSIONS, Step, Tail, book_status};
+use axum::extract::{Path, Query, State as S};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
@@ -15,7 +16,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 pub fn routes() -> Router<State> {
-    Router::new().route("/", get(list).delete(clear).patch(set_enabled))
+    Router::new().route("/", get(list).delete(clear).patch(set_enabled)).route("/books/{id}", get(book_timeline))
 }
 
 /// Sessions shorter than this aren't listed (a report on pause, or a seek, starts one).
@@ -60,8 +61,8 @@ pub(super) fn record(
         }
         (Step::Start { at, position_ms }, _) | (Step::Extend { ended_at: at, position_ms, .. }, None) => {
             c.execute(
-                "INSERT INTO listening (user_id, book_id, device_id, started_at, ended_at, end_position_ms, heard_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?4, ?5, 0)",
+                "INSERT INTO listening (user_id, book_id, device_id, started_at, ended_at, start_position_ms, end_position_ms, heard_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?5, 0)",
                 params![uid, book, device, at, pos(position_ms)],
             )
             .map_err(crate::db::sql_err)?;
@@ -187,6 +188,50 @@ async fn list(S(st): S<State>, Authed(s): Authed, Query(q): Query<ListQuery>) ->
     })))
 }
 
+/// `GET /v1/me/history/books/{id}`: the caller's own listening of one book, newest first:
+/// each stretch with when it began and ended and where in the book, so they can play from
+/// any of those places. Owner only; there is no admin equivalent (SPEC D31).
+async fn book_timeline(S(st): S<State>, Authed(s): Authed, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
+    let (cat, ok) = view(&st, &s).await?;
+    let book = super::library_routes::find(&cat, &ok, &id)?;
+    let (uid, bid, duration) = (s.user, book.id.clone(), book.duration_ms);
+    type Row = (i64, i64, i64, Option<i64>, i64, i64);
+    let (enabled, rows) = st
+        .db
+        .run(move |c| {
+            let off: bool = c
+                .query_row("SELECT history_off FROM user WHERE id = ?1", [uid], |r| r.get(0))
+                .map_err(crate::db::sql_err)?;
+            let mut q = c
+                .prepare(
+                    "SELECT id, started_at, ended_at, start_position_ms, end_position_ms, heard_ms FROM listening
+                     WHERE user_id = ?1 AND book_id = ?2 AND heard_ms >= ?3 ORDER BY started_at DESC, id DESC LIMIT 200",
+                )
+                .map_err(crate::db::sql_err)?;
+            let rows: Vec<Row> = q
+                .query_map(params![uid, bid, MIN_LISTED_MS], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))
+                .map_err(crate::db::sql_err)?
+                .collect::<Result<_, _>>()
+                .map_err(crate::db::sql_err)?;
+            Ok((!off, rows))
+        })
+        .await?;
+    let clamp = |p: i64| p.clamp(0, i64::try_from(duration).unwrap_or(i64::MAX));
+    let sessions: Vec<Value> = rows
+        .into_iter()
+        .map(|(id, started, ended, start_pos, end_pos, heard)| {
+            json!({
+                "id": id, "started_at": started, "ended_at": ended,
+                // Sessions recorded before start positions were kept begin where they ended,
+                // less the time heard.
+                "start_position_ms": clamp(start_pos.unwrap_or(end_pos - heard)), "end_position_ms": clamp(end_pos),
+                "seconds": heard / 1000,
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "enabled": enabled, "sessions": sessions })))
+}
+
 async fn clear(S(st): S<State>, Authed(s): Authed) -> Result<StatusCode, ApiError> {
     if !st.history_limit.allow(s.device, now()) {
         return Err(ApiError::too_many());
@@ -223,6 +268,154 @@ async fn set_enabled(
         })
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ---------------------------------------------------------------- admin view (SPEC D30)
+
+/// Routes under `/v1/admin`: everyone's listening at a glance, and one person's in detail.
+pub fn admin_routes() -> Router<State> {
+    Router::new().route("/listening", get(admin_people)).route("/users/{id}/listening", get(admin_person))
+}
+
+/// One person's listening, summarised: seconds heard over 7 and 30 days and in all, the last
+/// time they listened, and each book's status (from progress and the last listening).
+struct Summary {
+    week: i64,
+    month: i64,
+    all: i64,
+    last: Option<i64>,
+    /// book → (status, position ms, heard ms, last activity ms)
+    books: Vec<(String, BookStatus, u64, i64, i64)>,
+}
+
+fn summarise(c: &Connection, uid: i64, now: i64) -> Result<Summary, String> {
+    let since = |from: i64| -> Result<i64, String> {
+        c.query_row(
+            "SELECT coalesce(sum(heard_ms), 0) FROM listening WHERE user_id = ?1 AND ended_at >= ?2",
+            params![uid, from],
+            |r| r.get(0),
+        )
+        .map_err(crate::db::sql_err)
+    };
+    let (week, month, all) = (since(now - 7 * DAY_MS)?, since(now - 30 * DAY_MS)?, since(i64::MIN)?);
+    let last: Option<i64> = c
+        .query_row("SELECT max(ended_at) FROM listening WHERE user_id = ?1", [uid], |r| r.get(0))
+        .map_err(crate::db::sql_err)?;
+    let mut q = c
+        .prepare(
+            "SELECT p.book_id, p.position_ms, p.finished, p.updated_at,
+               (SELECT coalesce(sum(l.heard_ms), 0) FROM listening l WHERE l.user_id = p.user_id AND l.book_id = p.book_id),
+               (SELECT max(l.ended_at) FROM listening l WHERE l.user_id = p.user_id AND l.book_id = p.book_id)
+             FROM progress p WHERE p.user_id = ?1",
+        )
+        .map_err(crate::db::sql_err)?;
+    let books = q
+        .query_map([uid], |r| {
+            let (book, pos, fin, updated, heard, last_heard): (String, i64, bool, i64, i64, Option<i64>) =
+                (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?);
+            let activity = last_heard.map_or(updated, |l| l.max(updated));
+            let pos = pos.max(0) as u64;
+            Ok((book, book_status(fin, pos, activity, now), pos, heard, activity))
+        })
+        .map_err(crate::db::sql_err)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(crate::db::sql_err)?;
+    Ok(Summary { week, month, all, last, books })
+}
+
+fn counts(sm: &Summary) -> Value {
+    let n = |st: BookStatus| sm.books.iter().filter(|b| b.1 == st).count();
+    json!({
+        "week_seconds": sm.week / 1000, "month_seconds": sm.month / 1000, "all_seconds": sm.all / 1000,
+        "finished": n(BookStatus::Finished), "in_progress": n(BookStatus::InProgress), "abandoned": n(BookStatus::Abandoned),
+    })
+}
+
+async fn admin_people(S(st): S<State>, Admin(_): Admin) -> Result<Json<Value>, ApiError> {
+    let now = now_ms();
+    let people = st
+        .db
+        .run(move |c| {
+            let mut q = c
+                .prepare("SELECT id, username, display_name, history_off, disabled_at IS NOT NULL FROM user ORDER BY display_name, id")
+                .map_err(crate::db::sql_err)?;
+            let users: Vec<(i64, String, String, bool, bool)> = q
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+                .map_err(crate::db::sql_err)?
+                .collect::<Result<_, _>>()
+                .map_err(crate::db::sql_err)?;
+            let mut out = Vec::new();
+            for (id, username, name, off, disabled) in users {
+                let sm = summarise(c, id, now)?;
+                out.push(json!({
+                    "id": id, "username": username, "name": name, "history_on": !off, "disabled": disabled,
+                    "totals": counts(&sm), "last_listened_at": sm.last,
+                }));
+            }
+            Ok(out)
+        })
+        .await?;
+    Ok(Json(json!({ "people": people })))
+}
+
+async fn admin_person(S(st): S<State>, Admin(_): Admin, Path(id): Path<i64>) -> Result<Json<Value>, ApiError> {
+    let cat = st.catalog().await?;
+    let now = now_ms();
+    type Session = (String, i64, i64, i64);
+    let found = st
+        .db
+        .run(move |c| {
+            let Some((name, off)) = c
+                .query_row("SELECT display_name, history_off FROM user WHERE id = ?1", [id], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?))
+                })
+                .optional()
+                .map_err(crate::db::sql_err)?
+            else {
+                return Ok(None);
+            };
+            let sm = summarise(c, id, now)?;
+            let mut q = c
+                .prepare(
+                    "SELECT book_id, started_at, ended_at, heard_ms FROM listening
+                     WHERE user_id = ?1 AND heard_ms >= ?2 ORDER BY id DESC LIMIT 50",
+                )
+                .map_err(crate::db::sql_err)?;
+            let sessions: Vec<Session> = q
+                .query_map(params![id, MIN_LISTED_MS], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                .map_err(crate::db::sql_err)?
+                .collect::<Result<_, _>>()
+                .map_err(crate::db::sql_err)?;
+            Ok(Some((name, off, sm, sessions)))
+        })
+        .await?;
+    let Some((name, off, mut sm, sessions)) = found else { return Err(ApiError::not_found()) };
+    // Admins see every book, whatever the person's library access; a book no longer in the
+    // library keeps its place with no title.
+    let book = |b: &str| {
+        cat.by_id.get(b).map(|&i| &cat.books[i]).map_or_else(
+            || json!({ "id": b, "title": null, "authors": [], "cover": null, "duration_ms": null }),
+            |b| json!({ "id": b.id, "title": b.title, "authors": b.authors, "cover": cover_url(b), "duration_ms": b.duration_ms }),
+        )
+    };
+    sm.books.sort_by_key(|b| std::cmp::Reverse(b.4));
+    let books: Vec<Value> = sm
+        .books
+        .iter()
+        .filter(|b| b.1 != BookStatus::NotStarted)
+        // No positions here: where someone is in a book, and their timeline, stay theirs.
+        .map(|(id, status, _position, heard, last)| {
+            json!({ "book": book(id), "status": status.as_str(), "heard_seconds": heard / 1000, "last_at": last })
+        })
+        .collect();
+    let sessions: Vec<Value> = sessions
+        .iter()
+        .map(|(b, started, ended, heard)| json!({ "book": book(b), "started_at": started, "ended_at": ended, "seconds": heard / 1000 }))
+        .collect();
+    Ok(Json(json!({
+        "id": id, "name": name, "history_on": !off, "totals": counts(&sm), "last_listened_at": sm.last,
+        "books": books, "sessions": sessions,
+    })))
 }
 
 #[cfg(test)]

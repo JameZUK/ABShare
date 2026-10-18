@@ -206,6 +206,45 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE INDEX listening_user_id ON listening(user_id, id);
     CREATE INDEX listening_tail ON listening(user_id, book_id, device_id, id);
     ALTER TABLE user ADD COLUMN history_off INTEGER NOT NULL DEFAULT 0;",
+    // 9: reviews (one per person per book) and admins' recommendations, addressed to
+    // everyone or to chosen people, with who has dismissed each (SPEC D28, D29); and where in
+    // the book each listening session began, for the listener's own timeline (SPEC D31).
+    "CREATE TABLE review (
+        user_id INTEGER NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+        book_id TEXT NOT NULL,
+        rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+        comment TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (user_id, book_id)
+    );
+    CREATE INDEX review_book ON review(book_id, updated_at);
+    CREATE TABLE recommendation (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        by_user INTEGER NOT NULL REFERENCES user(id),
+        note TEXT NOT NULL,
+        everyone INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+    );
+    CREATE TABLE recommendation_book (
+        rec_id INTEGER NOT NULL REFERENCES recommendation(id) ON DELETE CASCADE,
+        ord INTEGER NOT NULL,
+        book_id TEXT NOT NULL,
+        PRIMARY KEY (rec_id, ord)
+    );
+    CREATE TABLE recommendation_target (
+        rec_id INTEGER NOT NULL REFERENCES recommendation(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+        PRIMARY KEY (rec_id, user_id)
+    );
+    CREATE INDEX recommendation_target_user ON recommendation_target(user_id);
+    CREATE TABLE recommendation_dismissed (
+        rec_id INTEGER NOT NULL REFERENCES recommendation(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+        at INTEGER NOT NULL,
+        PRIMARY KEY (rec_id, user_id)
+    );
+    ALTER TABLE listening ADD COLUMN start_position_ms INTEGER;",
 ];
 
 pub fn sql_err(e: rusqlite::Error) -> String {

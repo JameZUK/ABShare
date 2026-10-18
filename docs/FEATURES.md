@@ -34,7 +34,8 @@ Everything ABShare does today, by area. Only built and tested features are liste
 | Progress sync | Your position is saved every 15 seconds while playing, on pause and seek, and when the app goes to the background. |
 | Across devices | When another device has listened further, a paused player moves to the newer position. |
 | Offline | Positions and finished marks made offline are queued on the device and sent when it is back online. The newest listening wins, and a repeated or out-of-date update can't move you backwards. |
-| Listening history | Settings → History shows your listening time over the last 7 days, the last 30 days and all time, how many books you've finished, and your recent sessions. Only you can see it. You can clear it, or turn it off. Sessions are kept for 13 months. Listening while offline isn't counted. |
+| Listening history | Settings → History shows your listening time over the last 7 days, the last 30 days and all time, how many books you've finished, and your recent sessions. You can clear it, or turn it off. Sessions are kept for 13 months. Listening while offline isn't counted. |
+| Where was I? | From a book's menu or the player: every stretch of listening of that book, newest first and grouped by day, with when you listened and where in the book it began and ended. Tap either place to play from there, for instance where you were before you fell asleep. A rewind or a jump starts a new stretch. Only you can see it. |
 
 ## Streaming quality
 
@@ -68,7 +69,9 @@ Everything ABShare does today, by area. Only built and tested features are liste
 | Series | Books sharing a series are grouped automatically, in reading order (prequels first), with a "Book 2 of …" link on each book. |
 | Shows | Podcast-style episodes are recognised and shown as one show, ordered by season and episode, with trailers and extras set aside. |
 | Authors and narrators | Every author and narrator on a book page is a link to all their books, with the Library's search and sorting. |
-| Book page | Cover, title, series, authors, narrators, genres, length, time left, description and chapters. Download, mark finished or unfinished, start again, bookmarks and save file. |
+| Book page | Cover, title, series, authors, narrators, genres, length, time left, average rating, description, reviews and chapters. Download, mark finished or unfinished, start again, bookmarks and save file. |
+| Reviews | Rate any book from 1 to 5 stars, with an optional comment of up to 50 words. Everyone who can see the book sees the reviews and the average, with each reviewer's name. Change or delete yours at any time. |
+| Recommendations | Books an admin recommends to you appear at the top of Home with their note, until you choose *Not now* or start the book. |
 | Covers | Embedded or folder artwork, resized for each screen. |
 | Themes | Paperback (paper and ink, serif titles, and a warm lamplight look in the dark) and High contrast; light, dark or following the system. On wide screens the tabs become a sidebar. |
 
@@ -93,6 +96,9 @@ Everything ABShare does today, by area. Only built and tested features are liste
 | People | Change display names, roles, library access and permissions (offline, save files); disable accounts; reset someone's sign-in methods (with a new single-use link); sign all their devices out. Making someone an admin needs a second confirmation. |
 | Invites | Create invites with a name, role, libraries, permissions and expiry; copy the link; revoke unused ones. |
 | Library | The last scan, *Scan now*, each library's counts, and problems: unplayable files, unsupported formats, ignored duplicates, and missing books. |
+| Recommend | Recommend up to 10 books at a time, with a note of up to 100 words on why, to everyone (including people who join later) or to chosen people. See who dismissed each, and withdraw any. |
+| Listening | Everyone's listening time, books finished, in progress and abandoned (started, not finished, nothing heard for 30 days), and when they last listened; for each person, every book they've started with its status and time heard, and their recent sessions. Never where someone is in a book. |
+| Reviews | Remove anyone's review. |
 | Jobs | What the media jobs are doing (listening, background and copy lanes), playable copies being built, failed copies with *Retry now*, the cache size and *Clear data-saver cache*. |
 | Edit details | Correct any book's title, people, series, genres or description. Corrections survive rescans. |
 | Audit log | Sign-ins, failures, locks, enrolment, factor changes, invites, device sign-outs and admin actions, with a check that no entry has been edited or removed. |
