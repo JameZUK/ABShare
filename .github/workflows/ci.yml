@@ -162,7 +162,18 @@ jobs:
         run: |
           test "$(docker inspect -f '{{.Config.User}}' abshare:ci)" = "65534:65534"
           docker run --rm --entrypoint /usr/local/bin/abshare-jail abshare:ci 2>&1 | grep -q "usage: abshare-jail"
-          docker run --rm --entrypoint /bin/sh abshare:ci -c 'test -f /usr/share/abshare/web/index.html && test -f /usr/share/abshare/web/service-worker.js'
+          id="$(docker create abshare:ci)"
+          docker export "$id" > image.tar && docker rm "$id" > /dev/null
+          tar -tf image.tar > files.txt
+          for f in usr/share/abshare/web/index.html usr/share/abshare/web/service-worker.js usr/bin/ffmpeg usr/bin/ffprobe; do
+            grep -qx "$f" files.txt || { echo "missing: $f"; exit 1; }
+          done
+      - name: The image has no shell or package manager (distroless)
+        run: |
+          for f in bin/sh bin/bash bin/busybox usr/bin/apt usr/bin/dpkg sbin/apk; do
+            if grep -qx "$f" files.txt; then echo "unexpected: $f"; exit 1; fi
+          done
+          if docker run --rm --entrypoint /bin/sh abshare:ci -c true 2>/dev/null; then echo "a shell ran"; exit 1; fi
       - name: The image's ffmpeg is the minimal static build, with no network protocols
         run: |
           for t in ffmpeg ffprobe; do

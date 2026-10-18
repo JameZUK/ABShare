@@ -30,7 +30,7 @@ Linux only, because the ffmpeg sandbox needs Landlock (kernel 6.12 or later, ena
 | 5: Admin and deployment | Done |
 | 6: Security review and release | AI-assisted review and penetration test done, with no open critical, high or medium findings; an independent review is recommended |
 
-The device tests still to run include a 2-hour locked-screen session on a phone, lock-screen controls on iPhone, resuming across two devices, an hour of airplane-mode listening followed by a sync, and resuming a large download after the app is killed.
+The device tests still to run are listed as a checklist in [`DEVICE-TESTS.md`](DEVICE-TESTS.md): among them a 2-hour locked-screen session on a phone, lock-screen controls on iPhone, resuming across two devices, an hour of airplane-mode listening followed by a sync, and resuming a large download after the app is killed.
 
 ## Roadmap
 

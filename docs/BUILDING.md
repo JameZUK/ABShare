@@ -38,7 +38,7 @@ The Dockerfile has four stages, each from a base image pinned by digest:
 - a static musl build of `abshare` and `abshare-jail` (with OpenSSL vendored for the passkey library);
 - the web build;
 - a minimal ffmpeg and ffprobe (FFmpeg 7.1.5 with LAME 3.100), statically linked and built from source tarballs checked against pinned SHA-256 sums. Only the demuxers, decoders, encoders, muxers and filters ABShare uses are compiled in, and `file` is the only protocol: the stage fails if any other protocol appears;
-- a `debian:trixie-slim` runtime that installs nothing from Debian, and copies in the binaries and the web app.
+- a `distroless/static` runtime (no shell or package manager), with the binaries and the web app copied in. It runs as user 65534. Run commands by calling the binary directly (`--entrypoint /usr/local/bin/abshare`), as [`DEPLOY.md`](DEPLOY.md) shows; there is no shell to `exec` into.
 
 The ffmpeg stage takes about two minutes on 8 cores. The image runs as uid 65534. The comments at the top of the Dockerfile say how to update the digests and the FFmpeg checksum.
 

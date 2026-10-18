@@ -2,6 +2,16 @@
 
 What changed and when, newest first. Each entry says how it is tested. The design and the reasons behind it are in [`SPEC.md`](SPEC.md); what differs from the design is in SPEC §16.
 
+## Unreleased
+
+### Changed
+- **The Docker image is now distroless** (`distroless/static`, pinned by digest; SPEC §10). There is no shell, package manager or other program in it, only ABShare's own statically linked binaries and the web app, and it shrank from about 150 MB to 41 MB. It still runs as user 65534, so existing data directories need no change. Run commands by calling `/usr/local/bin/abshare` directly, as DEPLOY.md shows; `docker exec … sh` no longer works.
+
+### Added
+- **[`docs/DEVICE-TESTS.md`](docs/DEVICE-TESTS.md):** the checks only a real phone can do (the lock screen, two devices, airplane mode, the newer features), as a checklist.
+
+**Tests:** CI checks that the image has no shell or package manager, and that the web app and ffmpeg are in it, without running anything inside it. The deploy test (the image behind nginx with TLS) passes against the distroless image. `doctor` (with a live jail self-test) and a jailed scan of the demo library pass inside it.
+
 ## 0.11.0 (2026-10-18)
 
 A security review of everything added in 0.10, with every finding fixed, and a read-only Admin → Server settings page.

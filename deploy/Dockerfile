@@ -96,8 +96,12 @@ RUN cd "ffmpeg-${FFMPEG_VERSION}" \
  && protocols="$(/opt/ffmpeg/bin/ffmpeg -hide_banner -protocols | grep -v -e '^Supported file protocols:' -e '^Input:' -e '^Output:' | tr -d ' ' | sort -u | tr '\n' ' ')" \
  && [ "$protocols" = "file " ] || { echo "unexpected protocols: $protocols"; exit 1; }
 
-# The runtime. Nothing is installed from Debian: every binary is ours and statically linked.
-FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
+# The runtime: distroless static (SPEC §10). Every binary is ours and statically linked, so
+# the image holds them, the web app, and the few files distroless brings (/etc/passwd, CA
+# certificates, time zones): no shell, no package manager, no other programs to misuse.
+# Use the commands in docs/DEPLOY.md, which run the binaries directly. It runs as nobody
+# (65534), as before, so existing data directories keep working.
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3
 COPY --from=build /src/target/release/abshare /src/target/release/abshare-jail /usr/local/bin/
 COPY --from=ffmpeg /opt/ffmpeg/bin/ffmpeg /opt/ffmpeg/bin/ffprobe /usr/bin/
 COPY --from=web /app/build /usr/share/abshare/web

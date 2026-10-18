@@ -42,6 +42,9 @@ docker compose up -d
 `doctor` checks the configuration, permissions, that the library is read-only, Landlock, the
 jailed ffmpeg, the database and the audit log. Fix anything marked FAIL before going on.
 
+The image is distroless: it has no shell, so `docker exec … sh` doesn't work. Run any command
+as above, by calling `/usr/local/bin/abshare` directly.
+
 The first scan starts on its own; a large library takes a few minutes the first time and
 seconds afterwards. To scan now: Settings → Admin → Library → Scan now.
 

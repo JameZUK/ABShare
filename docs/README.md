@@ -9,6 +9,7 @@ Every page of ABShare's documentation, with what each covers. Start with the pro
 | [`DEPLOY.md`](DEPLOY.md) | Administrators | Installing with Docker Compose or systemd, the read-only library, the reverse proxy, the first admin, upgrades and backups |
 | [`FEATURES.md`](FEATURES.md) | Everyone | Every feature by area, and what isn't built yet |
 | [`PLATFORMS.md`](PLATFORMS.md) | Everyone | Supported browsers and devices, what has been tested, project status and roadmap |
+| [`DEVICE-TESTS.md`](DEVICE-TESTS.md) | Testers | The checks only a real phone can do (lock screen, two devices, airplane mode), as a checklist |
 | [`../SECURITY.md`](../SECURITY.md) | Everyone | The security model in brief, review status, and how to report a vulnerability |
 | [`PRIVACY.md`](PRIVACY.md) | Everyone | What ABShare stores, where, and for how long |
 
