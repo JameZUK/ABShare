@@ -53,7 +53,7 @@ test('dynamic links and sources start with a safe literal', () => {
 	for (const root of ROOTS) {
 		for (const f of files(root).filter((f) => f.endsWith('.svelte'))) {
 			const code = readFileSync(f, 'utf8');
-			for (const m of code.matchAll(/\b(href|src)=(\{[^}]*\}|"[^"]*\{[^"]*")/g)) {
+			for (const m of code.matchAll(/(?<![\w:-])(href|src|action|formaction|poster|xlink:href)=(\{[^}]*\}|"[^"]*\{[^"]*")/g)) {
 				const v = m[2];
 				// {url}-style values are checked where they're built; template strings must
 				// start with a safe literal.
@@ -66,4 +66,24 @@ test('dynamic links and sources start with a safe literal', () => {
 		}
 	}
 	assert.deepEqual(bad, []);
+});
+
+// Inline styles built from data could carry CSS from the server (url(), expressions); use
+// `style:prop={value}` directives, which set one property each (review W16).
+const DYNAMIC_STYLE = /\sstyle=(?:"[^"]*\{|'[^']*\{|\{)/;
+
+test('no inline style attributes built from data', () => {
+	const bad = [];
+	for (const root of ROOTS) {
+		for (const f of files(root).filter((f) => f.endsWith('.svelte'))) {
+			const code = readFileSync(f, 'utf8');
+			if (DYNAMIC_STYLE.test(code)) bad.push(f);
+		}
+	}
+	assert.deepEqual(bad, []);
+});
+
+test('the style check catches each form and allows directives', () => {
+	for (const s of ['<div style="color: {c}">', '<div style={css}>', "<div style='width:{w}px'>"]) assert.ok(DYNAMIC_STYLE.test(s), s);
+	for (const s of ['<div style:width="{w}px">', '<div style:--h={hue}>', '<div style="color: red">']) assert.ok(!DYNAMIC_STYLE.test(s), s);
 });

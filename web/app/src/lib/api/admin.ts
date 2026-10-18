@@ -65,6 +65,31 @@ export interface Status {
 	warnings: string[];
 }
 
+/** Admin → Server settings (D35): read-only; the config file is the only way to change them. */
+export interface ServerSettings {
+	config: {
+		public_origin: string;
+		listen: string;
+		trusted_proxies: string[];
+		web_app: boolean;
+		libraries: string[];
+		ffmpeg_jobs: number;
+		cache_max_gib: number;
+	};
+	rules: {
+		two_step: 'always';
+		access_minutes: number;
+		sign_in_days: number;
+		step_up_minutes: number;
+		max_devices: number;
+		invite_hours: number;
+		history_days: number;
+		abandoned_days: number;
+		audit_days: number;
+		audit_rows: number;
+	};
+}
+
 /** A start-up report from a browser left with a blank page (static/diag.js). */
 export interface DiagReport {
 	at: number;
@@ -139,6 +164,7 @@ export const adminApi = {
 	library: () => api<LibraryView>('v1/admin/library'),
 	scan: () => api('v1/admin/library/scan', { method: 'POST' }),
 	status: () => api<Status>('v1/admin/status'),
+	settings: () => api<ServerSettings>('v1/admin/settings'),
 	jobs: () => api<JobsView>('v1/admin/jobs'),
 	retryCopy: (id: string) => post(`v1/admin/jobs/copies/${id}/retry`, {}),
 	clearCache: () => post<{ freed_bytes: number }>('v1/admin/cache/clear', {}),

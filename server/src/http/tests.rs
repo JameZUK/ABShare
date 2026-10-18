@@ -870,6 +870,7 @@ fn setup_media() -> M {
     };
     let roots = [("Audiobooks".to_owned(), lib), ("Kids".to_owned(), kids)].into_iter().collect();
     st.media = Some(Arc::new(crate::media::Media::new(ff, data, roots)));
+    st.settings = crate::http::ServerSettings { listen: "127.0.0.1:8743".into(), ffmpeg_jobs: 2, cache_max_gib: 25 };
     let st = Arc::new(st);
     M { t: T { app: router(st.clone()), st }, dir }
 }
@@ -1664,6 +1665,7 @@ async fn admin_routes_refuse_listeners_and_strangers() {
         ("GET", "/v1/admin/library"),
         ("POST", "/v1/admin/library/scan"),
         ("GET", "/v1/admin/status"),
+        ("GET", "/v1/admin/settings"),
     ] {
         let body = matches!(m, "PATCH" | "POST").then(|| json!({}));
         assert_eq!(as_user(&t, m, uri, body.clone(), &listener).await.status(), StatusCode::FORBIDDEN, "{m} {uri}");
@@ -1787,6 +1789,35 @@ async fn admin_status_and_library_views_answer() {
     assert_eq!(as_user(&m.t, "POST", "/v1/admin/library/scan", None, &a).await.status(), StatusCode::ACCEPTED);
     let r = as_user(&m.t, "GET", "/v1/admin/library", None, &a).await;
     assert_eq!(json_of(r).await["scan_requested"], true);
+}
+
+#[tokio::test]
+async fn admins_see_server_settings_without_file_paths_and_cannot_change_them() {
+    let m = setup_media();
+    let (_, a) = admin(&m.t, "ops").await;
+    let r = as_user(&m.t, "GET", "/v1/admin/settings", None, &a).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let v = json_of(r).await;
+    assert_eq!(v["config"]["public_origin"], ORIGIN);
+    assert_eq!(v["config"]["listen"], "127.0.0.1:8743");
+    assert_eq!(v["config"]["trusted_proxies"], json!(["10.0.0.10"]));
+    assert_eq!(v["config"]["libraries"], json!(["Audiobooks", "Kids"]));
+    assert_eq!(v["config"]["ffmpeg_jobs"], 2);
+    assert_eq!(v["config"]["cache_max_gib"], 25);
+    assert_eq!(v["config"]["web_app"], false);
+    assert_eq!(v["rules"]["two_step"], "always");
+    assert_eq!(v["rules"]["invite_hours"], crate::admin::INVITE_HOURS);
+    assert_eq!(v["rules"]["abandoned_days"], 30);
+    // No file paths: not the library roots, the data directory or the ffmpeg tools.
+    let text = v.to_string();
+    let root = m.dir.to_string_lossy();
+    assert!(!text.contains(root.as_ref()), "{text}");
+    assert!(!text.contains("/nonexistent"), "{text}");
+    // Read-only: there is no way to change a setting through the API.
+    for method in ["PUT", "PATCH", "POST", "DELETE"] {
+        let r = as_user(&m.t, method, "/v1/admin/settings", Some(json!({"cache_max_gib": 1})), &a).await;
+        assert_eq!(r.status(), StatusCode::METHOD_NOT_ALLOWED, "{method}");
+    }
 }
 
 #[tokio::test]
@@ -3274,4 +3305,197 @@ async fn offline_listening_is_replayed_into_history_once_and_only_for_the_listen
     let r = as_user(&m.t, "POST", "/v1/me/history/replay", Some(json!({"book": BOOK, "key": "replay-0010", "reports": [{"event_time_ms": t0, "position_ms": 1000}, {"event_time_ms": t0 + 15_000, "position_ms": 16_000}]})), &amy).await;
     assert_eq!(r.status(), StatusCode::OK);
     assert_eq!(get_json(&m.t, &uri, &amy).await.1["sessions"], json!([]));
+}
+
+// ---------------------------------------------------------------- 0.11 review regressions
+
+/// A replay batch: `n` reports 15 s apart from `t0`, heard from `from_ms`.
+fn replay_body(key: &str, t0: i64, from_ms: i64, n: i64) -> Value {
+    let reports: Vec<Value> =
+        (0..n).map(|i| json!({"event_time_ms": t0 + i * 15_000, "position_ms": from_ms + i * 15_000})).collect();
+    json!({"book": BOOK, "key": key, "reports": reports})
+}
+
+#[tokio::test]
+async fn offline_replay_is_limited_per_person_not_per_device() {
+    // Review S1: the limit was per device, so twenty devices got twenty times the allowance
+    // of a request that holds the database for a whole batch.
+    let m = setup_media();
+    let (seed, phone, ..) = enrol(&m.t, "joe").await;
+    let (tablet, _) = another_device(&m.t, "joe", &seed).await;
+    let t0 = super::now() * 1000 - 3 * 3600 * 1000;
+    for i in 0..12 {
+        let body = replay_body(&format!("replay-limit-{i:02}"), t0 + i * 60_000, i * 60_000, 2);
+        let r = as_user(&m.t, "POST", "/v1/me/history/replay", Some(body), &phone).await;
+        assert_eq!(r.status(), StatusCode::OK, "{i}");
+    }
+    let body = replay_body("replay-limit-tablet", t0 + 13 * 60_000, 13 * 60_000, 2);
+    let r = as_user(&m.t, "POST", "/v1/me/history/replay", Some(body), &tablet).await;
+    assert_eq!(r.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn replaying_the_same_listening_under_a_new_key_adds_nothing() {
+    // Review S2 (and W11): only an exact retry was caught; the same reports under another key
+    // were counted again, without limit.
+    let m = setup_media();
+    let (joe, _) = listener(&m).await;
+    let t0 = super::now() * 1000 - 3 * 3600 * 1000;
+    let r = as_user(&m.t, "POST", "/v1/me/history/replay", Some(replay_body("replay-once-1", t0, 0, 7)), &joe).await;
+    assert_eq!(json_of(r).await, json!({"result": "accepted", "recorded": 7}));
+    for key in ["replay-once-2", "replay-once-3"] {
+        let r = as_user(&m.t, "POST", "/v1/me/history/replay", Some(replay_body(key, t0, 0, 7)), &joe).await;
+        assert_eq!(json_of(r).await, json!({"result": "accepted", "recorded": 0}), "{key}");
+    }
+    let (_, v) = get_json(&m.t, "/v1/me/history", &joe).await;
+    assert_eq!(v["totals"]["all_seconds"], 90, "{v}");
+    let (_, v) = get_json(&m.t, &format!("/v1/me/history/books/{BOOK}"), &joe).await;
+    assert_eq!(v["sessions"].as_array().map(Vec::len), Some(1), "{v}");
+    // Later listening still counts.
+    let r = as_user(
+        &m.t,
+        "POST",
+        "/v1/me/history/replay",
+        Some(replay_body("replay-once-4", t0 + 600_000, 90_000, 3)),
+        &joe,
+    )
+    .await;
+    assert_eq!(json_of(r).await["recorded"], 3);
+}
+
+#[tokio::test]
+async fn replay_with_history_off_records_nothing_and_old_keys_are_pruned() {
+    // Review S9 (said it recorded what it didn't) and S6 (replay keys were never pruned).
+    let m = setup_media();
+    let (joe, _) = listener(&m).await;
+    {
+        let c = m.t.st.db.0.lock().expect("db");
+        c.execute("UPDATE user SET history_off = 1 WHERE username = 'joe'", []).expect("off");
+        c.execute(
+            "INSERT INTO progress_key (user_id, key, at) SELECT id, 'ancient-key', ?1 FROM user WHERE username = 'joe'",
+            [super::now() - 200 * 86_400],
+        )
+        .expect("old key");
+    }
+    let t0 = super::now() * 1000 - 3600 * 1000;
+    let r = as_user(&m.t, "POST", "/v1/me/history/replay", Some(replay_body("replay-off-1", t0, 0, 3)), &joe).await;
+    assert_eq!(json_of(r).await, json!({"result": "accepted", "recorded": 0}));
+    let c = m.t.st.db.0.lock().expect("db");
+    let old: i64 =
+        c.query_row("SELECT count(*) FROM progress_key WHERE key = 'ancient-key'", [], |r| r.get(0)).expect("n");
+    assert_eq!(old, 0);
+}
+
+#[tokio::test]
+async fn new_admin_writes_need_step_up() {
+    // Review S5: removing step-up from these routes failed no test.
+    let m = setup_media();
+    let (_, plain, ..) = enrol_role(&m.t, "adm3", Role::Admin).await;
+    for (method, uri, body) in [
+        (
+            "POST",
+            "/v1/admin/recommendations".to_owned(),
+            Some(json!({"books": [BOOK], "note": "Good.", "everyone": true})),
+        ),
+        ("DELETE", "/v1/admin/recommendations/1".to_owned(), None),
+        ("DELETE", format!("/v1/admin/books/{BOOK}/reviews/1"), None),
+    ] {
+        let r = as_user(&m.t, method, &uri, body, &plain).await;
+        assert_eq!(r.status(), StatusCode::FORBIDDEN, "{method} {uri}");
+        assert_eq!(json_of(r).await["error"], "step_up_required", "{method} {uri}");
+    }
+}
+
+#[tokio::test]
+async fn review_bodies_are_held_to_16_kib_and_review_writes_are_rate_limited() {
+    // Review S7 (social routes missed the 16 KiB limit) and S11 (no rate limit).
+    let m = setup_media();
+    let (joe, _) = listener(&m).await;
+    let uri = format!("/v1/books/{BOOK}/review");
+    let big = json!({"rating": 4, "comment": "x".repeat(20 * 1024)});
+    assert_eq!(as_user(&m.t, "PUT", &uri, Some(big), &joe).await.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let mut limited = false;
+    for i in 0..40 {
+        let r = as_user(&m.t, "PUT", &uri, Some(json!({"rating": 1 + i % 5})), &joe).await;
+        if r.status() == StatusCode::TOO_MANY_REQUESTS {
+            limited = true;
+            break;
+        }
+        assert_eq!(r.status(), StatusCode::NO_CONTENT, "{i}");
+    }
+    assert!(limited, "40 review writes in a minute were all accepted");
+}
+
+#[tokio::test]
+async fn a_recommendation_of_books_you_cannot_see_cannot_be_found_or_dismissed() {
+    // Review S10: "everyone" recommendations of books outside the listener's libraries
+    // answered 204 to dismiss, revealing that they exist.
+    let m = setup_media();
+    let (joe, _) = listener(&m).await;
+    let (_, a) = admin(&m.t, "boss2").await;
+    let r = as_user(
+        &m.t,
+        "POST",
+        "/v1/admin/recommendations",
+        Some(json!({"books": [KIDS_BOOK], "note": "For the kids.", "everyone": true})),
+        &a,
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let id = json_of(r).await["id"].as_i64().expect("id");
+    let r = as_user(&m.t, "POST", &format!("/v1/recommendations/{id}/dismiss"), None, &joe).await;
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn new_routes_refuse_unknown_query_parameters_and_unexpected_bodies() {
+    // Pentest P17 (unknown query parameters ignored) and P15 (dismiss accepted any body).
+    let m = setup_media();
+    let (joe, _) = listener(&m).await;
+    let (_, a) = admin(&m.t, "boss3").await;
+    for (uri, who) in [
+        (format!("/v1/books/{BOOK}/reviews?x=1"), &joe),
+        (format!("/v1/me/history/books/{BOOK}?x=1"), &joe),
+        ("/v1/admin/listening?x=1".to_owned(), &a),
+        ("/v1/admin/users/1/listening?x=1".to_owned(), &a),
+        ("/v1/admin/recommendations?x=1".to_owned(), &a),
+        ("/v1/admin/settings?x=1".to_owned(), &a),
+    ] {
+        assert_eq!(as_user(&m.t, "GET", &uri, None, who).await.status(), StatusCode::BAD_REQUEST, "{uri}");
+    }
+    let r = as_user(
+        &m.t,
+        "POST",
+        "/v1/admin/recommendations",
+        Some(json!({"books": [BOOK], "note": "Good.", "everyone": true})),
+        &a,
+    )
+    .await;
+    let id = json_of(r).await["id"].as_i64().expect("id");
+    let uri = format!("/v1/recommendations/{id}/dismiss");
+    let r = as_user(&m.t, "POST", &uri, Some(json!({"anything": 1})), &joe).await;
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(as_user(&m.t, "POST", &uri, None, &joe).await.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn people_can_delete_their_own_review_after_losing_access_to_the_book() {
+    // Pentest P18: the review stayed visible to others, but its author got 404 deleting it.
+    let m = setup_media();
+    let (joe, _) = listener(&m).await;
+    let uri = format!("/v1/books/{KIDS_BOOK}/review");
+    let set = |libs: &str| {
+        let c = m.t.st.db.0.lock().expect("db");
+        c.execute("UPDATE user SET libraries = ?1 WHERE username = 'joe'", [libs]).expect("perms");
+    };
+    set("*");
+    assert_eq!(as_user(&m.t, "PUT", &uri, Some(json!({"rating": 2})), &joe).await.status(), StatusCode::NO_CONTENT);
+    set("[\"Audiobooks\"]");
+    // Still can't read or write reviews of a book he can't see…
+    assert_eq!(as_user(&m.t, "PUT", &uri, Some(json!({"rating": 3})), &joe).await.status(), StatusCode::NOT_FOUND);
+    // …but can remove his own, once.
+    assert_eq!(as_user(&m.t, "DELETE", &uri, None, &joe).await.status(), StatusCode::NO_CONTENT);
+    assert_eq!(as_user(&m.t, "DELETE", &uri, None, &joe).await.status(), StatusCode::NOT_FOUND);
+    let bad = "/v1/books/..%2F..%2Fetc/review";
+    assert_eq!(as_user(&m.t, "DELETE", bad, None, &joe).await.status(), StatusCode::NOT_FOUND);
 }

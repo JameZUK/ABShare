@@ -27,6 +27,16 @@ pub fn routes() -> Router<State> {
 const MIN_LISTED_MS: i64 = 1_000;
 const DAY_MS: i64 = 24 * 3600 * 1000;
 
+/// What [`record`] did with a report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Recorded {
+    /// History is off, or the report repeats the newest one: nothing changed.
+    Nothing,
+    Extended,
+    /// A new session: the caller runs [`cap`] once it has recorded everything (review S1).
+    Started,
+}
+
 /// Records an accepted position report into the history, inside the caller's transaction.
 /// Does nothing when the person has turned history off.
 pub(super) fn record(
@@ -36,14 +46,14 @@ pub(super) fn record(
     book: &str,
     event_time: i64,
     position_ms: u64,
-) -> Result<(), String> {
+) -> Result<Recorded, String> {
     let off: bool = c
         .query_row("SELECT history_off FROM user WHERE id = ?1", [uid], |r| r.get(0))
         .optional()
         .map_err(crate::db::sql_err)?
         .unwrap_or(true);
     if off {
-        return Ok(());
+        return Ok(Recorded::Nothing);
     }
     let tail: Option<(i64, Tail)> = c
         .query_row(
@@ -58,7 +68,7 @@ pub(super) fn record(
     // The same report again (an offline report replayed, then the same position sent as
     // progress): nothing to add.
     if tail.is_some_and(|(_, t)| t.ended_at == event_time && t.position_ms == position_ms) {
-        return Ok(());
+        return Ok(Recorded::Nothing);
     }
     match (history::step(tail.map(|t| t.1), event_time, position_ms), tail) {
         (Step::Extend { ended_at, position_ms, heard_ms }, Some((id, _))) => {
@@ -67,6 +77,7 @@ pub(super) fn record(
                 params![id, ended_at, pos(position_ms), pos(heard_ms)],
             )
             .map_err(crate::db::sql_err)?;
+            Ok(Recorded::Extended)
         }
         (Step::Start { at, position_ms }, _) | (Step::Extend { ended_at: at, position_ms, .. }, None) => {
             c.execute(
@@ -75,10 +86,20 @@ pub(super) fn record(
                 params![uid, book, device, at, pos(position_ms)],
             )
             .map_err(crate::db::sql_err)?;
-            cap(c, uid, MAX_SESSIONS)?;
+            Ok(Recorded::Started)
         }
     }
-    Ok(())
+}
+
+/// The newest moment this device has recorded for this book, if any: replayed reports at or
+/// before it were heard already (review S2).
+fn device_tail(c: &Connection, uid: i64, device: i64, book: &str) -> Result<Option<i64>, String> {
+    c.query_row(
+        "SELECT max(ended_at) FROM listening WHERE user_id = ?1 AND book_id = ?2 AND device_id = ?3",
+        params![uid, book, device],
+        |r| r.get(0),
+    )
+    .map_err(crate::db::sql_err)
 }
 
 /// Keeps only the person's newest `keep` sessions.
@@ -200,7 +221,12 @@ async fn list(S(st): S<State>, Authed(s): Authed, Query(q): Query<ListQuery>) ->
 /// `GET /v1/me/history/books/{id}`: the caller's own listening of one book, newest first:
 /// each stretch with when it began and ended and where in the book, so they can play from
 /// any of those places. Owner only; there is no admin equivalent (SPEC D31).
-async fn book_timeline(S(st): S<State>, Authed(s): Authed, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
+async fn book_timeline(
+    S(st): S<State>,
+    Authed(s): Authed,
+    Path(id): Path<String>,
+    Query(_): Query<super::NoQuery>,
+) -> Result<Json<Value>, ApiError> {
     let (cat, ok) = view(&st, &s).await?;
     let book = super::library_routes::find(&cat, &ok, &id)?;
     let (uid, bid, duration) = (s.user, book.id.clone(), book.duration_ms);
@@ -245,6 +271,10 @@ async fn book_timeline(S(st): S<State>, Authed(s): Authed, Path(id): Path<String
 /// body limit of `/v1/me`).
 const MAX_REPLAY: usize = 200;
 
+/// Replays a minute for each person, across all their devices (review S1): each one holds
+/// the database for a whole batch.
+pub(super) const REPLAYS_PER_MINUTE: usize = 12;
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Heard {
@@ -273,7 +303,7 @@ async fn replay(S(st): S<State>, Authed(s): Authed, Json(b): Json<ReplayBody>) -
     if b.reports.is_empty() || b.reports.len() > MAX_REPLAY {
         return Err(ApiError::bad(format!("Send between 1 and {MAX_REPLAY} reports.")));
     }
-    if !st.progress_limit.allow((s.device, "history-replay".to_owned()), now()) {
+    if !st.replay_limit.allow(s.user, now()) {
         return Err(ApiError::too_many());
     }
     let now = now_ms();
@@ -303,16 +333,26 @@ async fn replay(S(st): S<State>, Authed(s): Authed, Json(b): Json<ReplayBody>) -
             if seen {
                 return Ok((true, 0));
             }
-            for &(at, position) in &reports {
-                record(&tx, uid, device, &bid, at, position)?;
+            // Only what this device hasn't recorded yet: the same reports under a new key
+            // (a retry after a lost answer) add nothing, so time heard is counted once.
+            let after = device_tail(&tx, uid, device, &bid)?.unwrap_or(i64::MIN);
+            let (mut recorded, mut started) = (0, false);
+            for &(at, position) in reports.iter().filter(|(at, _)| *at > after) {
+                match record(&tx, uid, device, &bid, at, position)? {
+                    Recorded::Nothing => {}
+                    Recorded::Extended => recorded += 1,
+                    Recorded::Started => (recorded, started) = (recorded + 1, true),
+                }
             }
-            tx.execute(
-                "INSERT INTO progress_key (user_id, key, at) VALUES (?1, ?2, ?3)",
-                params![uid, key, super::now()],
-            )
-            .map_err(crate::db::sql_err)?;
+            if started {
+                cap(&tx, uid, MAX_SESSIONS)?;
+            }
+            let at = super::now();
+            tx.execute("INSERT INTO progress_key (user_id, key, at) VALUES (?1, ?2, ?3)", params![uid, key, at])
+                .map_err(crate::db::sql_err)?;
+            tx.execute("DELETE FROM progress_key WHERE at < ?1", [at - 100 * 86_400]).map_err(crate::db::sql_err)?;
             tx.commit().map_err(crate::db::sql_err)?;
-            Ok((false, reports.len()))
+            Ok((false, recorded))
         })
         .await?;
     Ok(Json(json!({ "result": if duplicate { "duplicate" } else { "accepted" }, "recorded": recorded })))
@@ -417,7 +457,11 @@ fn counts(sm: &Summary) -> Value {
     })
 }
 
-async fn admin_people(S(st): S<State>, Admin(_): Admin) -> Result<Json<Value>, ApiError> {
+async fn admin_people(
+    S(st): S<State>,
+    Admin(_): Admin,
+    Query(_): Query<super::NoQuery>,
+) -> Result<Json<Value>, ApiError> {
     let now = now_ms();
     let people = st
         .db
@@ -444,7 +488,12 @@ async fn admin_people(S(st): S<State>, Admin(_): Admin) -> Result<Json<Value>, A
     Ok(Json(json!({ "people": people })))
 }
 
-async fn admin_person(S(st): S<State>, Admin(_): Admin, Path(id): Path<i64>) -> Result<Json<Value>, ApiError> {
+async fn admin_person(
+    S(st): S<State>,
+    Admin(_): Admin,
+    Path(id): Path<i64>,
+    Query(_): Query<super::NoQuery>,
+) -> Result<Json<Value>, ApiError> {
     let cat = st.catalog().await?;
     let now = now_ms();
     type Session = (String, i64, i64, i64);

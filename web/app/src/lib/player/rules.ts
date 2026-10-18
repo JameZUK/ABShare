@@ -2,6 +2,14 @@
 import type { QualityMode, SaverKbps } from '$lib/settings.svelte';
 
 /** How far to rewind on resuming after a pause of `pausedMs` (SPEC §7.3). */
+/** A requested start position (a history point, a bookmark) made safe: within the book and
+ *  short of its very end, so opening there doesn't finish the book at once (review W13). */
+export function clampStart(ms: number, durationMs: number): number {
+	if (!Number.isFinite(ms)) return 0;
+	const limit = Number.isFinite(durationMs) && durationMs > 500 ? durationMs - 500 : 0;
+	return Math.max(0, Math.min(ms, limit));
+}
+
 export function autoRewindMs(pausedMs: number): number {
 	if (pausedMs < 60_000) return 0;
 	if (pausedMs < 10 * 60_000) return 2_000;

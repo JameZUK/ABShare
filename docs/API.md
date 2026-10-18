@@ -518,9 +518,10 @@ Your history here, and positions in it, are yours. Admins have a separate summar
 
 Positions reported while offline, replayed into your history (SPEC D33). Progress is not changed.
 
-- **Body:** `{"book": "<id>", "key": "<8–64 of A–Z a–z 0–9 - _>", "reports": [{"event_time_ms", "position_ms"}, …]}`, with 1 to 200 reports in any order. They are applied in time order with the usual rules; reports more than 90 days old or over 5 minutes in the future are skipped, and positions are clamped to the book's length.
-- **Response:** `{"result": "accepted", "recorded": n}`, or `{"result": "duplicate", "recorded": 0}` for a key already used (a retried request). With history off, it is accepted and records nothing.
-- **Errors:** `400` (bad key, or no reports or too many); `404` (unknown book, or one outside your libraries); `422` (other malformed bodies); `429`.
+- **Body:** `{"book": "<id>", "key": "<8–64 of A–Z a–z 0–9 - _>", "reports": [{"event_time_ms", "position_ms"}, …]}`, with 1 to 200 reports in any order. They are applied in time order with the usual rules; reports more than 90 days old or over 5 minutes in the future are skipped, positions are clamped to the book's length, and reports at or before the newest moment this device has already recorded for the book are skipped (so the same listening sent again under a new key adds nothing).
+- **Response:** `{"result": "accepted", "recorded": n}`, where `n` counts the reports that changed the history (`0` with history off); or `{"result": "duplicate", "recorded": 0}` for a key already used (a retried request).
+- **Limits:** 12 replays a minute per person, across all their devices.
+- **Errors:** `400` (bad key, or no reports or too many); `404` (unknown book, or one outside your libraries); `413` (a body over 16 KiB); `422` (other malformed bodies); `429`.
 
 #### `PATCH /v1/me/history`
 
@@ -752,11 +753,11 @@ Anyone who can see a book can rate it from 1 to 5 stars, with an optional commen
 
 - **Body:** `{"rating": 1-5, "comment": "…"}`. `comment` is optional (default empty). It is cleaned like other free text (control and invisible characters removed, whitespace collapsed to one paragraph) and is shown only as text.
 - **Response:** `204`.
-- **Errors:** `400` (a rating outside 1–5); `422` (a rating that isn't a whole number, or unknown fields); `422 too_long` (over 50 words or 400 characters after cleaning); `404`.
+- **Errors:** `400` (a rating outside 1–5); `422` (a rating that isn't a whole number, or unknown fields); `422 too_long` (over 50 words or 400 characters after cleaning); `404`; `413` (a body over 16 KiB); `429` (more than 20 review writes and dismissals a minute from one device).
 
 #### `DELETE /v1/books/{id}/review`
 
-- **Response:** `204`, removing the caller's own review. **Errors:** `404` (no review, or no such book).
+- **Response:** `204`, removing the caller's own review. This works even after the caller has lost access to the book. **Errors:** `404` (no review by the caller for that ID).
 
 The book detail (`GET /v1/books/{id}`) also carries `"rating": {"average", "count"}`.
 
@@ -776,8 +777,8 @@ Newest first, at most 20.
 
 #### `POST /v1/recommendations/{id}/dismiss`
 
-- **Body:** none. **Response:** `204`; the recommendation no longer appears for the caller.
-- **Errors:** `404` (no such recommendation, or one not addressed to the caller).
+- **Body:** none (a body is refused with `400`). **Response:** `204`; the recommendation no longer appears for the caller.
+- **Errors:** `404` (no such recommendation, one not addressed to the caller, or one whose books the caller can't see); `429` (shares the review writes' limit).
 
 ---
 
@@ -1017,6 +1018,27 @@ Read-only: admin role, no step-up, not audited. Nothing here includes a position
 - **Errors:** `404`.
 
 ### Status
+
+#### `GET /v1/admin/settings`
+
+Server settings (SPEC D35), read-only: there is no route that changes them; they are changed in `abshare.toml`.
+
+```json
+{
+  "config": {
+    "public_origin": "https://books.example.com", "listen": "127.0.0.1:8743",
+    "trusted_proxies": ["10.0.0.10"], "web_app": true, "libraries": ["Audiobooks"],
+    "ffmpeg_jobs": 1, "cache_max_gib": 10
+  },
+  "rules": {
+    "two_step": "always", "access_minutes": 15, "sign_in_days": 90, "step_up_minutes": 10,
+    "max_devices": 20, "invite_hours": 72, "history_days": 395, "abandoned_days": 30,
+    "audit_days": 365, "audit_rows": 500000
+  }
+}
+```
+
+No file paths are included (library roots, the data directory, the ffmpeg tools); `abshare doctor` shows those on the server itself.
 
 #### `GET /v1/admin/status`
 

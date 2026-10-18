@@ -3,6 +3,13 @@ import { fireEvent, render, screen } from '@testing-library/svelte';
 import { NOTE_CHARS, NOTE_WORDS, REVIEW_CHARS, REVIEW_WORDS, collapse, countChars, countWords, withinLimit } from '$lib/words';
 import Stars from '$lib/components/Stars.svelte';
 
+const mocks = vi.hoisted(() => ({ api: vi.fn() }));
+vi.mock('$lib/api/session.svelte', () => ({
+	session: { status: 'signed-in', user: { username: 'ada', display_name: 'Ada', role: 'listener' } },
+	api: mocks.api,
+	post: vi.fn(),
+}));
+
 test('words are counted on collapsed whitespace', () => {
 	expect(countWords('')).toBe(0);
 	expect(countWords('   \n\t ')).toBe(0);
@@ -51,4 +58,41 @@ test('the star input is five labelled radio buttons that set the rating', async 
 	expect((screen.getByRole('radio', { name: '4 stars' }) as HTMLInputElement).checked).toBe(true);
 	// Radios in one group: the keyboard moves between them natively.
 	expect(new Set(radios.map((r) => (r as HTMLInputElement).name)).size).toBe(1);
+});
+
+describe('Reviews', () => {
+	const A = 'aaaaaaaaaaaaaaaaaaaaaaaaaa';
+	const B = 'bbbbbbbbbbbbbbbbbbbbbbbbbb';
+	const viewOf = (name: string, comment: string) => ({
+		average: 4,
+		count: 1,
+		mine: null,
+		reviews: [{ name, rating: 4, comment, updated_at: 1_700_000_000, mine: false }],
+	});
+
+	test('a slow answer for the previous book is not shown on the next one (review W14)', async () => {
+		const { default: Reviews } = await import('$lib/components/Reviews.svelte');
+		let releaseA: (v: unknown) => void = () => {};
+		mocks.api.mockImplementation((path: string) =>
+			path.includes(A) ? new Promise((r) => (releaseA = r)) : Promise.resolve(viewOf('Bea', 'About book B.')),
+		);
+		const r = render(Reviews, { bookId: A });
+		await r.rerender({ bookId: B });
+		await screen.findByText('About book B.');
+		releaseA(viewOf('Al', 'About book A.'));
+		await new Promise((res) => setTimeout(res, 20));
+		expect(screen.queryByText('About book A.')).toBeNull();
+		expect(screen.getByText('About book B.')).toBeTruthy();
+	});
+
+	test('two reviews with the same name and time both show (review W15)', async () => {
+		const { default: Reviews } = await import('$lib/components/Reviews.svelte');
+		const v = viewOf('Sam', 'First.');
+		v.count = 2;
+		v.reviews.push({ ...v.reviews[0]!, comment: 'Second.' });
+		mocks.api.mockResolvedValue(v);
+		render(Reviews, { bookId: A });
+		await screen.findByText('First.');
+		expect(screen.getByText('Second.')).toBeTruthy();
+	});
 });

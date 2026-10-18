@@ -11,6 +11,7 @@
 		['#/admin/jobs', 'Jobs'],
 		['#/admin/recommend', 'Recommend'],
 		['#/admin/audit', 'Audit log'],
+		['#/admin/settings', 'Settings'],
 	] as const;
 </script>
 

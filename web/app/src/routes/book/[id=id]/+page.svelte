@@ -201,7 +201,9 @@
 			</section>
 		{/if}
 
-		<Reviews bookId={book.id} onsummary={(v) => (summary = v)} />
+		{#key book.id}
+			<Reviews bookId={book.id} onsummary={(v) => (summary = v)} />
+		{/key}
 
 		{#if book.chapters.length}
 			<section>

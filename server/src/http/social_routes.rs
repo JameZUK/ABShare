@@ -12,12 +12,12 @@
 
 use super::admin_routes::{Admin, step_up};
 use super::library_routes::{ProgressMap, find, summary, view};
-use super::{ApiError, Authed, Ip, State, now};
+use super::{ApiError, Authed, Ip, NoQuery, State, now};
 use crate::auth::store::{self, Role};
 use crate::library::Catalog;
 use abshare_core::ids::is_valid_id;
 use abshare_core::text::limited_text;
-use axum::extract::{Path, State as S};
+use axum::extract::{Path, Query, State as S};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
@@ -37,6 +37,8 @@ const MAX_REC_USERS: usize = 100;
 const MAX_RECS: i64 = 500;
 const MAX_REVIEWS_LISTED: i64 = 200;
 const HOME_RECS: usize = 20;
+/// Review writes and dismissals a minute, per device (review S11).
+pub const WRITES_PER_MINUTE: usize = 20;
 
 /// Routes under `/v1`.
 pub fn routes() -> Router<State> {
@@ -44,6 +46,12 @@ pub fn routes() -> Router<State> {
         .route("/books/{id}/reviews", get(reviews))
         .route("/books/{id}/review", put(put_review).delete(delete_review))
         .route("/recommendations/{id}/dismiss", post(dismiss))
+        // Merged after the library routes' own limit is applied, so set it here (review S7).
+        .layer(axum::extract::DefaultBodyLimit::max(16 * 1024))
+}
+
+fn writes_allowed(st: &State, device: i64) -> Result<(), ApiError> {
+    if st.social_limit.allow(device, now()) { Ok(()) } else { Err(ApiError::too_many()) }
 }
 
 /// Routes under `/v1/admin`.
@@ -77,7 +85,12 @@ pub(super) fn rating_of(c: &Connection, book: &str) -> Result<Value, String> {
     Ok(json!({ "average": avg.map(|a| (a * 10.0).round() / 10.0), "count": count }))
 }
 
-async fn reviews(S(st): S<State>, Authed(s): Authed, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
+async fn reviews(
+    S(st): S<State>,
+    Authed(s): Authed,
+    Path(id): Path<String>,
+    Query(_): Query<NoQuery>,
+) -> Result<Json<Value>, ApiError> {
     let (cat, ok) = view(&st, &s).await?;
     let bid = find(&cat, &ok, &id)?.id.clone();
     let uid = s.user;
@@ -134,6 +147,7 @@ async fn put_review(
     Path(id): Path<String>,
     Json(b): Json<ReviewBody>,
 ) -> Result<StatusCode, ApiError> {
+    writes_allowed(&st, s.device)?;
     let (cat, ok) = view(&st, &s).await?;
     let bid = find(&cat, &ok, &id)?.id.clone();
     if !(1..=5).contains(&b.rating) {
@@ -156,9 +170,13 @@ async fn put_review(
 }
 
 async fn delete_review(S(st): S<State>, Authed(s): Authed, Path(id): Path<String>) -> Result<StatusCode, ApiError> {
-    let (cat, ok) = view(&st, &s).await?;
-    let bid = find(&cat, &ok, &id)?.id.clone();
-    let uid = s.user;
+    writes_allowed(&st, s.device)?;
+    // Your own review can be removed even after you lose access to the book (pentest P18):
+    // it only ever touches your own row, so nothing about the book is revealed.
+    if !is_valid_id(&id) {
+        return Err(ApiError::not_found());
+    }
+    let (uid, bid) = (s.user, id);
     let n = st
         .db
         .run(move |c| {
@@ -249,7 +267,18 @@ pub(super) fn recommended_for(
     Ok(out)
 }
 
-async fn dismiss(S(st): S<State>, Authed(s): Authed, Path(id): Path<i64>) -> Result<StatusCode, ApiError> {
+async fn dismiss(
+    S(st): S<State>,
+    Authed(s): Authed,
+    Path(id): Path<i64>,
+    body: axum::body::Bytes,
+) -> Result<StatusCode, ApiError> {
+    // It takes no body; one sent anyway is refused, not ignored (pentest P15).
+    if !body.is_empty() {
+        return Err(ApiError::bad("This request takes no body."));
+    }
+    writes_allowed(&st, s.device)?;
+    let (cat, ok) = view(&st, &s).await?;
     let uid = s.user;
     let found = st
         .db
@@ -262,20 +291,30 @@ async fn dismiss(S(st): S<State>, Authed(s): Authed, Path(id): Path<i64>) -> Res
                     |r| r.get(0),
                 )
                 .map_err(crate::db::sql_err)?;
-            if addressed {
+            // One of only books they can't see is never shown to them, so it isn't there
+            // for them either (review S10).
+            let mut stmt =
+                c.prepare("SELECT book_id FROM recommendation_book WHERE rec_id = ?1").map_err(crate::db::sql_err)?;
+            let books: Vec<String> = stmt
+                .query_map([id], |r| r.get(0))
+                .map_err(crate::db::sql_err)?
+                .collect::<Result<_, _>>()
+                .map_err(crate::db::sql_err)?;
+            let visible = books.iter().any(|b| find(&cat, &ok, b).is_ok());
+            if addressed && visible {
                 c.execute(
                     "INSERT OR IGNORE INTO recommendation_dismissed (rec_id, user_id, at) VALUES (?1, ?2, ?3)",
                     params![id, uid, now()],
                 )
                 .map_err(crate::db::sql_err)?;
             }
-            Ok(addressed)
+            Ok(addressed && visible)
         })
         .await?;
     if found { Ok(StatusCode::NO_CONTENT) } else { Err(ApiError::not_found()) }
 }
 
-async fn admin_list(S(st): S<State>, Admin(_): Admin) -> Result<Json<Value>, ApiError> {
+async fn admin_list(S(st): S<State>, Admin(_): Admin, Query(_): Query<NoQuery>) -> Result<Json<Value>, ApiError> {
     let cat = st.catalog().await?;
     let rows = st
         .db

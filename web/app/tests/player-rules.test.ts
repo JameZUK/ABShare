@@ -1,6 +1,6 @@
 // Pure player rules: chapters, auto-rewind, the sleep fade, quality choice and resume.
 import { chapterAt, nextTarget, previousTarget, span } from '$lib/player/chapters';
-import { autoRewindMs, chooseQuality, fadeVolume, streamUrl } from '$lib/player/rules';
+import { autoRewindMs, chooseQuality, clampStart, fadeVolume, streamUrl } from '$lib/player/rules';
 import type { Chapter } from '$lib/api/types';
 
 vi.mock('$lib/api/session.svelte', () => ({ session: { status: 'signed-out', user: null }, api: vi.fn() }));
@@ -75,4 +75,15 @@ test('resume picks the newer of the server and device positions', () => {
 	expect(startPosition(null, { position_ms: -5, at: 1 }, hour)).toBe(0);
 	expect(startPosition(null, { position_ms: 13_000, at: 1 }, 20_000), 'short items resume too').toBe(13_000);
 	expect(startPosition(null, { position_ms: 19_700, at: 1 }, 20_000)).toBe(0);
+});
+
+test('a requested start position stays within the book, short of its end (review W13)', () => {
+	const D = 3_600_000;
+	expect(clampStart(120_000, D)).toBe(120_000);
+	expect(clampStart(D, D)).toBe(D - 500);
+	expect(clampStart(D + 1e9, D)).toBe(D - 500);
+	expect(clampStart(-1, D)).toBe(0);
+	expect(clampStart(NaN, D)).toBe(0);
+	expect(clampStart(Infinity, D)).toBe(0);
+	expect(clampStart(10_000, 0)).toBe(0);
 });

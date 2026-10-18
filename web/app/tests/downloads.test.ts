@@ -90,3 +90,28 @@ test('removing a download deletes it', async () => {
 	await downloads.load();
 	expect(downloads.list).toEqual([]);
 });
+
+test('removing a person’s downloads also forgets which books they were asked to review (review W10)', async () => {
+	const { markAsked, askedBefore } = await import('$lib/reviewAsked');
+	const mem = new Map<string, string>();
+	vi.stubGlobal('localStorage', {
+		getItem: (k: string) => mem.get(k) ?? null,
+		setItem: (k: string, v: string) => void mem.set(k, v),
+		removeItem: (k: string) => void mem.delete(k),
+	});
+	try {
+		markAsked('ada', ID);
+		markAsked('bob', ID);
+		expect(askedBefore('ada', ID)).toBe(true);
+		await downloads.removeAll('ada');
+		expect(mem.has('abshare.reviewAsked.ada')).toBe(false);
+		expect(askedBefore('bob', ID), 'only that person’s').toBe(true);
+		// An interrupted wipe, finished at the next start, does the same.
+		markAsked('ada', ID);
+		mem.set('abshare.pendingWipes', JSON.stringify(['ada']));
+		await downloads.finishWipes();
+		expect(mem.has('abshare.reviewAsked.ada')).toBe(false);
+	} finally {
+		vi.unstubAllGlobals();
+	}
+});

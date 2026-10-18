@@ -92,6 +92,38 @@ test('a replay that fails for a moment is kept for later; one refused for good i
 	expect(await outbox()).toEqual([]);
 });
 
+test('a replay retried after a lost answer carries the same key (review W11)', async () => {
+	await sync.record(A, 'position', 1_000);
+	await sync.record(A, 'position', 2_000);
+	await sync.record(A, 'position', 3_000);
+	fake.session.status = 'signed-in';
+	fake.post.mockImplementationOnce(async () => {
+		throw new NetworkError();
+	});
+	await sync.flush();
+	await sync.flush();
+	const keys = fake.post.mock.calls.filter(([p]) => p === 'v1/me/history/replay').map(([, b]) => (b as { key: string }).key);
+	expect(keys).toHaveLength(2);
+	expect(keys[0]).toMatch(/^[A-Za-z0-9_-]{8,64}$/);
+	expect(keys[1]).toBe(keys[0]);
+});
+
+test('while the server asks us to wait, new positions don’t send early (review W17)', async () => {
+	await sync.record(A, 'position', 1_000);
+	fake.session.status = 'signed-in';
+	fake.post.mockImplementationOnce(async () => {
+		throw new ApiError(429, 'too_many_requests', 'slow down', 600);
+	});
+	await sync.flush();
+	expect(fake.post).toHaveBeenCalledTimes(1);
+	await sync.record(A, 'position', 16_000);
+	await sync.record(A, 'position', 31_000);
+	expect(fake.post).toHaveBeenCalledTimes(1);
+	// An explicit flush (reconnecting) still sends.
+	await sync.flush();
+	expect(fake.post.mock.calls.length).toBeGreaterThan(1);
+});
+
 test('heard reports are batched and capped', async () => {
 	const { replayBatches, REPLAY_BATCH } = await import('$lib/offline/sync.svelte');
 	const items = Array.from({ length: REPLAY_BATCH * 2 + 1 }, (_, i) => ({ seq: i, book: A, body: { key: `k${i}`, event_time_ms: i, action: 'heard', position_ms: i } }));

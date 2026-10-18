@@ -6,7 +6,7 @@ import { downloads } from '$lib/offline/downloads.svelte';
 import { sync } from '$lib/offline/sync.svelte';
 import { settings, type SaverKbps } from '$lib/settings.svelte';
 import { chapterAt, nextTarget, previousTarget } from './chapters';
-import { autoRewindMs, chooseQuality, fadeVolume, streamUrl } from './rules';
+import { autoRewindMs, chooseQuality, clampStart, fadeVolume, streamUrl } from './rules';
 import { swContainer } from '$lib/pwa/update.svelte';
 
 export type Source = 'original' | SaverKbps | 'device';
@@ -138,7 +138,7 @@ class Player {
 		this.notice = null;
 		remember(detail.id);
 		const local = await sync.local(detail.id);
-		const at = opts.at ?? startPosition(detail.progress, local, detail.duration_ms);
+		const at = opts.at === undefined ? startPosition(detail.progress, local, detail.duration_ms) : clampStart(opts.at, detail.duration_ms);
 		this.position = at;
 		void this.#artwork(detail);
 		await this.#load(at, opts.play ?? false);

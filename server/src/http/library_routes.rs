@@ -482,7 +482,10 @@ async fn put_progress(
                 .map_err(crate::db::sql_err)?;
                 // Listening history grows from position reports only (SPEC §5.6).
                 if matches!(ev.action, Action::Position(_)) {
-                    super::history_routes::record(&tx, uid, device, &bid, p.updated_at, p.position_ms)?;
+                    use super::history_routes::{Recorded, cap, record};
+                    if record(&tx, uid, device, &bid, p.updated_at, p.position_ms)? == Recorded::Started {
+                        cap(&tx, uid, abshare_core::history::MAX_SESSIONS)?;
+                    }
                 }
             }
             if !seen && !matches!(out, Outcome::TooFarInFuture | Outcome::TooOld) {

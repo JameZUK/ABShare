@@ -9,7 +9,7 @@ export const MAX_ASKED = 500;
 
 const keyFor = (user: string) => `abshare.reviewAsked.${user}`;
 
-function safeLocal(): Store | undefined {
+function safeLocal(): Storage | undefined {
 	try {
 		return globalThis.localStorage;
 	} catch {
@@ -37,6 +37,17 @@ export function markAsked(user: string, book: string, store: Store | undefined =
 		store?.setItem(keyFor(user), JSON.stringify(list.slice(-MAX_ASKED)));
 	} catch {
 		/* not essential: at worst the prompt could appear again */
+	}
+}
+
+/** Forgets which books this person was asked about: part of removing their data from this
+ *  device (sign-out with "Remove downloads", revocation), since it lists books they finished
+ *  (review W10). */
+export function forgetAsked(user: string, store: Pick<Storage, 'removeItem'> | undefined = safeLocal()) {
+	try {
+		store?.removeItem(keyFor(user));
+	} catch {
+		/* best effort */
 	}
 }
 

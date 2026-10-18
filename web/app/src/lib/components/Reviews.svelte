@@ -27,14 +27,18 @@
 	const isAdmin = $derived(session.user?.role === 'admin');
 
 	async function load() {
+		const id = bookId;
 		try {
-			view = await api<ReviewsView>(`v1/books/${bookId}/reviews`);
-			rating = view.mine?.rating ?? 0;
-			comment = view.mine?.comment ?? '';
-			editing = !view.mine;
-			onsummary?.({ average: view.average, count: view.count });
+			const v = await api<ReviewsView>(`v1/books/${id}/reviews`);
+			// Moved to another book meanwhile: this answer is about the old one (review W14).
+			if (id !== bookId) return;
+			view = v;
+			rating = v.mine?.rating ?? 0;
+			comment = v.mine?.comment ?? '';
+			editing = !v.mine;
+			onsummary?.({ average: v.average, count: v.count });
 		} catch (e) {
-			error = messageOf(e);
+			if (id === bookId) error = messageOf(e);
 		}
 	}
 
@@ -120,7 +124,7 @@
 
 	{#if others.length}
 		<ul class="list">
-			{#each others as r (r.mine ? 'me' : `${r.user_id ?? ''}${r.name}${r.updated_at}`)}
+			{#each others as r, i (r.mine ? 'me' : i)}
 				<li>
 					<div class="head">
 						<span class="name serif">{r.mine ? `${r.name} (you)` : r.name}</span>

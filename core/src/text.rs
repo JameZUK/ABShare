@@ -132,7 +132,9 @@ pub fn word_count(s: &str) -> usize {
 /// and then held to `max_words` words and `max_chars` characters. Longer text is refused
 /// (`None`) rather than cut, so nobody's words are silently shortened.
 pub fn limited_text(s: &str, max_words: usize, max_chars: usize) -> Option<String> {
-    let cleaned = clean_line(s, max_chars.saturating_add(1));
+    // Cleaned with room to spare: cut at `max_chars + 1`, a space there was trimmed away and
+    // text one word too long passed as exactly `max_chars` (review S3).
+    let cleaned = clean_line(s, max_chars.saturating_mul(2).saturating_add(8));
     (cleaned.chars().count() <= max_chars && word_count(&cleaned) <= max_words).then_some(cleaned)
 }
 
@@ -340,6 +342,9 @@ mod tests {
         assert_eq!(limited_text(&format!("{fifty} more"), 50, 400), None);
         assert_eq!(limited_text(&"x".repeat(400), 50, 400).map(|t| t.len()), Some(400));
         assert_eq!(limited_text(&"x".repeat(401), 50, 400), None);
+        // A space as the character after the limit doesn't hide the rest (review S3).
+        assert_eq!(limited_text(&format!("{} tail", "x".repeat(400)), 50, 400), None);
+        assert_eq!(limited_text(&format!("{}  \n tail", "x".repeat(399)), 50, 400), None);
         // Markup is kept as text (it is only ever shown as text), never interpreted.
         assert_eq!(limited_text("<b>bold</b>", 50, 400).as_deref(), Some("<b>bold</b>"));
         // A huge input is refused, not truncated and accepted.

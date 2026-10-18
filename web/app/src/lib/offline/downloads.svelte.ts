@@ -6,6 +6,7 @@ import type { BookDetail } from '$lib/api/types';
 import { streamUrl } from '$lib/player/rules';
 import { all, dropDb, get, PIECE, reqP, tx, type Download, type Quality } from './db';
 import { closeUserDb, userDb } from './userdb';
+import { forgetAsked } from '$lib/reviewAsked';
 import { settings } from '$lib/settings.svelte';
 import { WAITING_FOR_WIFI, connection, shouldHold } from './wifi';
 
@@ -40,6 +41,13 @@ function pendingWipe(user: string, on: boolean) {
 	} catch {
 		/* best effort */
 	}
+}
+
+/** Removes what this device keeps about a person beyond their database: everything keyed by
+ *  their name in local storage (review W10). */
+function forgetPerson(user: string) {
+	settings.forgetSpeeds(user);
+	forgetAsked(user);
 }
 
 class Downloads {
@@ -169,7 +177,7 @@ class Downloads {
 		pendingWipe(username, true);
 		await closeUserDb();
 		await dropDb(username);
-		settings.forgetSpeeds(username);
+		forgetPerson(username);
 		pendingWipe(username, false);
 		this.list = [];
 	}
@@ -178,7 +186,7 @@ class Downloads {
 	async finishWipes() {
 		for (const u of pendingWipes()) {
 			await dropDb(u);
-			settings.forgetSpeeds(u);
+			forgetPerson(u);
 			pendingWipe(u, false);
 		}
 	}

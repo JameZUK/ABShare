@@ -161,17 +161,39 @@ pub struct AppState {
     pub device_limit: RateLimit<i64>,
     /// Listening-history changes (clear, turn on or off), per calling device.
     pub history_limit: RateLimit<i64>,
+    /// Offline-history replays, per person (review S1).
+    pub replay_limit: RateLimit<i64>,
+    /// Review and recommendation writes, per calling device (review S11).
+    pub social_limit: RateLimit<i64>,
     /// Start-up reports from blank pages: rate-limited per address, kept in memory only.
     pub diag_limit: RateLimit<abshare_core::auth::lockout::AddrKey>,
     pub diag: Mutex<std::collections::VecDeque<diag_routes::DiagReport>>,
     pub media: Option<Arc<crate::media::Media>>,
     pub web_dir: Option<std::path::PathBuf>,
+    /// What Admin → Server settings shows of the config file (D35). Read-only.
+    pub settings: ServerSettings,
     pub catalog: tokio::sync::RwLock<(std::sync::Arc<crate::library::Catalog>, i64)>,
     pub guard: Arc<GuardConfig>,
     pub issuer: String,
 }
 
 pub type State = Arc<AppState>;
+
+/// The query of a route that takes none: any parameter is refused (`400`), as the API
+/// promises (pentest P17).
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NoQuery {}
+
+/// The config-file settings Admin → Server settings shows (D35). File paths are left out on
+/// purpose: an admin needs to know how the server behaves, not where its files are
+/// (`abshare doctor` shows those to whoever has the machine).
+#[derive(Debug, Clone, Default)]
+pub struct ServerSettings {
+    pub listen: String,
+    pub ffmpeg_jobs: usize,
+    pub cache_max_gib: u64,
+}
 
 impl AppState {
     pub fn new(
@@ -213,10 +235,13 @@ impl AppState {
             progress_limit: RateLimit::new(12),
             device_limit: RateLimit::new(10),
             history_limit: RateLimit::new(10),
+            replay_limit: RateLimit::new(history_routes::REPLAYS_PER_MINUTE),
+            social_limit: RateLimit::new(social_routes::WRITES_PER_MINUTE),
             diag_limit: RateLimit::new(diag_routes::PER_MINUTE),
             diag: Mutex::new(std::collections::VecDeque::new()),
             media: None,
             web_dir: None,
+            settings: ServerSettings::default(),
             catalog: tokio::sync::RwLock::new((std::sync::Arc::new(crate::library::Catalog::default()), 0)),
             guard: Arc::new(GuardConfig { trusted, host: host_header, origin: clean_origin }),
             issuer: "ABShare".into(),

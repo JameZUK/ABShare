@@ -18,6 +18,10 @@ export const MAX_HEARD = 10_000;
 /** Heard reports per replay request. */
 export const REPLAY_BATCH = 200;
 
+/** A replay batch's idempotency key, the same on every attempt, so a retry after a lost
+ *  answer is recognised (review W11). Item keys are random and at most 36 characters. */
+export const batchKey = (batch: OutboxItem[]) => `r${batch[0]!.body.key.slice(0, 36)}n${batch.length}`.replace(/[^A-Za-z0-9_-]/g, '');
+
 const newKey = () => (crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`).replace(/[^A-Za-z0-9_-]/g, '');
 
 class Sync {
@@ -44,7 +48,7 @@ class Sync {
 					const c = cur.result;
 					if (!c) {
 						out.add(item);
-						if (heard >= MAX_HEARD) trimHeard(out, heard + 1 - MAX_HEARD);
+						if (heard > MAX_HEARD) trimHeard(out, heard - MAX_HEARD);
 						return;
 					}
 					const v = c.value as OutboxItem;
@@ -63,7 +67,9 @@ class Sync {
 				t.objectStore('positions').put(pos);
 			}
 		});
-		void this.flush();
+		// While the server has asked us to wait (Retry-After) or the last try failed, the
+		// timer already set sends it; don't send every 15 s anyway (review W17).
+		if (this.#retry === undefined) void this.flush();
 	}
 
 	/** This device's last known position for a book. */
@@ -80,6 +86,7 @@ class Sync {
 		if (!dbp || !owner) return;
 		this.#flushing = true;
 		clearTimeout(this.#retry);
+		this.#retry = undefined;
 		try {
 			const db = await dbp;
 			const everything = (await all<OutboxItem>(db, 'outbox')).sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
@@ -89,7 +96,7 @@ class Sync {
 			const heard = everything.filter((it) => it.body.action === 'heard');
 			for (const batch of replayBatches(heard)) {
 				if (session.user?.username !== owner || session.status !== 'signed-in') return;
-				const body = { book: batch[0]!.book, key: newKey(), reports: batch.map((it) => ({ event_time_ms: it.body.event_time_ms, position_ms: it.body.position_ms ?? 0 })) };
+				const body = { book: batch[0]!.book, key: batchKey(batch), reports: batch.map((it) => ({ event_time_ms: it.body.event_time_ms, position_ms: it.body.position_ms ?? 0 })) };
 				try {
 					await post('v1/me/history/replay', body);
 				} catch (e) {

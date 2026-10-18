@@ -19,5 +19,7 @@ fuzz_target!(|s: &str| {
         assert!(t.chars().count() <= 400 && word_count(&t) <= 50);
         assert!(!t.chars().any(char::is_control));
         assert_eq!(limited_text(&t, 50, 400).as_deref(), Some(t.as_str()));
+        // Never cut: everything the input had survives (review S3).
+        assert_eq!(t, clean_line(s, 64 * 1024));
     }
 });

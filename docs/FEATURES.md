@@ -102,6 +102,7 @@ Everything ABShare does today, by area. Only built and tested features are liste
 | Reviews | Remove anyone's review. |
 | Jobs | What the media jobs are doing (listening, background and copy lanes), playable copies being built, failed copies with *Retry now*, the cache size and *Clear data-saver cache*. |
 | Edit details | Correct any book's title, people, series, genres or description. Corrections survive rescans. |
+| Server settings | What the config file sets (address, trusted proxies, libraries, ffmpeg jobs, cache limit) and the rules built into this version (sign-in lifetimes, device limit, invite validity, history and audit retention). Read-only: changed in the config file. |
 | Audit log | Sign-ins, failures, locks, enrolment, factor changes, invites, device sign-outs and admin actions, with a check that no entry has been edited or removed. |
 | Step-up | Every admin change asks for a fresh second factor. |
 | Command line | `abshare admin invite`, `reset`, `users`, `devices`, `revoke-all` and `verify-audit`, for bootstrap and recovery. `abshare doctor` checks the whole installation. |
@@ -122,5 +123,5 @@ Everything ABShare does today, by area. Only built and tested features are liste
 
 These are designed in [`SPEC.md`](../SPEC.md) but not built:
 
-- An admin page for server settings (settings live in the config file).
+- Changing server settings from the admin pages (they are shown there, and changed in the config file).
 - Native apps.

@@ -35,7 +35,10 @@ nothing heard for 30 days), time heard per book, and recent sessions (which book
 for how long). They can't see your password, authenticator secret or recovery codes, or where
 you are in a book: positions, and the "Where was I?" timeline of where each stretch of
 listening began and ended, are only ever shown to you. Clearing or turning off your history
-isn't written to the audit log. (Whoever runs the server can still read its database directly.)
+isn't written to the audit log, but admins can see whether your history is on, and cleared
+history shows as no listening time. With history off, admins still see which books you have
+started or finished and when you last played each one, because that comes from your place in
+the book, which is always kept. (Whoever runs the server can still read its database directly.)
 
 - **Reviews:** a star rating and an optional comment of up to 50 words, with when it was
   written. Everyone who can see the book sees your review with your display name. You can

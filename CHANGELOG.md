@@ -2,6 +2,39 @@
 
 What changed and when, newest first. Each entry says how it is tested. The design and the reasons behind it are in [`SPEC.md`](SPEC.md); what differs from the design is in SPEC §16.
 
+## 0.11.0 (2026-10-18)
+
+A security review of everything added in 0.10, with every finding fixed, and a read-only Admin → Server settings page.
+
+### Added
+- **Admin → Server settings.** Shows what the config file sets: the address, listen address, trusted proxies, libraries, ffmpeg jobs, cache limit and whether the web app is served. Also shows the rules built into this version: sign-in and step-up lifetimes, devices per person, invite validity, and history and audit retention. It is read-only: settings are changed in `abshare.toml`, so a stolen admin session can't change how the server behaves. No file paths are shown (SPEC D35).
+
+### Security
+The review is in [`docs/security/review-0.11.md`](docs/security/review-0.11.md): a code review of the server and of the web app, plus a black-box test of a local server. It found no Critical or High issues.
+- **Offline replay could stall the server for everyone (Medium).** Replays are now limited to 12 a minute per person across all their devices, not per device. The history cap runs once per request, not once per new stretch.
+- **Replay could count the same listening again** under a new key, inflating listening totals. Reports a device has already recorded are now skipped. The app also reuses a batch's key when it retries.
+- **A comment one word over the limit could be silently cut** instead of refused.
+- **Review writes and dismissals are rate-limited**, and are held to 16 KiB like the other library routes. Dismissing refuses a body.
+- The new GET routes refuse unknown query parameters, as documented.
+- **Dismissing an "everyone" recommendation of books you can't see** now answers "not found", like any recommendation you can't see.
+- **Privacy notes:** PRIVACY.md and SPEC D26 now say plainly that admins can see whether someone's history is on, and that the books someone has started or finished still show with history off.
+- **"How was it?" memory:** the list of books you were asked about is removed with your other data on *Remove downloads* or remote sign-out.
+- **App start-up:** a remote sign-out arriving while the app waits out a "too many renewals" answer now still removes the downloads. An outage during that wait goes offline instead of showing the sign-in screen.
+- The HTML-injection scan now also bans inline styles built from data, and checks `action`, `formaction`, `poster` and `xlink:href`.
+
+### Fixed
+- Tapping the end point of a "Where was I?" stretch that ran to the end of a book no longer finishes the book at once. Start positions are kept within the book.
+- Moving quickly between books could briefly show the previous book's reviews.
+- Two reviews by people with the same name, saved in the same second, stopped the reviews from showing.
+- You can delete your own review of a book you no longer have access to.
+- While the server asks the app to wait, new positions no longer send early.
+
+**Tests:**
+- **Server:** a regression test for each server fix, each shown to fail before the fix. They cover the per-person replay limit across two devices, the same batch under three keys counting once, history off recording nothing, replay key pruning, step-up on the three new admin writes, the 16 KiB limit and the review rate limit, dismissal and query strictness, and deleting your own review after losing access.
+- **Core and fuzzing:** the comment-limit regression, and a fuzz assertion that accepted text is never shortened.
+- **Web unit tests:** the stable replay key, Retry-After respected while listening, the review memory wiped, start-up revocation and outage after a 429, start positions clamped, and stale or duplicate reviews.
+- **Browser:** the Server settings page, read-only and without paths.
+
 ## 0.10.0 (2026-10-18)
 
 The Paperback redesign, browser tests in CI, reviews, recommendations, "Where was I?", admin listening, offline listening in history, a review prompt and Downloads settings.

@@ -32,6 +32,7 @@ pub fn routes() -> Router<State> {
         .route("/jobs/copies/{id}/retry", post(retry_copy))
         .route("/cache/clear", post(clear_cache))
         .route("/status", get(status))
+        .route("/settings", get(settings))
         .route("/books/{id}/details", get(book_details).put(set_book_details).delete(clear_book_details))
 }
 
@@ -720,6 +721,43 @@ async fn status(S(st): S<State>, Admin(_): Admin) -> Result<Json<Value>, ApiErro
         "sandbox": { "landlock": landlock },
         "cache_bytes": cache,
         "warnings": warnings,
+    })))
+}
+
+// ---------------------------------------------------------------- server settings
+
+/// Admin → Server settings (D35): what the config file sets and the rules built into this
+/// version. Read-only: the config file stays the only way to change them, so this route
+/// adds no way to change how the server behaves. No file paths (see [`super::ServerSettings`]).
+async fn settings(S(st): S<State>, Admin(_): Admin, Query(_): Query<super::NoQuery>) -> Result<Json<Value>, ApiError> {
+    use abshare_core::history::{ABANDONED_AFTER_MS, KEEP_MS};
+    const DAY: i64 = 24 * 3600;
+    let cat = st.catalog().await?;
+    let libraries: Vec<&str> = cat.libraries.iter().map(|(_, name)| name.as_str()).collect();
+    let trusted: Vec<String> = st.guard.trusted.iter().map(ToString::to_string).collect();
+    let set = &st.settings;
+    Ok(Json(json!({
+        "config": {
+            "public_origin": st.guard.origin,
+            "listen": set.listen,
+            "trusted_proxies": trusted,
+            "web_app": st.web_dir.is_some(),
+            "libraries": libraries,
+            "ffmpeg_jobs": set.ffmpeg_jobs,
+            "cache_max_gib": set.cache_max_gib,
+        },
+        "rules": {
+            "two_step": "always",
+            "access_minutes": crate::auth::sessions::ACCESS_TTL / 60,
+            "sign_in_days": store::ABSOLUTE_LIFETIME / DAY,
+            "step_up_minutes": crate::auth::sessions::STEP_UP_TTL / 60,
+            "max_devices": store::MAX_DEVICES,
+            "invite_hours": crate::admin::INVITE_HOURS,
+            "history_days": KEEP_MS / 1000 / DAY,
+            "abandoned_days": ABANDONED_AFTER_MS / 1000 / DAY,
+            "audit_days": audit::MAX_AGE / DAY,
+            "audit_rows": audit::MAX_ROWS,
+        },
     })))
 }
 

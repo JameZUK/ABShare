@@ -4,6 +4,8 @@ import { ApiError, NetworkError, bearer, callJson } from './http';
 import type { SignedIn, User } from './types';
 
 const LAST_USER = 'abshare.lastUser';
+/** Retries of a start-up renewal answered 429 (too many renewals in a minute). */
+const MAX_START_RETRIES = 4;
 
 type Status = 'starting' | 'signed-out' | 'signed-in' | 'offline';
 
@@ -70,47 +72,44 @@ class Session {
 	/** Renews the tokens; one renewal at a time per page and across tabs. */
 	refresh(): Promise<boolean> {
 		this.#refreshing ??= exclusive(async () => {
-			try {
-				this.accept(await callJson<SignedIn>('v1/auth/refresh', { method: 'POST' }));
-				return true;
-			} catch (e) {
-				if (e instanceof NetworkError || (e instanceof ApiError && e.status >= 500)) {
-					// Can't reach the server: keep going offline with downloaded books.
-					const last = this.user ?? readLastUser();
-					if (last) {
-						this.user = last;
-						this.status = 'offline';
-					}
-					clearTimeout(this.#timer);
-					this.#timer = setTimeout(() => void this.refresh(), 30_000);
-					return false;
-				}
-				// Too many renewals in a minute (several tabs, or quick reloads): the token is still
-				// good. With a token in hand, carry on with it; with none yet (a page starting up),
-				// wait as asked and try again rather than signing out.
-				if (e instanceof ApiError && e.status === 429) {
-					if (this.#token !== null) return true;
-					for (let attempt = 0; attempt < 4; attempt++) {
-						await new Promise((r) => setTimeout(r, Math.min(e.retryAfter ?? 2, 15) * 1000));
-						try {
-							this.accept(await callJson<SignedIn>('v1/auth/refresh', { method: 'POST' }));
-							return true;
-						} catch (again) {
-							if (!(again instanceof ApiError && again.status === 429)) break;
+			// Every answer, including one to a retry after a 429, is handled the same way, so a
+			// revocation or an outage during the wait isn't missed (review W12).
+			for (let attempt = 0; ; attempt++) {
+				try {
+					this.accept(await callJson<SignedIn>('v1/auth/refresh', { method: 'POST' }));
+					return true;
+				} catch (e) {
+					if (e instanceof NetworkError || (e instanceof ApiError && e.status >= 500)) {
+						// Can't reach the server: keep going offline with downloaded books.
+						const last = this.user ?? readLastUser();
+						if (last) {
+							this.user = last;
+							this.status = 'offline';
 						}
+						clearTimeout(this.#timer);
+						this.#timer = setTimeout(() => void this.refresh(), 30_000);
+						return false;
 					}
+					// Too many renewals in a minute (several tabs, or quick reloads): the token is still
+					// good. With a token in hand, carry on with it; with none yet (a page starting up),
+					// wait as asked (at most 15 s, 4 times) and try again rather than signing out.
+					if (e instanceof ApiError && e.status === 429) {
+						if (this.#token !== null) return true;
+						if (attempt >= MAX_START_RETRIES) return false;
+						await new Promise((r) => setTimeout(r, Math.min(e.retryAfter ?? 2, 15) * 1000));
+						continue;
+					}
+					// session_reused (a copied or replayed sign-in) signs out but keeps downloads; only
+					// an explicit remote sign-out removes them.
+					if (e instanceof ApiError && e.code === 'device_revoked') {
+						this.#end('revoked');
+						writeLastUser(null);
+						this.user = null;
+						return false;
+					}
+					this.#end('expired');
 					return false;
 				}
-				// session_reused (a copied or replayed sign-in) signs out but keeps downloads; only
-				// an explicit remote sign-out removes them.
-				if (e instanceof ApiError && e.code === 'device_revoked') {
-					this.#end('revoked');
-					writeLastUser(null);
-					this.user = null;
-					return false;
-				}
-				this.#end('expired');
-				return false;
 			}
 		}).finally(() => {
 			this.#refreshing = null;

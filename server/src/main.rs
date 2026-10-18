@@ -156,6 +156,11 @@ async fn run() -> Result<(), String> {
                 jobs: cfg.ffmpeg.jobs,
             };
             state.web_dir = cfg.web_dir.clone();
+            state.settings = http::ServerSettings {
+                listen: cfg.listen.clone(),
+                ffmpeg_jobs: cfg.ffmpeg.jobs,
+                cache_max_gib: cfg.cache.max_gib,
+            };
             let engine = std::sync::Arc::new(media::Media::new(ff, cfg.data_dir.clone(), roots));
             state.media = Some(engine.clone());
             engine.clean_jobs();
