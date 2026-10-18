@@ -66,7 +66,9 @@ pub fn clean_line(s: &str, max: usize) -> String {
     let mut out = String::with_capacity(s.len().min(max * 4));
     let mut space = false;
     let mut marks = 0;
-    for c in cap_input(s).nfc() {
+    // Invisible characters go before normalising, so a mark they separated from its letter
+    // composes with it now rather than on a second pass (found by fuzzing).
+    for c in cap_input(s).chars().filter(|c| !is_invisible(*c)).nfc() {
         if is_invisible(c) {
             continue;
         }
@@ -87,6 +89,11 @@ pub fn clean_line(s: &str, max: usize) -> String {
             space = false;
         }
         out.push(c);
+    }
+    // Dropping excess marks or controls can leave text that normalises differently; settle it,
+    // so cleaning twice gives the same result.
+    if !unicode_normalization::is_nfc(&out) {
+        out = out.nfc().collect();
     }
     truncate_chars(&mut out, max);
     out
@@ -304,6 +311,20 @@ mod tests {
     use super::*;
 
     /// Review C6: invisible and spoofing characters, and stacked combining marks.
+    #[test]
+    fn cleaning_twice_changes_nothing() {
+        // Found by fuzzing: an invisible character between a letter and its accent.
+        let once = clean_line("\u{1b}YY\u{200B}\u{300}", 100);
+        assert_eq!(once, "Y\u{1EF2}");
+        assert_eq!(clean_line(&once, 100), once);
+        assert_eq!(limited_text("\u{1b}YY\u{200B}\u{300}", 50, 400).as_deref(), Some("Y\u{1EF2}"));
+        for s in ["e\u{200D}\u{301}", "a\u{FEFF}\u{308}\u{301}", "x\u{7}\u{300}", &format!("o{}", "\u{301}".repeat(40))]
+        {
+            let once = clean_line(s, 100);
+            assert_eq!(clean_line(&once, 100), once, "{s:?}");
+        }
+    }
+
     #[test]
     fn limited_text_cleans_and_refuses_rather_than_cuts() {
         assert_eq!(
