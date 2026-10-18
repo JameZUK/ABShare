@@ -105,7 +105,7 @@
 	}
 </script>
 
-<main class="page narrow">
+<main class="page narrow invite">
 	<img class="logo" src="./favicon.svg" alt="" width="64" height="64" />
 	{#if step === 'checking'}
 		<p class="muted">Checking your invite…</p>
@@ -128,7 +128,7 @@
 			<p>A passkey is the easiest and safest: your phone or computer unlocks it with your face, fingerprint or PIN.</p>
 			<button class="btn wide" onclick={passkey} disabled={busy}>Create a passkey</button>
 		{/if}
-		<button class="btn plain wide" onclick={() => (step = 'password')} disabled={busy}>Use a password and an authenticator app</button>
+		<button class="btn soft wide" onclick={() => (step = 'password')} disabled={busy}>Use a password and an authenticator app</button>
 	{:else if step === 'password'}
 		<h1>Choose a password</h1>
 		<form onsubmit={setPassword}>
@@ -157,23 +157,38 @@
 </main>
 
 <style>
+	.invite {
+		max-width: 440px;
+		padding-top: max(6vh, 2rem);
+	}
 	.logo {
-		margin: 2rem auto 1rem;
+		margin: 0 0 1.5rem;
+		border-radius: 16px;
+		box-shadow: var(--shadow-book);
+	}
+	h1 {
+		font-size: clamp(1.9rem, 7vw, 2.4rem);
 	}
 	.wide {
 		width: 100%;
 		margin-bottom: 0.75rem;
+		min-height: 50px;
 	}
 	.small {
 		font-size: 0.85rem;
 	}
 	.qr {
-		margin: 1rem auto;
+		margin: 1.25rem auto;
 		background: #fff;
+		padding: 10px;
 		border-radius: var(--radius-sm);
+		border: 1px solid var(--line);
 	}
 	.secret {
 		word-break: break-all;
 		user-select: all;
+		padding: 0.1rem 0.35rem;
+		border-radius: 4px;
+		background: var(--bg-sunken);
 	}
 </style>

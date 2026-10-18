@@ -50,7 +50,7 @@
 </script>
 
 <Sheet bind:open title="Confirm it’s you">
-	<p>For your security, confirm it’s you before making this change.</p>
+	<p class="muted">For your security, confirm it’s you before making this change.</p>
 	{#if me?.factors.passkeys && passkeysSupported()}
 		<button class="btn wide" onclick={withPasskey} disabled={busy}>Use a passkey</button>
 	{/if}
@@ -59,7 +59,7 @@
 		<form onsubmit={withPassword}>
 			<label class="field">Password <input type="password" bind:value={password} autocomplete="current-password" required maxlength="1024" /></label>
 			<label class="field">Authenticator code <input bind:value={code} inputmode="numeric" autocomplete="one-time-code" required maxlength="8" /></label>
-			<button class="btn plain wide" disabled={busy}>Confirm</button>
+			<button class="btn soft wide" disabled={busy}>Confirm</button>
 		</form>
 	{/if}
 	<p class="error" role="alert">{error}</p>
@@ -69,5 +69,11 @@
 	.wide {
 		width: 100%;
 		margin-bottom: 0.75rem;
+		min-height: 48px;
+	}
+	form {
+		margin-top: 0.5rem;
+		padding-top: 1rem;
+		border-top: 1px solid var(--line);
 	}
 </style>

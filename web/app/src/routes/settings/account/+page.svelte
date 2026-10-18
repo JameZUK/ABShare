@@ -112,7 +112,7 @@
 </script>
 
 <main class="page narrow">
-	<button class="icon-btn" onclick={() => history.back()} aria-label="Back"><Icon name="back" /></button>
+	<button class="icon-btn back" onclick={() => history.back()} aria-label="Back"><Icon name="back" /></button>
 	<h1>Account</h1>
 	{#if session.user?.needs_factor}
 		<p class="notice" role="alert">You signed in with a recovery code. Set up a new passkey or authenticator app below to carry on. If a lost phone or computer holds one of your passkeys, remove it too.</p>
@@ -125,7 +125,7 @@
 		<h2>Passkeys</h2>
 		{#each passkeys as k (k.id)}
 			<div class="item row">
-				<Icon name="key" />
+				<span class="ic"><Icon name="key" size={20} /></span>
 				<span class="spacer"><strong>{k.name}</strong><br /><span class="muted small">Added {date(k.created_at)}{k.last_used ? ` · last used ${date(k.last_used)}` : ''}</span></span>
 				<button class="icon-btn" onclick={() => removePasskey(k.id)} aria-label="Remove passkey {k.name}" disabled={busy}><Icon name="trash" /></button>
 			</div>
@@ -138,11 +138,11 @@
 	<section>
 		<h2>Password and authenticator</h2>
 		{#if me?.factors.password}
-			<button class="btn plain" onclick={() => (pwOpen = true)} disabled={busy}>Change password</button>
+			<button class="btn soft" onclick={() => (pwOpen = true)} disabled={busy}>Change password</button>
 		{/if}
 		{#if me?.factors.totp}
 			<p>An authenticator app is set up.</p>
-			<button class="btn plain danger" onclick={removeTotp} disabled={busy}>Remove authenticator app</button>
+			<button class="btn danger" onclick={removeTotp} disabled={busy}>Remove authenticator app</button>
 		{:else if me?.factors.password}
 			<button class="btn soft" onclick={startTotp} disabled={busy}>Set up an authenticator app</button>
 		{/if}
@@ -155,12 +155,12 @@
 			<p>Your new codes (the old ones no longer work):</p>
 			<RecoveryCodes {codes} />
 		{:else}
-			<button class="btn plain" onclick={newCodes} disabled={busy}>Make new codes</button>
+			<button class="btn soft" onclick={newCodes} disabled={busy}>Make new codes</button>
 		{/if}
 	</section>
 
-	<section>
-		<button class="btn plain" onclick={() => (outOpen = true)}><Icon name="signout" /> Sign out</button>
+	<section class="out">
+		<button class="btn soft" onclick={() => (outOpen = true)}><Icon name="signout" /> Sign out</button>
 	</section>
 </main>
 
@@ -192,39 +192,59 @@
 	<p>Keep your downloaded books on this device for next time?</p>
 	<div class="choices">
 		<button class="btn" onclick={() => signOut(false)}>Keep downloads</button>
-		<button class="btn plain danger" onclick={() => signOut(true)}>Remove downloads</button>
+		<button class="btn danger" onclick={() => signOut(true)}>Remove downloads</button>
 	</div>
 </Sheet>
 
 <style>
+	.back {
+		margin-left: -0.6rem;
+	}
 	.notice {
 		background: var(--accent-soft);
 		color: var(--accent-soft-fg);
-		padding: 0.75rem 1rem;
+		padding: 0.9rem 1.1rem;
 		border-radius: var(--radius-sm);
 	}
 	section {
-		margin: 1.5rem 0;
+		margin: 2rem 0;
+		padding-top: 1.25rem;
+		border-top: 1px solid var(--line);
+	}
+	section h2 {
+		margin-bottom: 0.75rem;
 	}
 	.item {
-		min-height: 56px;
+		min-height: 64px;
+		padding: 0.5rem 0;
 		border-bottom: 1px solid var(--line);
-		margin-bottom: 0.5rem;
+		margin-bottom: 0.75rem;
+	}
+	.ic {
+		display: grid;
+		place-items: center;
+		width: 40px;
+		height: 40px;
+		flex: none;
+		border: 1px solid var(--line);
+		border-radius: 50%;
 	}
 	.small {
 		font-size: 0.85rem;
 	}
-	.danger {
-		color: var(--danger);
-	}
 	.qr {
-		margin: 0.5rem auto;
+		margin: 0.75rem auto;
 		background: #fff;
+		padding: 8px;
 		border-radius: var(--radius-sm);
+		border: 1px solid var(--line);
 	}
 	.secret {
 		word-break: break-all;
 		user-select: all;
+		padding: 0.1rem 0.35rem;
+		border-radius: 4px;
+		background: var(--bg-sunken);
 	}
 	.choices {
 		display: flex;
@@ -233,5 +253,8 @@
 	}
 	section .btn {
 		margin: 0.25rem 0.25rem 0.25rem 0;
+	}
+	.out {
+		padding-top: 1.5rem;
 	}
 </style>

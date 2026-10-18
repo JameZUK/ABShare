@@ -34,7 +34,7 @@
 			{chain.intact ? `The log is intact: ${chain.entries} entries, none edited or removed.` : `The log has been tampered with at entry ${chain.broken_at}.`}
 		</p>
 	{/if}
-	<table>
+	<div class="scroll"><table>
 		<thead><tr><th>When</th><th>Who</th><th>What</th><th>Details</th></tr></thead>
 		<tbody>
 			{#each entries as e (e.id)}
@@ -46,40 +46,58 @@
 				</tr>
 			{/each}
 		</tbody>
-	</table>
-	{#if next}<button class="btn plain more" onclick={() => load(true)}>Older entries</button>{/if}
+	</table></div>
+	{#if next}<button class="btn soft more" onclick={() => load(true)}>Older entries</button>{/if}
 </AdminShell>
 
 <style>
 	.chain {
 		display: flex;
-		gap: 0.5rem;
+		gap: 0.6rem;
 		align-items: center;
-		padding: 0.6rem 0.8rem;
+		padding: 0.8rem 1rem;
 		border-radius: var(--radius-sm);
-		background: var(--bg-sunken);
+		border: 1px solid var(--line);
 	}
 	.chain.bad {
 		color: var(--danger);
+		border-color: var(--danger);
 		font-weight: 600;
+	}
+	.scroll {
+		overflow-x: auto;
 	}
 	table {
 		width: 100%;
 		border-collapse: collapse;
-		font-size: 0.85rem;
+		font-size: 0.875rem;
+	}
+	th {
+		color: var(--fg-muted);
+		font-size: 0.72rem;
+		font-weight: 600;
+		letter-spacing: 0.12em;
+		text-transform: uppercase;
+		border-bottom: 1px solid var(--fg);
 	}
 	th,
 	td {
 		text-align: left;
-		padding: 0.4rem 0.5rem;
-		border-bottom: 1px solid var(--line);
+		padding: 0.6rem 0.6rem 0.6rem 0;
 		vertical-align: top;
+	}
+	td {
+		border-bottom: 1px solid var(--line);
+	}
+	td:nth-child(3) {
+		font-weight: 600;
 	}
 	.nowrap {
 		white-space: nowrap;
+		font-variant-numeric: tabular-nums;
 	}
 	.more {
-		margin-top: 1rem;
+		margin-top: 1.25rem;
 	}
 	@media (max-width: 600px) {
 		th:nth-child(4),

@@ -19,7 +19,7 @@ Every page of ABShare's documentation, with what each covers. Start with the pro
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Components, repository layout, the trust boundary, scanning and book assembly, request flows with diagrams, the ffmpeg jail, media jobs and the cache, the web app, storage, configuration and testing |
 | [`API.md`](API.md) | The HTTP API (`/v1`) as built: conventions, errors, authentication, your account, the library, progress, media, admin |
 | [`PERFORMANCE.md`](PERFORMANCE.md) | Memory, streaming, data-saver and offline measurements, and how to take them |
-| [`../SPEC.md`](../SPEC.md) | The specification: every design decision (D1–D25), goals, the threat model, milestones and the testing strategy |
+| [`../SPEC.md`](../SPEC.md) | The specification: every design decision (D1–D27), goals, the threat model, milestones and the testing strategy |
 | [`security/`](security) | The threat model, the OWASP ASVS map, and the Phase 2 and Phase 6 reviews |
 | [`fuzzing.md`](fuzzing.md) | Fuzz targets and campaign results |
 | [`phase0-report.md`](phase0-report.md) | The Phase 0 spikes: offline playback, background audio and data saver on real devices |

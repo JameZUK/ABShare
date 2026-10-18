@@ -3,7 +3,6 @@
 	import { page } from '$app/state';
 	import { KINDS, isShelfId, loadGenres } from '$lib/api/genres';
 	import { session } from '$lib/api/session.svelte';
-	import Icon from '$lib/components/Icon.svelte';
 	import LibraryBrowser from '$lib/components/LibraryBrowser.svelte';
 
 	const id = $derived(page.params.id ?? '');
@@ -22,9 +21,5 @@
 </script>
 
 {#key shelf}
-	<LibraryBrowser title={name || 'Genre'} {shelf}>
-		{#snippet header()}
-			<p><a href="#/genres"><Icon name="back" size={16} /> All genres</a></p>
-		{/snippet}
-	</LibraryBrowser>
+	<LibraryBrowser title={name || 'Genre'} {shelf} eyebrow="Genre" back />
 {/key}

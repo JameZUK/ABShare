@@ -2,6 +2,17 @@
 
 What changed and when, newest first. Each entry says how it is tested. The design and the reasons behind it are in [`SPEC.md`](SPEC.md); what differs from the design is in SPEC §16.
 
+## Unreleased
+
+### Changed
+- **A new look: Paperback, in light and dark.** Paper and ink by day and a warm lamplight look at night, serif titles (Fraunces) over Instrument Sans, covers drawn as books with a spine, and hairline rules in place of cards. Home leads with the book you're reading and a Resume button; the player has a larger cover, the chapter in italics and a fine scrubber; the library has a status switch; genres read like a contents page. On wide screens the tabs become a sidebar and the mini player floats over the page. Every screen was restyled; behaviour is unchanged.
+- **Themes are now Paperback and High contrast.** Material and Classic are gone; a saved Material or Classic choice becomes Paperback, keeping light, dark or system.
+
+### Security
+- The fonts are bundled into the app and served by ABShare, so the only change to the Content-Security-Policy is `font-src 'self'` (fonts were previously blocked by `default-src 'none'`). No font CDN, no third-party request (SPEC D27).
+
+**Tests:** the theme tests now check every theme and mode for WCAG contrast, including the accent as text and the ink buttons, and that old saved themes are migrated; the CSP test pins `font-src 'self'`. The screenshots were retaken from the demo library.
+
 ## 0.9.0 (2026-10-17)
 
 The first tagged release: everything from Phases 0 to 6, plus the work below. Device tests (SPEC §11, Phases 3 and 4) and an independent security review are still to come before 1.0.0.

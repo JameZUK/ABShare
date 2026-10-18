@@ -90,11 +90,12 @@
 	{:else if updates.available}
 		<p class="banner" role="status">An update is ready. <button class="link" onclick={() => updates.apply()}>Reload</button></p>
 	{/if}
-	{@render children()}
+	<div class="shell">{@render children()}</div>
 	<MiniPlayer />
 	<nav class="tabs" aria-label="Main">
+		<a class="brand" href="#/" aria-label="ABShare home"><img src="./favicon.svg" alt="" width="34" height="34" /><span class="serif">ABShare</span></a>
 		{#each TABS as t (t.href)}
-			<a href={t.href} aria-current={t.match(page.url.hash) ? 'page' : undefined}>
+			<a class="tab" href={t.href} aria-current={t.match(page.url.hash) ? 'page' : undefined}>
 				<Icon name={t.icon} />
 				<span>{t.label}</span>
 			</a>
@@ -115,7 +116,7 @@
 		justify-content: center;
 		gap: 0.5em;
 		margin: 0;
-		padding: 0.5rem 1rem;
+		padding: 0.5rem 1rem 0.5rem calc(var(--side-w) + 1rem);
 		background: var(--accent-soft);
 		color: var(--accent-soft-fg);
 		font-size: 0.9rem;
@@ -137,21 +138,72 @@
 		padding-bottom: var(--safe-b);
 		display: grid;
 		grid-template-columns: repeat(4, 1fr);
-		background: var(--bg-raised);
+		background: var(--bg);
 		border-top: 1px solid var(--line);
 		z-index: 20;
 	}
-	.tabs a {
+	.brand {
+		display: none;
+	}
+	.tab {
 		display: grid;
 		justify-items: center;
 		align-content: center;
-		gap: 2px;
+		gap: 3px;
 		color: var(--fg-muted);
 		text-decoration: none;
-		font-size: 0.75rem;
+		font-size: 0.72rem;
+		font-weight: 500;
 	}
-	.tabs a[aria-current='page'] {
-		color: var(--accent);
+	.tab[aria-current='page'] {
+		color: var(--fg);
 		font-weight: 600;
+	}
+	/* Wide screens: the tabs become a sidebar. */
+	@media (min-width: 1024px) {
+		.shell {
+			padding-left: var(--side-w);
+		}
+		.tabs {
+			top: 0;
+			right: auto;
+			width: var(--side-w);
+			height: auto;
+			padding: 1.5rem 1rem;
+			display: flex;
+			flex-direction: column;
+			gap: 0.25rem;
+			border-top: 0;
+			border-right: 1px solid var(--line);
+		}
+		.brand {
+			display: flex;
+			align-items: center;
+			gap: 0.7rem;
+			padding: 0 0.75rem 1.75rem;
+			color: var(--fg);
+			text-decoration: none;
+			font-size: 1.35rem;
+			font-weight: 600;
+		}
+		.brand img {
+			border-radius: 9px;
+		}
+		.tab {
+			display: flex;
+			align-items: center;
+			gap: 0.85rem;
+			min-height: 46px;
+			padding: 0 0.85rem;
+			border-radius: var(--radius-sm);
+			font-size: 0.95rem;
+		}
+		.tab:hover {
+			background: var(--bg-sunken);
+			color: var(--fg);
+		}
+		.tab[aria-current='page'] {
+			background: var(--bg-sunken);
+		}
 	}
 </style>

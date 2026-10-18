@@ -124,47 +124,51 @@
 </script>
 
 <main class="page">
-	<button class="icon-btn" onclick={() => history.back()} aria-label="Back"><Icon name="back" /></button>
+	<button class="icon-btn back" onclick={() => history.back()} aria-label="Back"><Icon name="back" /></button>
 	{#if error}<p class="error" role="alert">{error}</p>{/if}
 	{#if book}
 		<div class="head">
-			<div class="art"><Cover id={book.id} src={book.cover} title={book.title} size={640} /></div>
+			<div class="art"><Cover id={book.id} src={book.cover} title={book.title} size={640} book /></div>
 			<div class="info">
-				<h1>{book.title}</h1>
-				{#if book.subtitle}<p class="muted">{book.subtitle}</p>{/if}
 				{#if book.series && seriesGroup}
-					<p><a href="#/group/{seriesGroup.id}">{book.series.position ? `Book ${book.series.position} of ${book.series.name}` : book.series.name}</a></p>
+					<a class="eyebrow accent series" href="#/group/{seriesGroup.id}">{book.series.name}{book.series.position ? ` · Book ${book.series.position}` : ''}</a>
 				{/if}
-				{#if book.authors?.length}<p>By <PeopleLinks people={book.authors} kind="author" /></p>{/if}
-				{#if book.narrators?.length}<p class="muted">Read by <PeopleLinks people={book.narrators} kind="narrator" /></p>{/if}
-				{#if book.shelves?.length}
-					<p class="genres">{#each book.shelves as g (g.id)}<a href="#/genre/{g.id}">{g.name}</a>{/each}</p>
-				{/if}
-				<p class="muted">
-					{duration(book.duration_ms)}
-					{#if book.progress?.finished}· Finished{:else if position > 0}· {timeLeft(book.duration_ms, position)}{/if}
+				<h1>{book.title}</h1>
+				{#if book.subtitle}<p class="subtitle serif">{book.subtitle}</p>{/if}
+				{#if book.authors?.length}<p class="by">By <PeopleLinks people={book.authors} kind="author" /></p>{/if}
+				{#if book.narrators?.length}<p class="by muted">Read by <PeopleLinks people={book.narrators} kind="narrator" /></p>{/if}
+				<p class="meta muted">
+					<span>{duration(book.duration_ms)}</span>
+					{#if book.progress?.finished}<span>Finished</span>{:else if position > 0}<span>{timeLeft(book.duration_ms, position)}</span>{/if}
+					{#if book.chapters.length}<span>{book.chapters.length} chapters</span>{/if}
 				</p>
+				{#if position > 0 && !book.progress?.finished}
+					<span class="progress" aria-hidden="true"><span style:width="{Math.min(100, (position / Math.max(1, book.duration_ms)) * 100)}%"></span></span>
+				{/if}
 				<div class="actions">
 					<button class="btn" onclick={play}>
-						<Icon name={isOpen && player.playing ? 'pause' : 'play'} />
+						<Icon name={isOpen && player.playing ? 'pause' : 'play'} size={18} />
 						{isOpen && player.playing ? 'Pause' : position > 0 ? `Resume from ${clock(position)}` : 'Play'}
 					</button>
 					{#if canDownload}
 						{#if !dl}
-							<button class="btn soft" onclick={openDownload} disabled={session.status !== 'signed-in'}><Icon name="download" /> Download</button>
+							<button class="btn soft" onclick={openDownload} disabled={session.status !== 'signed-in'}><Icon name="download" size={18} /> Download</button>
 						{:else if dl.state === 'complete'}
-							<span class="btn plain" aria-disabled="true"><Icon name="downloaded" /> Downloaded</span>
+							<span class="btn soft" aria-disabled="true"><Icon name="downloaded" size={18} /> Downloaded</span>
 						{:else}
-							<a class="btn plain" href="#/downloads"><Icon name="download" /> {dl.total ? Math.floor((dl.next / dl.total) * 100) : 0}%</a>
+							<a class="btn soft" href="#/downloads"><Icon name="download" size={18} /> {dl.total ? Math.floor((dl.next / dl.total) * 100) : 0}%</a>
 						{/if}
 					{/if}
-					<button class="icon-btn" onclick={() => (moreOpen = true)} aria-label="More"><Icon name="more" /></button>
+					<button class="icon-btn more" onclick={() => (moreOpen = true)} aria-label="More"><Icon name="more" /></button>
 				</div>
+				{#if book.shelves?.length}
+					<p class="chips genres">{#each book.shelves as g (g.id)}<a class="chip" href="#/genre/{g.id}">{g.name}</a>{/each}</p>
+				{/if}
 			</div>
 		</div>
 
 		{#if paragraphs.length}
-			<section>
+			<section class="about">
 				<h2>About this book</h2>
 				{#each paragraphs as p, i (i)}<p class="desc">{p}</p>{/each}
 			</section>
@@ -176,8 +180,10 @@
 				<ol class="chapters">
 					{#each book.chapters as c, i (i)}
 						<li>
-							<button onclick={() => book && player.open(book, { play: true, at: c.start_ms })}>
-								<span class="ct">{c.title}</span><span class="muted">{clock(c.start_ms)}</span>
+							<button class:current={isOpen && player.chapter === i} aria-current={isOpen && player.chapter === i ? 'true' : undefined} onclick={() => book && player.open(book, { play: true, at: c.start_ms })}>
+								<span class="num">{i + 1}</span>
+								<span class="ct">{c.title}</span>
+								<span class="muted when">{clock(c.start_ms)}</span>
 							</button>
 						</li>
 					{/each}
@@ -190,20 +196,20 @@
 <Sheet bind:open={moreOpen} title="More">
 	<div class="menu">
 		{#if book?.progress?.finished}
-			<button class="btn plain" onclick={() => mark('unfinished')}>Mark not finished</button>
+			<button class="btn soft" onclick={() => mark('unfinished')}>Mark not finished</button>
 		{:else}
-			<button class="btn plain" onclick={() => mark('finished')}>Mark finished</button>
+			<button class="btn soft" onclick={() => mark('finished')}>Mark finished</button>
 		{/if}
-		<button class="btn plain" onclick={() => mark('restart')}>Start again</button>
-		<button class="btn plain" onclick={() => { moreOpen = false; marksOpen = true; }}>Bookmarks ({book?.bookmarks.length ?? 0})</button>
+		<button class="btn soft" onclick={() => mark('restart')}>Start again</button>
+		<button class="btn soft" onclick={() => { moreOpen = false; marksOpen = true; }}>Bookmarks ({book?.bookmarks.length ?? 0})</button>
 		{#if session.user?.role === 'admin' && session.status === 'signed-in'}
-			<button class="btn plain" onclick={() => { moreOpen = false; editOpen = true; }}>Edit details</button>
+			<button class="btn soft" onclick={() => { moreOpen = false; editOpen = true; }}>Edit details</button>
 		{/if}
 		{#if canSave && session.status === 'signed-in'}
-			<a class="btn plain" href="v1/media/{id}/file" download onclick={() => (moreOpen = false)}>Save file</a>
+			<a class="btn soft" href="v1/media/{id}/file" download onclick={() => (moreOpen = false)}>Save file</a>
 		{/if}
 		{#if dl}
-			<button class="btn plain danger" onclick={() => { void downloads.remove(id); moreOpen = false; }}>Remove download</button>
+			<button class="btn danger" onclick={() => { void downloads.remove(id); moreOpen = false; }}>Remove download</button>
 		{/if}
 	</div>
 </Sheet>
@@ -239,7 +245,7 @@
 							<textarea id="note-{m.id}" bind:value={noteText} maxlength="2000" rows="3"></textarea>
 							<div class="note-actions">
 								<button type="submit" class="btn">Save</button>
-								<button type="button" class="btn plain" onclick={() => (editing = null)}>Cancel</button>
+								<button type="button" class="btn soft" onclick={() => (editing = null)}>Cancel</button>
 							</div>
 						</form>
 					{:else}
@@ -257,44 +263,169 @@
 </Sheet>
 
 <style>
+	.back {
+		margin: 0 0 0.5rem -0.6rem;
+	}
 	.head {
 		display: grid;
-		gap: 1.25rem;
+		gap: 1.75rem;
 		grid-template-columns: minmax(0, 1fr);
-		margin-bottom: 1.5rem;
-	}
-	@media (min-width: 640px) {
-		.head {
-			grid-template-columns: 260px minmax(0, 1fr);
-		}
+		margin-bottom: 2.25rem;
 	}
 	.art {
-		max-width: 300px;
-		width: 70%;
+		width: min(64vw, 260px);
 		margin: 0 auto;
 	}
-	@media (min-width: 640px) {
-		.art {
-			width: 100%;
-		}
+	.info {
+		text-align: center;
 	}
-	.info p {
-		margin: 0 0 0.35em;
+	.series {
+		text-decoration: none;
+		margin-bottom: 0.5rem;
+	}
+	h1 {
+		font-size: clamp(1.8rem, 6vw, 2.5rem);
+		margin-bottom: 0.25rem;
+	}
+	.subtitle {
+		font-style: italic;
+		color: var(--fg-muted);
+		font-size: 1.1rem;
+		margin: 0 0 0.5rem;
+	}
+	.by {
+		margin: 0.15rem 0 0;
+	}
+	.by :global(a) {
+		color: inherit;
+		text-decoration: underline;
+		text-decoration-color: var(--line);
+	}
+	.meta {
+		display: flex;
+		justify-content: center;
+		flex-wrap: wrap;
+		gap: 0 0.5rem;
+		margin: 0.75rem 0 0;
+		font-size: 0.9rem;
+	}
+	.meta span + span::before {
+		content: '·';
+		margin-right: 0.5rem;
+	}
+	.progress {
+		display: block;
+		height: 2px;
+		max-width: 260px;
+		margin: 0.75rem auto 0;
+		background: var(--line);
+	}
+	.progress span {
+		display: block;
+		height: 100%;
+		background: var(--fg);
 	}
 	.actions {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 0.5rem;
+		justify-content: center;
+		gap: 0.6rem;
 		align-items: center;
-		margin-top: 1rem;
+		margin-top: 1.25rem;
+	}
+	.genres {
+		justify-content: center;
+		margin: 1.25rem 0 0;
+	}
+	.genres .chip {
+		min-height: 32px;
+		font-size: 0.82rem;
+	}
+	@media (min-width: 720px) {
+		.head {
+			grid-template-columns: 280px minmax(0, 1fr);
+			gap: 2.5rem;
+			align-items: end;
+		}
+		.art {
+			width: 100%;
+		}
+		.info,
+		.meta,
+		.actions,
+		.genres {
+			text-align: left;
+			justify-content: flex-start;
+		}
+		.progress {
+			margin-left: 0;
+		}
+		.more {
+			margin-left: -0.25rem;
+		}
+	}
+	section {
+		max-width: 680px;
+		margin-bottom: 2.25rem;
+	}
+	section h2 {
+		padding-top: 1.5rem;
+		border-top: 1px solid var(--line);
+		margin-bottom: 0.9rem;
 	}
 	.desc {
 		white-space: pre-line;
+		font-family: var(--font-display);
+		font-size: 1.06rem;
+		line-height: 1.65;
 	}
-	section {
-		margin-bottom: 1.5rem;
+	.chapters {
+		list-style: none;
+		margin: 0;
+		padding: 0;
 	}
-	.chapters,
+	.chapters li + li {
+		border-top: 1px solid var(--line);
+	}
+	.chapters button {
+		display: flex;
+		gap: 1rem;
+		width: 100%;
+		min-height: 50px;
+		align-items: center;
+		border: 0;
+		background: transparent;
+		text-align: left;
+		padding: 0.35rem 0;
+	}
+	.chapters button:hover .ct {
+		text-decoration: underline;
+		text-decoration-color: var(--line);
+		text-underline-offset: 3px;
+	}
+	.num {
+		width: 1.75rem;
+		flex: none;
+		color: var(--fg-muted);
+		font-size: 0.85rem;
+		font-variant-numeric: tabular-nums;
+	}
+	.ct {
+		flex: 1;
+	}
+	.when {
+		font-size: 0.85rem;
+		font-variant-numeric: tabular-nums;
+	}
+	.chapters .current,
+	.chapters .current .num {
+		color: var(--accent);
+	}
+	.chapters .current .ct {
+		font-family: var(--font-display);
+		font-style: italic;
+		font-weight: 600;
+	}
 	.note-edit {
 		display: grid;
 		gap: 0.5rem;
@@ -304,6 +435,10 @@
 	.note-edit textarea {
 		width: 100%;
 		font: inherit;
+		padding: 0.6rem 0.8rem;
+		border: 1px solid var(--line);
+		border-radius: var(--radius-sm);
+		background: var(--bg);
 	}
 	.note-actions {
 		display: flex;
@@ -314,53 +449,45 @@
 		margin: 0;
 		padding: 0;
 	}
-	.chapters button,
-	.mark {
-		display: flex;
-		gap: 1rem;
-		width: 100%;
-		min-height: 44px;
-		align-items: center;
-		border: 0;
-		border-bottom: 1px solid var(--line);
-		background: transparent;
-		text-align: left;
-		padding: 0.25rem 0;
+	.marks li + li {
+		border-top: 1px solid var(--line);
 	}
 	.mark {
+		display: flex;
+		flex: 1;
 		flex-direction: column;
 		align-items: flex-start;
 		justify-content: center;
+		gap: 0.1rem;
+		min-height: 52px;
 		border: 0;
+		background: transparent;
+		text-align: left;
+		padding: 0.4rem 0;
 	}
-	.ct {
-		flex: 1;
+	.mark strong {
+		font-variant-numeric: tabular-nums;
 	}
 	.menu {
 		display: grid;
 		gap: 0.5rem;
 		margin-bottom: 1rem;
 	}
+	.menu .btn {
+		justify-content: flex-start;
+		border-radius: var(--radius-sm);
+	}
 	.choice {
 		display: flex;
-		gap: 0.6rem;
+		gap: 0.75rem;
 		align-items: center;
-		min-height: 44px;
+		min-height: 48px;
+		padding: 0 0.9rem;
+		border: 1px solid var(--line);
+		border-radius: var(--radius-sm);
+		cursor: pointer;
 	}
-	.danger {
-		color: var(--danger);
-	}
-	.genres {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.4rem;
-	}
-	.genres a {
-		padding: 0.15rem 0.7rem;
-		border-radius: 999px;
-		background: var(--accent-soft);
-		color: var(--accent-soft-fg);
-		text-decoration: none;
-		font-size: 0.85rem;
+	.choice:has(input:checked) {
+		border-color: var(--fg);
 	}
 </style>

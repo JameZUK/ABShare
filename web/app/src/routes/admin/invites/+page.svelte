@@ -75,7 +75,7 @@
 	{#if error}<p class="error" role="alert">{error}</p>{/if}
 	{#if link}<CopyLink {link} note="Send this link privately (a message, not a public post). It works once, for {hours} hours." />{/if}
 	<form class="card" onsubmit={create}>
-		<h2>Invite someone</h2>
+		<h2 class="formh">Invite someone</h2>
 		<label class="field">Their name (optional) <input bind:value={name} maxlength="64" placeholder="Shown when they open the link" /></label>
 		<label class="field">Role
 			<select bind:value={role}>
@@ -99,7 +99,7 @@
 		<button class="btn" disabled={busy}>Create invite link</button>
 	</form>
 
-	<h2>Waiting to be used</h2>
+	<h2 class="waiting">Waiting to be used</h2>
 	{#each invites as i (i.id)}
 		<div class="row item">
 			<span class="spacer">
@@ -107,7 +107,7 @@
 				{#if i.role === 'admin'}<span class="muted"> · admin</span>{/if}<br />
 				<span class="muted small">{librariesLabel(i.libraries)} · expires {date(i.expires_at)}</span>
 			</span>
-			<button class="icon-btn" onclick={() => revoke(i)} aria-label="Cancel this invite"><Icon name="trash" /></button>
+			<button class="icon-btn" onclick={() => revoke(i)} aria-label="Cancel this invite"><Icon name="trash" size={20} /></button>
 		</div>
 	{:else}
 		<p class="muted">None.</p>
@@ -117,17 +117,39 @@
 <style>
 	form {
 		margin-bottom: 1.5rem;
-		max-width: 520px;
+		max-width: 560px;
+		padding: 1.5rem;
+	}
+	.formh {
+		margin-bottom: 1.1rem;
+	}
+	form .btn {
+		margin-top: 0.5rem;
 	}
 	.check {
 		display: flex;
-		gap: 0.6rem;
+		gap: 0.7rem;
 		align-items: center;
 		min-height: 44px;
+		font-size: 0.95rem;
+	}
+	.check input {
+		width: 1.15rem;
+		height: 1.15rem;
+	}
+	.waiting {
+		margin: 2rem 0 0.5rem;
+		padding-top: 1.25rem;
+		border-top: 1px solid var(--line);
 	}
 	.item {
-		min-height: 60px;
+		min-height: 64px;
+		padding: 0.5rem 0;
 		border-bottom: 1px solid var(--line);
+	}
+	.item strong {
+		font-family: var(--font-display);
+		font-size: 1.05rem;
 	}
 	.small {
 		font-size: 0.85rem;

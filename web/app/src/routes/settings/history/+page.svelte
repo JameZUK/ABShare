@@ -96,44 +96,46 @@
 			<span><strong>Keep listening history</strong><br /><span class="muted">When this is off, nothing new is recorded. Your place in each book is still saved.</span></span>
 		</label>
 
-		<h2>Recent sessions</h2>
+		<h2 class="sessions">Recent sessions</h2>
 		{#if sessions.length === 0}
 			<p class="muted">{data.enabled ? 'Nothing yet. Sessions appear here as you listen.' : 'History is off.'}</p>
 		{/if}
 		{#each sessions as s (s.id)}
 			<a class="item row" href="#/book/{s.book.id}">
-				<span class="cover"><Cover id={s.book.id} src={s.book.cover} title={s.book.title} size={128} /></span>
+				<span class="cover"><Cover id={s.book.id} src={s.book.cover} title={s.book.title} size={128} book /></span>
 				<span class="spacer text">
-					<strong>{s.book.title}</strong>
+					<strong class="serif">{s.book.title}</strong>
 					{#if s.book.authors.length}<span class="muted small">{names(s.book.authors)}</span>{/if}
 					<span class="muted small">{when(s.started_at)} · {listened(s.seconds)}</span>
 				</span>
 			</a>
 		{/each}
 		{#if next}
-			<button class="btn plain" onclick={loadMore} disabled={busy}>Show more</button>
+			<button class="btn soft more" onclick={loadMore} disabled={busy}>Show more</button>
 		{/if}
 	{/if}
 </main>
 
 <Sheet bind:open={moreOpen} title="History">
-	<button class="btn plain danger" onclick={() => { moreOpen = false; confirmOpen = true; }}><Icon name="trash" /> Clear history…</button>
+	<button class="btn danger" onclick={() => { moreOpen = false; confirmOpen = true; }}><Icon name="trash" /> Clear history…</button>
 </Sheet>
 
 <Sheet bind:open={confirmOpen} title="Clear history?">
 	<p>This removes all your listening sessions and resets your listening time. Your place in each book and your finished books are kept. It can’t be undone.</p>
 	<div class="choices">
-		<button class="btn plain danger" onclick={clear} disabled={busy}>Clear history</button>
+		<button class="btn danger" onclick={clear} disabled={busy}>Clear history</button>
 		<button class="btn" onclick={() => (confirmOpen = false)}>Cancel</button>
 	</div>
 </Sheet>
 
 <style>
+	/* Totals as a row of figures, divided by hairlines. */
 	.totals {
 		display: grid;
 		grid-template-columns: repeat(2, minmax(0, 1fr));
-		gap: 0.75rem;
-		margin: 1rem 0;
+		margin: 1.5rem 0;
+		border-top: 1px solid var(--line);
+		border-bottom: 1px solid var(--line);
 	}
 	@media (min-width: 560px) {
 		.totals {
@@ -141,34 +143,57 @@
 		}
 	}
 	.totals div {
-		padding: 0.75rem;
-		border-radius: var(--radius);
-		background: var(--bg-raised);
-		border: 1px solid var(--line);
+		padding: 1rem 0.75rem 1rem 0;
+	}
+	.totals div + div {
+		padding-left: 0.9rem;
+		border-left: 1px solid var(--line);
+	}
+	@media (max-width: 559px) {
+		.totals div:nth-child(3) {
+			padding-left: 0;
+			border-left: 0;
+		}
+		.totals div:nth-child(n + 3) {
+			border-top: 1px solid var(--line);
+		}
 	}
 	.totals dt {
-		font-size: 0.85rem;
+		font-size: 0.72rem;
+		font-weight: 600;
+		letter-spacing: 0.12em;
+		text-transform: uppercase;
 		color: var(--fg-muted);
 	}
 	.totals dd {
-		margin: 0.25rem 0 0;
-		font-size: 1.15rem;
+		margin: 0.3rem 0 0;
+		font-family: var(--font-display);
+		font-size: 1.6rem;
 		font-weight: 600;
+		line-height: 1.1;
 	}
 	.choice {
 		display: flex;
-		gap: 0.75rem;
+		gap: 0.85rem;
 		align-items: flex-start;
 		padding: 0.5rem 0;
 		min-height: 44px;
 	}
 	.choice input {
-		margin-top: 0.3rem;
+		margin-top: 0.25rem;
 		width: 1.2rem;
 		height: 1.2rem;
+		flex: none;
+	}
+	.sessions {
+		margin-top: 2rem;
+		padding-bottom: 0.6rem;
+		border-bottom: 1px solid var(--line);
 	}
 	.item {
-		min-height: 64px;
+		gap: 0.9rem;
+		min-height: 72px;
+		padding: 0.6rem 0;
 		border-bottom: 1px solid var(--line);
 		color: inherit;
 		text-decoration: none;
@@ -182,12 +207,17 @@
 		min-width: 0;
 	}
 	.text strong {
+		font-size: 1.02rem;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 	.small {
-		font-size: 0.85rem;
+		font-size: 0.82rem;
+	}
+	.more {
+		display: flex;
+		margin: 1.5rem auto 0;
 	}
 	.choices {
 		display: flex;

@@ -78,12 +78,12 @@
 
 <AdminShell title="Users">
 	{#if error}<p class="error" role="alert">{error}</p>{/if}
-	<ul class="list">
+	<ul class="list rules">
 		{#each users as u (u.id)}
 			<li>
 				<button class="item" onclick={() => edit(u)}>
 					<span class="main">
-						<strong>{u.display_name}</strong> <span class="muted">@{u.username}</span>
+						<strong class="serif">{u.display_name}</strong> <span class="muted">@{u.username}</span>
 						{#if u.role === 'admin'}<span class="tag">Admin</span>{/if}
 						{#if u.disabled}<span class="tag off">Disabled</span>{/if}
 					</span>
@@ -113,12 +113,12 @@
 		<label class="check"><input type="checkbox" bind:checked={editing.permissions.save_files} /> Can save books as files</label>
 		<div class="actions">
 			<button class="btn" onclick={save} disabled={busy}>Save</button>
-			<button class="btn plain" onclick={reset} disabled={busy}>Reset sign-in</button>
-			<button class="btn plain" onclick={signOut} disabled={busy}>Sign out everywhere</button>
+			<button class="btn soft" onclick={reset} disabled={busy}>Reset sign-in</button>
+			<button class="btn soft" onclick={signOut} disabled={busy}>Sign out everywhere</button>
 			{#if editing.disabled}
-				<button class="btn plain" onclick={() => setDisabled(false)} disabled={busy}>Enable</button>
+				<button class="btn soft" onclick={() => setDisabled(false)} disabled={busy}>Enable</button>
 			{:else}
-				<button class="btn plain danger" onclick={() => setDisabled(true)} disabled={busy}>Disable</button>
+				<button class="btn danger" onclick={() => setDisabled(true)} disabled={busy}>Disable</button>
 			{/if}
 		</div>
 	{/if}
@@ -129,46 +129,66 @@
 		list-style: none;
 		margin: 0;
 		padding: 0;
+		border-bottom: 1px solid var(--line);
 	}
 	.item {
 		display: grid;
-		gap: 0.2rem;
+		gap: 0.25rem;
 		width: 100%;
-		min-height: 60px;
-		padding: 0.6rem 0.25rem;
+		min-height: 68px;
+		padding: 0.8rem 0;
 		border: 0;
-		border-bottom: 1px solid var(--line);
 		background: transparent;
 		text-align: left;
+	}
+	.item:hover strong {
+		text-decoration: underline;
+		text-decoration-color: var(--line);
+		text-underline-offset: 3px;
+	}
+	.main {
+		display: flex;
+		align-items: baseline;
+		flex-wrap: wrap;
+		gap: 0 0.4rem;
+	}
+	.main strong {
+		font-size: 1.1rem;
 	}
 	.small {
 		font-size: 0.85rem;
 	}
 	.tag {
-		margin-left: 0.4rem;
-		padding: 0.05rem 0.5rem;
+		align-self: center;
+		margin-left: 0.25rem;
+		padding: 0.05rem 0.55rem;
 		border-radius: 999px;
-		background: var(--accent-soft);
-		color: var(--accent-soft-fg);
-		font-size: 0.75rem;
+		border: 1px solid var(--accent);
+		color: var(--accent);
+		font-size: 0.72rem;
+		font-weight: 600;
+		letter-spacing: 0.04em;
 	}
 	.tag.off {
-		background: var(--bg-sunken);
+		border-color: var(--danger);
 		color: var(--danger);
 	}
 	.check {
 		display: flex;
-		gap: 0.6rem;
+		gap: 0.7rem;
 		align-items: center;
 		min-height: 44px;
+	}
+	.check input {
+		width: 1.15rem;
+		height: 1.15rem;
 	}
 	.actions {
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.5rem;
-		margin-top: 1rem;
-	}
-	.danger {
-		color: var(--danger);
+		margin-top: 1.25rem;
+		padding-top: 1rem;
+		border-top: 1px solid var(--line);
 	}
 </style>

@@ -87,7 +87,7 @@
 		<p class="error" role="alert">{error}</p>
 		<div class="actions">
 			<button class="btn" disabled={busy}>Save</button>
-			<button type="button" class="btn plain" onclick={reset} disabled={busy}>Use the file’s details</button>
+			<button type="button" class="btn soft" onclick={reset} disabled={busy}>Use the file’s details</button>
 		</div>
 	</form>
 </Sheet>
@@ -106,18 +106,19 @@
 	.num {
 		width: 6rem;
 	}
-	textarea {
-		padding: 0.6rem 0.8rem;
-		border: 1px solid var(--line);
-		border-radius: var(--radius-sm);
-		background: var(--bg-raised);
-		font-weight: 400;
-		resize: vertical;
+	form :global(input),
+	form :global(textarea) {
+		background: var(--bg);
 	}
 	.actions {
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.5rem;
+		position: sticky;
+		bottom: 0;
+		padding: 0.75rem 0 0.25rem;
+		background: var(--bg-raised);
+		border-top: 1px solid var(--line);
 	}
 	form {
 		max-height: 70vh;

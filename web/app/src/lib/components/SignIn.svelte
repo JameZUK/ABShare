@@ -69,10 +69,11 @@
 <main class="page narrow signin">
 	<img class="logo" src="./favicon.svg" alt="" width="72" height="72" />
 	<h1>ABShare</h1>
+	<p class="tagline serif">Your audiobooks, wherever you are.</p>
 
 	{#if step === 'start'}
 		<button class="btn wide" onclick={withPasskey} disabled={busy}>Sign in with a passkey</button>
-		<button class="btn plain wide" onclick={() => (step = 'password')} disabled={busy}>Use a password</button>
+		<button class="btn soft wide" onclick={() => (step = 'password')} disabled={busy}>Use a password</button>
 	{:else if step === 'password'}
 		<form onsubmit={withPassword}>
 			<label class="field">Username <input bind:value={username} autocomplete="username" autocapitalize="none" spellcheck="false" required maxlength="32" /></label>
@@ -80,7 +81,7 @@
 			<button class="btn wide" disabled={busy}>Continue</button>
 		</form>
 		{#if passkeysSupported()}
-			<button class="btn plain wide" onclick={() => (step = 'start')} disabled={busy}>Use a passkey instead</button>
+			<button class="btn soft wide" onclick={() => (step = 'start')} disabled={busy}>Use a passkey instead</button>
 		{/if}
 	{:else}
 		<form onsubmit={withCode}>
@@ -92,30 +93,49 @@
 			<button class="btn wide" disabled={busy}>Sign in</button>
 		</form>
 		{#if methods.includes('totp')}
-			<button class="btn plain wide" onclick={() => { useRecovery = !useRecovery; code = ''; }}>{useRecovery ? 'Use an authenticator code' : 'Use a recovery code'}</button>
+			<button class="btn soft wide" onclick={() => { useRecovery = !useRecovery; code = ''; }}>{useRecovery ? 'Use an authenticator code' : 'Use a recovery code'}</button>
 		{/if}
 	{/if}
 
 	<p class="error" role="alert">{error}</p>
-	<p class="muted small">ABShare is invite-only. Ask the person who runs it for an invite link.</p>
+	<p class="muted small foot">ABShare is invite-only. Ask the person who runs it for an invite link.</p>
 </main>
 
 <style>
 	.signin {
-		padding-top: 12vh;
+		max-width: 400px;
+		padding-top: max(10vh, 3rem);
 		text-align: center;
 	}
 	.signin form {
 		text-align: left;
 	}
 	.logo {
-		margin: 0 auto 0.5rem;
+		margin: 0 auto 1.25rem;
+		border-radius: 18px;
+		box-shadow: var(--shadow-book);
+	}
+	h1 {
+		font-size: 2.6rem;
+		margin-bottom: 0.2rem;
+	}
+	.tagline {
+		font-style: italic;
+		font-size: 1.15rem;
+		color: var(--fg-muted);
+		margin-bottom: 2.25rem;
 	}
 	.wide {
 		width: 100%;
 		margin-bottom: 0.75rem;
+		min-height: 50px;
 	}
 	.small {
 		font-size: 0.85rem;
+	}
+	.foot {
+		margin-top: 1.5rem;
+		padding-top: 1.25rem;
+		border-top: 1px solid var(--line);
 	}
 </style>

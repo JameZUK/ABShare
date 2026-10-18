@@ -8,9 +8,10 @@
 </script>
 
 <main class="page narrow">
-	<button class="icon-btn" onclick={() => history.back()} aria-label="Back"><Icon name="back" /></button>
+	<button class="icon-btn back" onclick={() => history.back()} aria-label="Back"><Icon name="back" /></button>
+	<span class="eyebrow accent">Settings</span>
 	<h1>About ABShare</h1>
-	<p>A private audiobook server for friends and family.</p>
+	<p class="lede serif">A private audiobook server for friends and family.</p>
 	<p class="muted">App version {version}</p>
 	<p>Made by James Muller (JameZUK): hacker and coder.</p>
 	<h2>Why it exists</h2>
@@ -27,3 +28,18 @@
 		<p class="muted">This browser doesn’t report storage.</p>
 	{/if}
 </main>
+
+<style>
+	.back {
+		margin-left: -0.6rem;
+	}
+	.lede {
+		font-size: 1.2rem;
+		font-style: italic;
+	}
+	h2 {
+		margin-top: 2rem;
+		padding-top: 1.25rem;
+		border-top: 1px solid var(--line);
+	}
+</style>

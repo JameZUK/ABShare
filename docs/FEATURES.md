@@ -61,8 +61,8 @@ Everything ABShare does today, by area. Only built and tested features are liste
 
 | Feature | Details |
 |---|---|
-| Home | Continue listening (with time left), the next book in each series you are reading, recently added, and books on this device. |
-| Library | All your books and shows, with search, a status filter (not started, in progress, finished) and sorting by title, author, recently added or recently played. |
+| Home | The book you're reading, with its chapter and a Resume button; continue listening (with time left); the next book in each series you are reading; recently added; books on this device; and genres to browse. |
+| Library | All your books and shows, with genre chips, search, a status filter (all, not started, in progress, finished) and sorting by title, author, recently added or recently played. |
 | Search | Titles, authors, narrators, series and genres, ignoring case and accents. |
 | Genres | Store genre tags are sorted onto 17 shelves. Fiction: Science Fiction, Fantasy, Mystery & Thriller, Horror, Action & Adventure, Literature & Classics, Comedy, Romance, Children & Young Adult. Non-fiction: Biography & Memoir, History, Science & Technology, Politics & Society, Philosophy & Religion, Business, Money & Self-help, Arts, Entertainment & Travel. Plus Podcasts. A book can sit on several shelves. |
 | Series | Books sharing a series are grouped automatically, in reading order (prequels first), with a "Book 2 of …" link on each book. |
@@ -70,7 +70,7 @@ Everything ABShare does today, by area. Only built and tested features are liste
 | Authors and narrators | Every author and narrator on a book page is a link to all their books, with the Library's search and sorting. |
 | Book page | Cover, title, series, authors, narrators, genres, length, time left, description and chapters. Download, mark finished or unfinished, start again, bookmarks and save file. |
 | Covers | Embedded or folder artwork, resized for each screen. |
-| Themes | Material (from your choice of 8 accent colours), Classic and High contrast; light, dark or following the system. |
+| Themes | Paperback (paper and ink, serif titles, and a warm lamplight look in the dark) and High contrast; light, dark or following the system. On wide screens the tabs become a sidebar. |
 
 ## Accounts and security
 

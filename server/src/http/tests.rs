@@ -188,6 +188,9 @@ async fn plain_http_from_outside_is_refused_and_headers_are_always_sent() {
     assert!(csp.contains("require-trusted-types-for 'script'"), "{csp}");
     assert!(csp.ends_with("trusted-types abshare-sw svelte-trusted-html"), "{csp}");
     assert!(!csp.contains("unsafe-eval") && !csp.contains("script-src 'self' 'unsafe-inline'"), "{csp}");
+    // The app's own fonts load; nothing else does (no font CDN, no data: fonts).
+    assert!(csp.contains("; font-src 'self';"), "{csp}");
+    assert!(csp.starts_with("default-src 'none';"), "{csp}");
     assert_eq!(resp.headers().get("x-frame-options").and_then(|v| v.to_str().ok()), Some("DENY"));
     // Via the trusted proxy with X-Forwarded-Proto: https it is accepted.
     let mut r = Request::builder()

@@ -53,11 +53,14 @@
 </AdminShell>
 
 <style>
+	.warnings {
+		margin-bottom: 1.5rem;
+	}
 	.warnings p {
 		display: flex;
-		gap: 0.5rem;
+		gap: 0.6rem;
 		align-items: flex-start;
-		padding: 0.6rem 0.8rem;
+		padding: 0.8rem 1rem;
 		border-radius: var(--radius-sm);
 		margin: 0 0 0.5rem;
 	}
@@ -65,32 +68,47 @@
 		background: var(--accent-soft);
 		color: var(--accent-soft-fg);
 	}
+	.warn :global(svg) {
+		color: var(--accent);
+		flex: none;
+	}
 	.ok {
-		background: var(--bg-sunken);
+		border: 1px solid var(--line);
 	}
 	.stats {
 		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-		gap: 0.75rem;
-		margin: 1rem 0 0;
+		grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+		margin: 0;
+		border-top: 1px solid var(--line);
+		border-left: 1px solid var(--line);
 	}
 	.stats div {
-		background: var(--bg-raised);
-		box-shadow: var(--shadow);
-		border-radius: var(--radius-sm);
-		padding: 0.75rem 1rem;
+		padding: 1rem 1.1rem;
+		border-right: 1px solid var(--line);
+		border-bottom: 1px solid var(--line);
 	}
 	dt {
 		color: var(--fg-muted);
-		font-size: 0.85rem;
+		font-size: 0.72rem;
+		font-weight: 600;
+		letter-spacing: 0.12em;
+		text-transform: uppercase;
+	}
+	dd {
+		margin: 0.35rem 0 0;
+		font-family: var(--font-display);
+		font-size: 1.7rem;
+		font-weight: 600;
+		line-height: 1.1;
 	}
 	.reports {
-		margin-top: 1.5rem;
+		margin-top: 2rem;
 	}
 	.reports summary {
 		cursor: pointer;
-		padding: 0.5rem 0;
+		padding: 0.6rem 0;
 		min-height: 44px;
+		border-bottom: 1px solid var(--line);
 	}
 	.reports pre {
 		white-space: pre-wrap;
@@ -99,10 +117,5 @@
 		padding: 0.75rem;
 		border-radius: var(--radius-sm);
 		font-size: 0.85rem;
-	}
-	dd {
-		margin: 0.2rem 0 0;
-		font-size: 1.3rem;
-		font-weight: 700;
 	}
 </style>

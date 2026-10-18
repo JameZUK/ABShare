@@ -1,9 +1,10 @@
 <script lang="ts">
-	// A scrolling row of genre chips under the library title: the umbrella views, the
-	// biggest shelves, and the full Genres screen.
+	// Genre chips: the umbrella views, the biggest shelves, and the full Genres screen. A
+	// sideways-scrolling row by default; `wrap` lays them out over several lines.
 	import { loadGenres, type Genre } from '$lib/api/genres';
 	import { session } from '$lib/api/session.svelte';
 
+	let { wrap = false }: { wrap?: boolean } = $props();
 	let genres = $state<Genre[]>([]);
 	$effect(() => {
 		if (session.status !== 'signed-in') return;
@@ -14,38 +15,30 @@
 </script>
 
 {#if genres.length}
-	<nav class="chips" aria-label="Genres">
-		<a href="#/genres" class="chip all">All genres</a>
+	<nav class="chips" class:scroll={!wrap} aria-label="Genres">
 		<a href="#/genre/fiction" class="chip">Fiction</a>
 		<a href="#/genre/non-fiction" class="chip">Non-fiction</a>
 		{#each genres as g (g.id)}<a href="#/genre/{g.id}" class="chip">{g.name}</a>{/each}
+		<a href="#/genres" class="chip all">All genres</a>
 	</nav>
 {/if}
 
 <style>
-	.chips {
-		display: flex;
-		gap: 0.5rem;
+	.scroll {
+		flex-wrap: nowrap;
 		overflow-x: auto;
-		padding-bottom: 0.5rem;
-		margin-bottom: 0.5rem;
+		scrollbar-width: none;
+		margin: 0 calc(-1 * var(--gutter)) 1rem;
+		padding: 0 var(--gutter) 0.25rem;
+	}
+	.scroll::-webkit-scrollbar {
+		display: none;
 	}
 	.chip {
 		flex: none;
-		display: inline-flex;
-		align-items: center;
-		min-height: 36px;
-		padding: 0 0.9rem;
-		border-radius: 999px;
-		border: 1px solid var(--line);
-		color: inherit;
-		text-decoration: none;
-		font-size: 0.9rem;
-		white-space: nowrap;
 	}
-	.chip.all {
-		background: var(--accent-soft);
-		color: var(--accent-soft-fg);
+	.all {
+		color: var(--accent);
 		border-color: transparent;
 		font-weight: 600;
 	}

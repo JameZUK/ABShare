@@ -8,5 +8,15 @@
 {#if session.user?.role === 'admin'}
 	{@render children()}
 {:else}
-	<main class="page narrow"><p>Only admins can see this page.</p></main>
+	<main class="page narrow"><p class="muted gate">Only admins can see this page.</p></main>
 {/if}
+
+<style>
+	.gate {
+		margin-top: 3rem;
+		text-align: center;
+		font-family: var(--font-display);
+		font-style: italic;
+		font-size: 1.15rem;
+	}
+</style>

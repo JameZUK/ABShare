@@ -23,6 +23,7 @@
 	aria-label={title}
 >
 	<div class="inner">
+		<span class="handle" aria-hidden="true"></span>
 		<header class="row">
 			<h2>{title}</h2>
 			<span class="spacer"></span>
@@ -38,26 +39,61 @@
 		padding: 0;
 		background: var(--bg-raised);
 		color: var(--fg);
-		border-radius: var(--radius) var(--radius) 0 0;
+		border-radius: 20px 20px 0 0;
 		width: 100%;
 		max-width: 520px;
 		max-height: 85vh;
 		margin: auto auto 0;
 		box-shadow: var(--shadow);
 	}
+	dialog[open] {
+		animation: sheet-up 0.28s var(--ease);
+	}
+	@keyframes sheet-up {
+		from {
+			transform: translateY(24px);
+			opacity: 0;
+		}
+	}
 	@media (min-width: 700px) {
 		dialog {
 			margin: auto;
 			border-radius: var(--radius);
+			border: 1px solid var(--line);
 		}
 	}
 	dialog::backdrop {
-		background: rgb(0 0 0 / 45%);
+		background: var(--scrim);
 	}
 	.inner {
-		padding: 0.75rem 1rem calc(1rem + var(--safe-b));
+		padding: 0.5rem 1.25rem calc(1.25rem + var(--safe-b));
+	}
+	.handle {
+		display: block;
+		width: 40px;
+		height: 4px;
+		margin: 0.25rem auto 0.5rem;
+		border-radius: 2px;
+		background: var(--line);
+	}
+	@media (min-width: 700px) {
+		.handle {
+			display: none;
+		}
+		.inner {
+			padding-top: 1rem;
+		}
+	}
+	header {
+		margin-bottom: 0.75rem;
+		padding-bottom: 0.6rem;
+		border-bottom: 1px solid var(--line);
 	}
 	header h2 {
 		margin: 0;
+		font-size: 1.4rem;
+	}
+	header .icon-btn {
+		margin-right: -0.6rem;
 	}
 </style>

@@ -19,7 +19,7 @@ ABShare is a small, self-hosted server for sharing an audiobook library with fri
 It is built to face the internet. Security is the first requirement, and every design choice is weighed against attack surface before convenience.
 
 <p align="center">
-  <img src="docs/images/web/home-desktop.png" alt="The Home page on a desktop browser: a greeting, a row of genre chips (Fiction, Non-fiction, Science Fiction, Fantasy, Podcasts, Mystery & Thriller), a Continue listening row of three books with progress bars and time left, a Recently added row, and the mini player at the bottom" width="820">
+  <img src="docs/images/web/home-desktop.png" alt="The Home page on a desktop browser in the light Paperback theme: a sidebar with Home, Library, Downloads and Settings, a serif Welcome back greeting, the book being read with its chapter, progress and a Resume button, a Continue listening row of books drawn with spines, and the mini player at the bottom" width="820">
 </p>
 
 > The screenshots come from a synthetic demo library ([`tools/demo/make-showcase.sh`](tools/demo/make-showcase.sh)). Every book, author, narrator and cover in them is invented.
@@ -38,11 +38,11 @@ It is built to face the internet. Security is the first requirement, and every d
 The full list is in [`docs/FEATURES.md`](docs/FEATURES.md).
 
 <p align="center">
-  <img src="docs/images/web/player-phone.png" alt="The full-screen player on a phone: a large cover, the book title and chapter, a chapter-relative scrubber with time elapsed and remaining, whole-book progress with time left in the book, chapter and skip buttons around a large play button, and Speed, Sleep, Chapters and Bookmark buttons" width="250">
+  <img src="docs/images/web/player-phone.png" alt="The full-screen player on a phone: a large cover drawn as a book, the title, author and narrator, the chapter in italics, a chapter-relative scrubber with time elapsed, time left in the book and time remaining, chapter and skip buttons around a large red play button, and Speed, Sleep, Chapters and Bookmark buttons" width="250">
   &nbsp;
-  <img src="docs/images/web/library-phone-dark.png" alt="The Library on a phone in the dark theme: genre chips, a search box, a status filter and sort order, the number of titles, and a grid of book covers with progress bars" width="250">
+  <img src="docs/images/web/library-phone-dark.png" alt="The Library on a phone in the dark theme: genre chips, a search box, an All, Not started, In progress and Finished switch, the number of titles and sort order, and a grid of book covers with progress lines" width="250">
   &nbsp;
-  <img src="docs/images/web/genres-phone-dark.png" alt="The Genres page in the dark theme: Fiction shelves (Science Fiction, Fantasy, Mystery & Thriller, Horror, Literature & Classics, Children & Young Adult) and Non-fiction shelves (Biography & Memoir, History, Science & Technology), each with a count of books" width="250">
+  <img src="docs/images/web/genres-phone-dark.png" alt="The Genres page in the dark theme, laid out like a contents page: Fiction shelves (Science Fiction, Fantasy, Mystery & Thriller, Horror, Literature & Classics, Children & Young Adult) and Non-fiction shelves (Biography & Memoir, History), each with leader dots and a count of books" width="250">
 </p>
 
 ## Under the bonnet
@@ -60,11 +60,11 @@ The detail, with request flows and diagrams, is in [`docs/ARCHITECTURE.md`](docs
 <summary><strong>More screenshots</strong></summary>
 
 <p align="center">
-  <img src="docs/images/web/book-desktop.png" alt="A book page on a desktop browser: cover, title, a link to Book 1 of its series, author, narrator, genre chips, length and time left, Pause and Download buttons, a description, and the chapter list" width="820">
+  <img src="docs/images/web/book-desktop.png" alt="A book page on a desktop browser: cover, the series and book number, title, author, narrator, length, time left and number of chapters, a progress line, Resume and Download buttons, genre chips, a description in a serif face, and the numbered chapter list" width="820">
 </p>
 
 <p align="center">
-  <img src="docs/images/web/home-phone.png" alt="Home on a phone in the light theme: genre chips, Continue listening and Recently added rows" width="250">
+  <img src="docs/images/web/home-phone.png" alt="Home on a phone in the light theme: the day and a Welcome back greeting, the book being read with its chapter and a Resume button, and a Continue listening row" width="250">
   &nbsp;
   <img src="docs/images/web/series-phone-dark.png" alt="A series page in the dark theme: The Meridian Cycle, 2 books, a Next button pointing at the book in progress, and both covers in order" width="250">
   &nbsp;
@@ -74,7 +74,7 @@ The detail, with request flows and diagrams, is in [`docs/ARCHITECTURE.md`](docs
 <p align="center">
   <img src="docs/images/web/downloads-phone-dark.png" alt="The Downloads page: storage used and available, and two downloaded books, one original and one data saver at 48 kb/s, each with its size and a remove button" width="250">
   &nbsp;
-  <img src="docs/images/web/settings-phone-dark.png" alt="Settings: Playback, Appearance, Account, Devices, About and Admin rows, each with a one-line summary" width="250">
+  <img src="docs/images/web/settings-phone-dark.png" alt="Settings: the account name, then Playback, Appearance, Account, Devices, History, About and Admin rows, each with a one-line summary" width="250">
   &nbsp;
   <img src="docs/images/web/invite.png" alt="The invite page: Welcome, Ada Lovelace, a prompt to choose a username, and a Continue button" width="250">
 </p>

@@ -1,26 +1,54 @@
-/* ABShare: design tokens and base styles. The theme (src/lib/theme) sets every token at
-   start-up; these are the defaults until then. */
+/* ABShare: design tokens and base styles, in the Paperback style. The theme (src/lib/theme)
+   sets every token at start-up; these are the defaults until then. */
+@font-face {
+	font-family: 'Instrument Sans';
+	src: url('./lib/fonts/instrument-sans.woff2') format('woff2');
+	font-weight: 400 700;
+	font-style: normal;
+	font-display: swap;
+}
+@font-face {
+	font-family: Fraunces;
+	src: url('./lib/fonts/fraunces.woff2') format('woff2');
+	font-weight: 300 700;
+	font-style: normal;
+	font-display: swap;
+}
+@font-face {
+	font-family: Fraunces;
+	src: url('./lib/fonts/fraunces-italic.woff2') format('woff2');
+	font-weight: 300 700;
+	font-style: italic;
+	font-display: swap;
+}
+
 :root {
 	color-scheme: light dark;
-	--bg: #f6f5f2;
-	--bg-raised: #ffffff;
-	--bg-sunken: #ebe9e4;
-	--fg: #1c1b19;
-	--fg-muted: #6b6862;
-	--line: #dcd9d2;
-	--accent: #c2410c;
+	--bg: #f3eee4;
+	--bg-raised: #fbf8f2;
+	--bg-sunken: #e8e1d3;
+	--fg: #1e2430;
+	--fg-muted: #5d5548;
+	--line: #d9d0c0;
+	--accent: #b4442c;
 	--accent-fg: #ffffff;
-	--accent-soft: #fde7da;
-	--accent-soft-fg: #1c1b19;
-	--danger: #b91c1c;
-	--shadow: 0 1px 2px rgb(0 0 0 / 6%), 0 8px 24px rgb(0 0 0 / 8%);
-	--radius: 16px;
-	--radius-sm: 12px;
+	--accent-soft: #f0dcd2;
+	--accent-soft-fg: #1e2430;
+	--danger: #a12a1e;
+	--shadow: 0 1px 2px rgb(60 45 30 / 8%), 0 6px 18px rgb(60 45 30 / 8%);
+	--shadow-book: 0 1px 0 rgb(0 0 0 / 8%), 0 12px 22px -8px rgb(40 30 20 / 45%);
+	--scrim: rgb(30 24 16 / 45%);
+	--radius: 14px;
+	--radius-sm: 10px;
+	--font: 'Instrument Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+	--font-display: Fraunces, Georgia, 'Times New Roman', serif;
 	--mini-h: 68px;
-	--tabs-h: 60px;
-	--font: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+	--tabs-h: 64px;
+	--side-w: 0px;
+	--gutter: 1.25rem;
 	--app-h: 100vh;
 	--safe-b: env(safe-area-inset-bottom, 0px);
+	--ease: cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 @supports (height: 100dvh) {
 	:root {
@@ -29,17 +57,28 @@
 }
 @media (prefers-color-scheme: dark) {
 	:root:not([data-mode='light']) {
-		--bg: #121212;
-		--bg-raised: #1c1c1c;
-		--bg-sunken: #0b0b0b;
-		--fg: #f2f1ee;
-		--fg-muted: #a39f97;
-		--line: #2e2d2b;
-		--accent: #fb923c;
-		--accent-fg: #1a0d05;
-		--accent-soft: #3a2316;
-		--accent-soft-fg: #f2f1ee;
-		--danger: #f87171;
+		--bg: #17140f;
+		--bg-raised: #211d17;
+		--bg-sunken: #2b261e;
+		--fg: #ece4d4;
+		--fg-muted: #b8ac97;
+		--line: #3a3329;
+		--accent: #e87a5d;
+		--accent-fg: #1c0d08;
+		--accent-soft: #3d261d;
+		--accent-soft-fg: #ece4d4;
+		--danger: #f08a7a;
+		--shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 8px 24px rgb(0 0 0 / 35%);
+		--shadow-book: 0 1px 0 rgb(255 240 220 / 6%), 0 14px 24px -8px rgb(0 0 0 / 75%);
+		--scrim: rgb(0 0 0 / 60%);
+	}
+}
+/* Wide screens: a sidebar instead of the tab bar (see +layout.svelte). */
+@media (min-width: 1024px) {
+	:root {
+		--tabs-h: 0px;
+		--side-w: 248px;
+		--gutter: 2.5rem;
 	}
 }
 
@@ -54,24 +93,55 @@ body {
 	min-height: 100%;
 	background: var(--bg);
 	color: var(--fg);
-	font: 16px/1.45 var(--font);
+	font: 16px/1.5 var(--font);
 	-webkit-font-smoothing: antialiased;
 	-webkit-tap-highlight-color: transparent;
+	text-rendering: optimizeLegibility;
 }
+::selection {
+	background: var(--accent-soft);
+	color: var(--accent-soft-fg);
+}
+
+/* Type: Fraunces for titles, Instrument Sans for everything else. */
 h1,
 h2,
 h3 {
-	line-height: 1.2;
 	margin: 0 0 0.5em;
+	line-height: 1.15;
+	font-weight: 600;
+}
+h1,
+h2,
+.serif {
+	font-family: var(--font-display);
+	font-optical-sizing: auto;
 }
 h1 {
-	font-size: 1.6rem;
+	font-size: 2rem;
+	letter-spacing: -0.01em;
 }
 h2 {
-	font-size: 1.15rem;
+	font-size: 1.3rem;
+}
+h3 {
+	font-size: 1rem;
+}
+.eyebrow {
+	display: block;
+	font-size: 0.72rem;
+	font-weight: 600;
+	letter-spacing: 0.14em;
+	text-transform: uppercase;
+	color: var(--fg-muted);
+}
+.eyebrow.accent {
+	color: var(--accent);
 }
 a {
 	color: var(--accent);
+	text-decoration-thickness: 1px;
+	text-underline-offset: 3px;
 }
 p {
 	margin: 0 0 0.75em;
@@ -79,6 +149,11 @@ p {
 img {
 	display: block;
 	max-width: 100%;
+}
+hr {
+	border: 0;
+	border-top: 1px solid var(--line);
+	margin: 1.5rem 0;
 }
 
 button,
@@ -91,28 +166,51 @@ textarea {
 button {
 	cursor: pointer;
 }
+
+/* Buttons. Ink is the main action; accent is kept for play; soft is an outlined paper
+   button; plain is text only. */
 .btn {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
 	gap: 0.5em;
 	min-height: 44px;
-	padding: 0 1.2em;
-	border: 0;
+	padding: 0 1.25em;
+	border: 1px solid transparent;
 	border-radius: 999px;
+	background: var(--fg);
+	color: var(--bg);
+	font-weight: 600;
+	font-size: 0.95rem;
+	text-decoration: none;
+	transition:
+		transform 0.15s var(--ease),
+		background-color 0.15s var(--ease);
+}
+.btn:active:not(:disabled) {
+	transform: scale(0.97);
+}
+.btn.accent {
 	background: var(--accent);
 	color: var(--accent-fg);
-	font-weight: 600;
-	text-decoration: none;
 }
 .btn.soft {
-	background: var(--accent-soft);
-	color: var(--accent-soft-fg);
+	background: transparent;
+	color: var(--fg);
+	border-color: var(--line);
+}
+.btn.soft:hover:not(:disabled) {
+	background: var(--bg-sunken);
 }
 .btn.plain {
 	background: transparent;
 	color: var(--fg);
-	border: 1px solid var(--line);
+	border-color: var(--line);
+}
+.btn.danger {
+	background: transparent;
+	color: var(--danger);
+	border-color: currentColor;
 }
 .btn:disabled {
 	opacity: 0.5;
@@ -128,30 +226,144 @@ button {
 	background: transparent;
 	color: inherit;
 	padding: 0;
+	transition: background-color 0.15s var(--ease);
 }
-.icon-btn:hover {
+.icon-btn:hover:not(:disabled) {
 	background: var(--bg-sunken);
 }
+.icon-btn:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
 :focus-visible {
-	outline: 3px solid var(--accent);
+	outline: 2px solid var(--accent);
 	outline-offset: 2px;
 }
 
-label.field {
-	display: grid;
-	gap: 0.3em;
-	margin-bottom: 1em;
+/* Chips: filters and toggles. */
+.chips {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+}
+.chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.4em;
+	min-height: 36px;
+	padding: 0 0.95rem;
+	border: 1px solid var(--line);
+	border-radius: 999px;
+	background: transparent;
+	color: var(--fg);
+	font-size: 0.875rem;
+	font-weight: 500;
+	text-decoration: none;
+	white-space: nowrap;
+}
+.chip:hover {
+	background: var(--bg-sunken);
+}
+.chip[aria-pressed='true'],
+.chip[aria-current='page'] {
+	background: var(--fg);
+	border-color: var(--fg);
+	color: var(--bg);
 	font-weight: 600;
 }
+
+/* Segmented control: a row of radio buttons styled as one control. */
+.segmented {
+	display: inline-flex;
+	padding: 3px;
+	border: 1px solid var(--line);
+	border-radius: 999px;
+	gap: 2px;
+}
+.segmented label {
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+	min-height: 38px;
+	padding: 0 1rem;
+	border-radius: 999px;
+	font-size: 0.9rem;
+	font-weight: 500;
+	cursor: pointer;
+}
+.segmented input {
+	position: absolute;
+	opacity: 0;
+	inset: 0;
+	margin: 0;
+	cursor: pointer;
+}
+.segmented label:has(input:checked) {
+	background: var(--fg);
+	color: var(--bg);
+	font-weight: 600;
+}
+.segmented label:has(input:focus-visible) {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+
+/* Form fields. */
+label.field {
+	display: grid;
+	gap: 0.35em;
+	margin-bottom: 1.1em;
+	font-weight: 600;
+	font-size: 0.9rem;
+}
 label.field input,
-label.field select {
-	min-height: 44px;
-	padding: 0 0.8em;
+label.field select,
+label.field textarea,
+.input,
+.select {
+	min-height: 46px;
+	padding: 0 0.9em;
 	border: 1px solid var(--line);
 	border-radius: var(--radius-sm);
 	background: var(--bg-raised);
 	font-weight: 400;
+	font-size: 1rem;
+	transition: border-color 0.15s var(--ease);
 }
+label.field textarea {
+	padding: 0.7em 0.9em;
+	min-height: 6em;
+	resize: vertical;
+}
+label.field input:focus,
+label.field select:focus,
+label.field textarea:focus,
+.input:focus,
+.select:focus {
+	outline: none;
+	border-color: var(--fg);
+}
+/* Selects get the same look everywhere, with a drawn chevron in the text colour. */
+label.field select,
+.select {
+	appearance: none;
+	padding-right: 2.4em;
+	background-image:
+		linear-gradient(45deg, transparent 50%, currentColor 50%),
+		linear-gradient(135deg, currentColor 50%, transparent 50%);
+	background-position:
+		right 1.15em center,
+		right 0.8em center;
+	background-size:
+		0.35em 0.35em,
+		0.35em 0.35em;
+	background-repeat: no-repeat;
+}
+input[type='checkbox'],
+input[type='radio'] {
+	accent-color: var(--accent);
+}
+
 .muted {
 	color: var(--fg-muted);
 }
@@ -161,17 +373,21 @@ label.field select {
 }
 .card {
 	background: var(--bg-raised);
+	border: 1px solid var(--line);
 	border-radius: var(--radius);
-	box-shadow: var(--shadow);
-	padding: 1.2em;
+	padding: 1.25em;
+}
+/* A list of rows separated by hairlines, the Paperback way of grouping. */
+.rules > * + * {
+	border-top: 1px solid var(--line);
 }
 .page {
-	max-width: 960px;
+	max-width: 1040px;
 	margin: 0 auto;
-	padding: 1rem 1rem calc(var(--mini-h) + var(--tabs-h) + var(--safe-b) + 1.5rem);
+	padding: 1.5rem var(--gutter) calc(var(--mini-h) + var(--tabs-h) + var(--safe-b) + 2rem);
 }
 .narrow {
-	max-width: 440px;
+	max-width: 520px;
 	margin: 0 auto;
 }
 .row {
@@ -189,6 +405,17 @@ label.field select {
 	overflow: hidden;
 	clip: rect(0 0 0 0);
 	white-space: nowrap;
+}
+
+/* Pages ease in. */
+@keyframes rise {
+	from {
+		opacity: 0;
+		transform: translateY(6px);
+	}
+}
+.page {
+	animation: rise 0.28s var(--ease);
 }
 @media (prefers-reduced-motion: reduce) {
 	* {
