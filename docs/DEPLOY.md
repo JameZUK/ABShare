@@ -84,6 +84,11 @@ built web app (`web/app/build`) in `/usr/share/abshare/web`, and the configurati
 Build or pull the new image, then `docker compose up -d`. The database migrates itself on
 start. Open apps show "An update is ready" and reload when the listener chooses.
 
+**From an image before the distroless one:** set `libs = []` under `[ffmpeg]`. The image's
+ffmpeg is static and needs no libraries, and the image no longer has
+`/etc/ld.so.cache`. ABShare refuses to start while `libs` lists a path that doesn't exist,
+and says which one.
+
 ## Backups
 
 Back up the data directory: `abshare.db` (accounts, progress, bookmarks) and `secret.key`

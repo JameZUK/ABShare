@@ -6,6 +6,7 @@ What changed and when, newest first. Each entry says how it is tested. The desig
 
 ### Changed
 - **The Docker image is now distroless** (`distroless/static`, pinned by digest; SPEC §10). There is no shell, package manager or other program in it, only ABShare's own statically linked binaries and the web app, and it shrank from about 150 MB to 41 MB. It still runs as user 65534, so existing data directories need no change. Run commands by calling `/usr/local/bin/abshare` directly, as DEPLOY.md shows; `docker exec … sh` no longer works.
+- **Upgrading: set `libs = []` under `[ffmpeg]`.** An older config may list `/etc/ld.so.cache`, which the image no longer has. ffmpeg has been static since 0.9.0, so it needs no libraries. `serve`, `scan`, `check-config` and `doctor` now refuse a `libs` entry that doesn't exist and name it. Before, the server started but the jail refused every ffmpeg run, and `doctor` blamed the kernel.
 
 ### Added
 - **[`docs/DEVICE-TESTS.md`](docs/DEVICE-TESTS.md):** the checks only a real phone can do (the lock screen, two devices, airplane mode, the newer features), as a checklist.

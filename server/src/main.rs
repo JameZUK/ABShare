@@ -81,6 +81,7 @@ async fn run() -> Result<(), String> {
     match cmd.as_str() {
         "check-config" => {
             config::prepare_data_dir(&cfg.data_dir)?;
+            config::check_ffmpeg_libs(&cfg.ffmpeg.libs)?;
             for l in &cfg.libraries {
                 config::check_library_root(&l.path)?;
             }
@@ -100,6 +101,7 @@ async fn run() -> Result<(), String> {
         }
         "scan" => {
             config::prepare_data_dir(&cfg.data_dir)?;
+            config::check_ffmpeg_libs(&cfg.ffmpeg.libs)?;
             let secret = secret::Secret::load_or_create(&cfg.data_dir)?;
             let mut cat = catalogue::Catalogue::open(&cfg.data_dir.join("abshare.db"))?;
             if !cfg.libraries.iter().any(|l| library.as_deref().is_none_or(|want| want.eq_ignore_ascii_case(&l.name))) {
@@ -135,6 +137,7 @@ async fn run() -> Result<(), String> {
         }
         "serve" => {
             config::prepare_data_dir(&cfg.data_dir)?;
+            config::check_ffmpeg_libs(&cfg.ffmpeg.libs)?;
             let secret = secret::Secret::load_or_create(&cfg.data_dir)?;
             let conn = db::open(&cfg.data_dir.join("abshare.db"))?;
             let trusted = cfg

@@ -161,6 +161,22 @@ pub fn check_library_root(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Every `[ffmpeg] libs` entry must exist: the jail refuses a missing one, so every probe
+/// and encode would fail. The image's ffmpeg is static (since 0.9.0) and needs `libs = []`;
+/// an older config may still list `/etc/ld.so.cache`, which the image no longer has.
+pub fn check_ffmpeg_libs(libs: &[PathBuf]) -> Result<(), String> {
+    for p in libs {
+        if std::fs::symlink_metadata(p).is_err() {
+            return Err(format!(
+                "[ffmpeg] libs: {} doesn't exist; the jail would refuse every ffmpeg run \
+                 (a static ffmpeg, as in the image, needs libs = [])",
+                p.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,6 +223,15 @@ path = "/srv/audiobooks"
         let twice = format!("{GOOD}[[library]]\nname = \"audiobooks\"\npath = \"/srv/other\"\n");
         let c: Config = toml::from_str(&twice).expect("parse");
         assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn a_missing_ffmpeg_library_is_refused() {
+        check_ffmpeg_libs(&[]).expect("none is fine");
+        check_ffmpeg_libs(&[std::env::temp_dir()]).expect("an existing one is fine");
+        let gone = std::env::temp_dir().join(format!("abshare-no-such-lib-{}", std::process::id()));
+        let err = check_ffmpeg_libs(&[std::env::temp_dir(), gone]).expect_err("a missing one must be refused");
+        assert!(err.contains("abshare-no-such-lib") && err.contains("libs = []"), "{err}");
     }
 
     #[test]

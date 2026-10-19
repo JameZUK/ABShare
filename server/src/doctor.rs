@@ -54,11 +54,16 @@ pub async fn run(cfg: &Config) -> Vec<Check> {
             Level::Fail,
         ));
     }
+    let libs = config::check_ffmpeg_libs(&cfg.ffmpeg.libs);
+    let libs_ok = libs.is_ok();
+    out.push(from(libs.map(|()| format!("{} listed, all present", cfg.ffmpeg.libs.len())), "ffmpeg libs", Level::Fail));
     // The jail refuses to start without Landlock ABI 6, so a jailed run proves the sandbox
     // works. (Containers often hide /sys/kernel/security, so the LSM list can't be relied on.)
+    // A missing library also stops it, so the kernel is blamed only when the libraries are fine.
     let jailed = jailed_ffmpeg(cfg).await;
     out.push(match &jailed {
         Ok(_) => check(Level::Ok, "sandbox", "Landlock, seccomp and limits applied (the jail started)"),
+        Err(_) if !libs_ok => check(Level::Fail, "sandbox", "not tested: fix [ffmpeg] libs first"),
         Err(_) => check(
             Level::Fail,
             "sandbox",
@@ -204,6 +209,27 @@ mod tests {
         assert!(secret_file(&p).is_ok());
         std::fs::write(&p, [0u8; 31]).expect("write");
         assert!(secret_file(&p).is_err(), "wrong length");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[tokio::test]
+    async fn a_missing_ffmpeg_library_is_named_and_the_kernel_not_blamed() {
+        let d = tmp("libs");
+        let cfg: Config = toml::from_str(&format!(
+            "data_dir = {data:?}\npublic_origin = \"https://books.example.com\"\n\
+             [ffmpeg]\nffmpeg = \"/usr/bin/ffmpeg\"\nffprobe = \"/usr/bin/ffprobe\"\n\
+             jail = \"/nonexistent/abshare-jail\"\nlibs = [{lib:?}]\n\
+             [[library]]\nname = \"Audiobooks\"\npath = {data:?}\n",
+            data = d.display().to_string(),
+            lib = d.join("ld.so.cache").display().to_string(),
+        ))
+        .expect("parse");
+        let checks = run(&cfg).await;
+        let find = |what| checks.iter().find(|c| c.what == what).expect(what);
+        let libs = find("ffmpeg libs");
+        assert!(libs.level == Level::Fail && libs.detail.contains("ld.so.cache"), "{}", libs.detail);
+        let sandbox = find("sandbox");
+        assert!(sandbox.level == Level::Fail && !sandbox.detail.contains("Linux"), "{}", sandbox.detail);
         let _ = std::fs::remove_dir_all(&d);
     }
 
