@@ -1,7 +1,12 @@
-// Start-up diagnostics. Runs before the app. If the page is still blank a few seconds after
-// loading, or the address has ?diag, it shows what it knows as plain text (script errors, the
-// screen, whether styles loaded and whether the app drew anything) and sends the same text to
-// the server, where admins can read it (POST /v1/diag; Admin → Overview).
+// Start-up diagnostics. Runs before the app. If the page is still blank after being on screen
+// for a few seconds, or the address has ?diag, it shows what it knows as plain text (script
+// errors, the screen, whether styles loaded and whether the app drew anything) and sends the
+// same text to the server, where admins can read it (POST /v1/diag; Admin → Overview).
+//
+// Slow connections are normal, not failures: a page in the background isn't judged (it isn't
+// drawn, and its fade-in doesn't run), a fade still running is waited for, and the app still
+// connecting (the start screen, or the "Connecting…" banner) is only reported, quietly and
+// labelled as such, after 30 seconds.
 (function () {
 	'use strict';
 	var errors = [];
@@ -27,6 +32,15 @@
 		} catch (e) {
 			return fallback;
 		}
+	}
+
+	// What the browser says about the connection (Chrome on Android does; Safari and Firefox don't).
+	function connection() {
+		return safe(function () {
+			var c = navigator.connection;
+			if (!c || !c.effectiveType) return null;
+			return c.effectiveType + ', about ' + c.downlink + ' Mb/s, ' + c.rtt + ' ms round trip' + (c.saveData ? ', data saver on' : '');
+		}, 'not reported by this browser');
 	}
 
 	function report(forced) {
@@ -67,6 +81,8 @@
 			'Heading: ' + (heading ? heading.line + (heading.hidden ? ' (NOT VISIBLE)' : '') : 'none'),
 			'Root: ' + safe(function () { var d = document.documentElement; var c = getComputedStyle(d); return 'mode ' + (d.dataset.mode || '?') + ', theme ' + (d.dataset.theme || '?') + ', background ' + c.backgroundColor + ', page ' + d.scrollWidth + '×' + d.scrollHeight; }, 'unknown'),
 			'Cookies: ' + safe(function () { return navigator.cookieEnabled ? 'allowed' : 'BLOCKED'; }, 'unknown'),
+			'Visible: ' + safe(function () { return document.visibilityState; }, 'unknown'),
+			'Connection: ' + connection(),
 			'Seconds since loading: ' + Math.round((Date.now() - started) / 1000),
 			'',
 			errors.length ? 'Errors:' : 'No script errors.',
@@ -102,8 +118,80 @@
 		}, null);
 	}
 
+	// The app is still waiting for the server: its start screen, or the app open with the
+	// "Connecting…" banner (src/routes/+layout.svelte).
+	function connecting() {
+		return safe(function () {
+			return !!document.querySelector('[data-connecting]');
+		}, false);
+	}
+
+	// A fade or slide with an end is still running (pages ease in from transparent).
+	function animating() {
+		return safe(function () {
+			return document.getAnimations().some(function (a) {
+				return (a.playState === 'running' || a.playState === 'pending') && isFinite(a.effect.getComputedTiming().endTime);
+			});
+		}, false);
+	}
+
+	function hidden() {
+		return safe(function () {
+			return document.hidden;
+		}, false);
+	}
+
+	// A short report, without covering the screen: the app works, the connection is slow.
+	function stillConnecting() {
+		send([
+			'ABShare still connecting after ' + Math.round((Date.now() - started) / 1000) + ' seconds (a slow connection, not a failure).',
+			'Browser: ' + safe(function () { return navigator.userAgent; }, 'unknown'),
+			'Connection: ' + connection(),
+			'Online: ' + safe(function () { return navigator.onLine ? 'yes' : 'NO'; }, 'unknown'),
+			'Showing: ' + (safe(function () { return document.querySelector('[data-connecting]').getAttribute('data-connecting'); }, '') === 'banner' ? 'the app, with the Connecting banner' : 'the start screen'),
+		]);
+	}
+
 	var forced = /[?&]diag\b/.test(location.search);
-	setTimeout(function () {
+	var DELAY = forced ? 4000 : 8000;
+	/** How long the app may show it is connecting before that is reported. */
+	var CONNECTING_LIMIT = 30000;
+	var shownAt = 0;
+	var waits = 0;
+	var waitingForView = false;
+
+	function check() {
+		if (sent) return;
+		if (!forced) {
+			// In the background: nothing is drawn and fades don't run. Judge it once it has been
+			// on screen for the usual time.
+			if (hidden()) {
+				if (!waitingForView) {
+					waitingForView = true;
+					document.addEventListener('visibilitychange', function seen() {
+						if (hidden()) return;
+						document.removeEventListener('visibilitychange', seen);
+						waitingForView = false;
+						shownAt = Date.now();
+						setTimeout(check, DELAY);
+					});
+				}
+				return;
+			}
+			if (connecting()) {
+				if (Date.now() - shownAt >= CONNECTING_LIMIT) stillConnecting();
+				else setTimeout(check, 2000);
+				return;
+			}
+			if (animating() && waits < 5) {
+				waits++;
+				setTimeout(check, 1000);
+				return;
+			}
+		}
 		report(forced);
-	}, forced ? 4000 : 8000);
+	}
+
+	shownAt = Date.now();
+	setTimeout(check, DELAY);
 })();

@@ -22,9 +22,13 @@ the app loads nothing from other websites.
   in each book is kept either way. Listening done offline is kept on your device and added when it reconnects.
 - **The audit log:** security events (sign-ins, failed attempts, account changes, admin
   actions) with time, account, device and IP address. Kept for at most a year.
-- **Start-up reports:** if the app is left showing a blank page (or the address has
-  `?diag`), the browser sends a short text report: the error, browser user agent, screen
-  size, colours and whether cookies are allowed, with the IP address it came from. Reports are
+- **Start-up reports:** if the app is left showing a blank page after being on screen for 8
+  seconds (or the address has `?diag`), the browser sends a short text report: the error,
+  browser user agent, screen size, colours, whether cookies are allowed and whether the page
+  was visible, with the IP address it came from. If the app is still connecting after 30
+  seconds, a shorter one says so: the user agent and whether the browser counts itself
+  online. Both include the connection type, speed estimate and data-saver setting where the
+  browser reports them (Chrome on Android does; Safari and Firefox don't). Reports are
   kept in memory only (the newest 50, gone when the server restarts) and written to the
   server log. No account is involved.
 

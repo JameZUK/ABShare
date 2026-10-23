@@ -154,6 +154,13 @@ class Player {
 			this.source = 'device';
 			src = `offline/${session.user.username}/${book.id}`;
 		} else {
+			// Still connecting on a slow connection: wait for the answer rather than give up.
+			if (session.status === 'connecting') {
+				this.notice = 'Connecting… The book starts when the server answers.';
+				await session.settled();
+				if (this.book !== book) return;
+				this.notice = null;
+			}
 			if (session.status !== 'signed-in') {
 				this.notice = 'This book isn’t downloaded. Connect to listen.';
 				return;

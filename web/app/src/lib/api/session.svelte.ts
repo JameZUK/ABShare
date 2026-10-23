@@ -6,8 +6,14 @@ import type { SignedIn, User } from './types';
 const LAST_USER = 'abshare.lastUser';
 /** Retries of a start-up renewal answered 429 (too many renewals in a minute). */
 const MAX_START_RETRIES = 4;
+/** How long start-up waits for the server before opening the app for whoever last used this
+ *  device. Still connecting, not offline: on a slow connection the answer is coming, so
+ *  nothing times out; downloaded books play meanwhile. */
+export const CONNECTING_AFTER_MS = 3_000;
 
-type Status = 'starting' | 'signed-out' | 'signed-in' | 'offline';
+/** `connecting`: start-up is still waiting for the server, with the last person's app open.
+ *  It ends in `signed-in`, `offline` (only if the request fails) or `signed-out`. */
+type Status = 'starting' | 'connecting' | 'signed-out' | 'signed-in' | 'offline';
 
 function readLastUser(): User | null {
 	try {
@@ -44,19 +50,38 @@ class Session {
 	 *  so its downloads must go (SPEC §8.2); `user` is whose they are. */
 	onEnd: ((reason: 'signed-out' | 'expired' | 'revoked', user: string | null) => void) | null = null;
 
-	/** Signs in from the refresh cookie, or falls back to offline mode with the last user. */
+	/** Signs in from the refresh cookie, or falls back to offline mode with the last user. A
+	 *  slow answer opens the app as `connecting` meanwhile, for whoever last used this device. */
 	async start() {
-		const ok = await this.refresh();
-		if (ok) return;
-		if (this.status === 'offline') return;
-		this.status = 'signed-out';
+		const last = readLastUser();
+		const slow = last
+			? setTimeout(() => {
+					if (this.status !== 'starting') return;
+					this.user = last;
+					this.status = 'connecting';
+				}, CONNECTING_AFTER_MS)
+			: undefined;
+		try {
+			const ok = await this.refresh();
+			if (ok || this.status === 'offline') return;
+			// Ends anything started while connecting (a downloaded book playing).
+			if (this.status === 'starting' || this.status === 'connecting') this.#end('expired');
+		} finally {
+			clearTimeout(slow);
+		}
+	}
+
+	/** Resolves once no renewal is in flight (at once if none is). */
+	async settled(): Promise<void> {
+		await this.#refreshing;
 	}
 
 	/** Takes a successful sign-in or refresh answer. */
 	accept(r: SignedIn) {
 		// Someone else signing in on this page (an invite opened while signed in): end the
 		// old session first, so its player and queued progress don't carry over (review W2).
-		if (this.user && this.user.username !== r.user.username && (this.status === 'signed-in' || this.status === 'offline')) {
+		// The same applies to the last person's app opened while connecting.
+		if (this.user && this.user.username !== r.user.username && (this.status === 'signed-in' || this.status === 'offline' || this.status === 'connecting')) {
 			this.#end('signed-out');
 		}
 		this.#token = r.access_token;
@@ -125,7 +150,7 @@ class Session {
 		clearTimeout(this.#timer);
 		this.status = 'signed-out';
 		// Revocation is acted on even at start-up, before anyone was signed in on this page.
-		if (was === 'signed-in' || was === 'offline' || reason === 'revoked') this.onEnd?.(reason, user);
+		if (was === 'signed-in' || was === 'offline' || was === 'connecting' || reason === 'revoked') this.onEnd?.(reason, user);
 	}
 
 	/** An authenticated API call; renews the token once on 401. */

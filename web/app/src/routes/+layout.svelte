@@ -27,9 +27,17 @@
 	void session.start();
 
 	const inviting = $derived(page.url.hash.startsWith('#/invite/'));
-	const ready = $derived(session.status === 'signed-in' || session.status === 'offline');
+	// Connecting: the last person's app opens while a slow server answer is on its way.
+	const ready = $derived(session.status === 'signed-in' || session.status === 'offline' || session.status === 'connecting');
 	// After a recovery-code sign-in only the account page works until a new factor is set up.
 	const limited = $derived(session.status === 'signed-in' && session.user?.needs_factor === true);
+	// The start screen says it is connecting, and that the connection is slow if it goes on.
+	let slowStart = $state(0);
+	$effect(() => {
+		if (session.status !== 'starting') return;
+		const t = [setTimeout(() => (slowStart = 1), 1_500), setTimeout(() => (slowStart = 2), 8_000)];
+		return () => t.forEach(clearTimeout);
+	});
 	$effect(() => {
 		if (limited && !page.url.hash.startsWith('#/settings/account')) location.hash = '#/settings/account';
 	});
@@ -45,7 +53,7 @@
 		void downloads.finishWipes().then(() => downloads.load());
 		void sync.flush();
 		const id = lastBook();
-		if (id && !player.book) void restore(id);
+		if (id && !player.book) void restore(id, user);
 	});
 
 	$effect(() => {
@@ -55,15 +63,21 @@
 		}
 	});
 
-	async function restore(id: string) {
+	async function restore(id: string, user: string) {
 		let detail: BookDetail | undefined;
+		// While connecting, a downloaded book comes back at once; any other waits for the server.
+		if (session.status === 'connecting') {
+			detail = await downloads.detail(id);
+			if (!detail) await session.settled();
+		}
 		try {
-			detail = session.status === 'signed-in' ? await api<BookDetail>(`v1/books/${id}`) : undefined;
+			detail ??= session.status === 'signed-in' ? await api<BookDetail>(`v1/books/${id}`) : undefined;
 		} catch {
 			detail = undefined;
 		}
 		detail ??= await downloads.detail(id);
-		if (detail) await player.open(detail, { play: false });
+		// Not if someone else has signed in meanwhile, or a book was opened.
+		if (detail && session.user?.username === user && !player.book) await player.open(detail, { play: false });
 	}
 
 	const TABS = [
@@ -80,13 +94,18 @@
 {#if inviting}
 	{@render children()}
 {:else if session.status === 'starting'}
-	<div class="splash" aria-busy="true"><img src="./favicon.svg" alt="ABShare" width="72" height="72" /></div>
+	<div class="splash" aria-busy="true" data-connecting="start">
+		<img src="./favicon.svg" alt="ABShare" width="72" height="72" />
+		<p class="muted" role="status">{slowStart === 2 ? 'Still connecting. The connection is slow.' : slowStart === 1 ? 'Connecting…' : ''}</p>
+	</div>
 {:else if !ready}
 	<SignIn />
 {:else if limited}
 	{@render children()}
 {:else}
-	{#if session.status === 'offline'}
+	{#if session.status === 'connecting'}
+		<p class="banner" role="status" data-connecting="banner">Connecting… The connection is slow. Downloaded books play now.</p>
+	{:else if session.status === 'offline'}
 		<p class="banner" role="status"><Icon name="offline" size={18} /> Offline. Downloaded books still play.</p>
 	{:else if updates.available}
 		<p class="banner" role="status">An update is ready. <button class="link" onclick={() => updates.apply()}>Reload</button></p>
@@ -108,9 +127,17 @@
 
 <style>
 	.splash {
-		display: grid;
-		place-items: center;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 1rem;
 		height: var(--app-h);
+	}
+	.splash p {
+		min-height: 1.5em;
+		margin: 0;
+		text-align: center;
 	}
 	.banner {
 		display: flex;

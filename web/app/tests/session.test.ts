@@ -64,3 +64,101 @@ test('an outage during the wait after a 429 goes offline instead of signing out 
 	expect(session.status).toBe('offline');
 	expect(session.user?.username).toBe('ada');
 }, 10_000);
+
+// Slow connections: a slow answer at start-up opens the last person's app as "connecting",
+// never "offline"; only a failed request goes offline.
+describe('a slow answer at start-up', () => {
+	/** A fetch whose refresh answer arrives only when `reply` is called. */
+	function slowFetch() {
+		let reply: (r: Response | Error) => void = () => {};
+		vi.stubGlobal('fetch', () => new Promise<Response>((ok, fail) => (reply = (r) => (r instanceof Error ? fail(r) : ok(r)))));
+		return (r: Response | Error) => reply(r);
+	}
+
+	beforeEach(async () => {
+		vi.stubGlobal('fetch', () => Promise.reject(new TypeError('Failed to fetch')));
+		await session.signOut(true).catch(() => {});
+		vi.unstubAllGlobals();
+		// A page starts once; this shared session starts again for each test.
+		session.status = 'starting';
+		session.user = null;
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+	});
+	afterEach(() => vi.useRealTimers());
+
+	test('opens the last person’s app as connecting, then signs in when the answer comes', async () => {
+		localStorage.setItem('abshare.lastUser', JSON.stringify(signedIn.user));
+		const reply = slowFetch();
+		const started = session.start();
+		await vi.advanceTimersByTimeAsync(2_000);
+		expect(session.status).toBe('starting');
+		await vi.advanceTimersByTimeAsync(1_500);
+		expect(session.status).toBe('connecting');
+		expect(session.user?.username).toBe('ada');
+		// However long it takes, it stays connecting: nothing times out into offline.
+		await vi.advanceTimersByTimeAsync(10 * 60_000);
+		expect(session.status).toBe('connecting');
+		reply(answer(200, signedIn));
+		await started;
+		expect(session.status).toBe('signed-in');
+	});
+
+	test('with no one signed in before on this device, it stays on the start screen', async () => {
+		const reply = slowFetch();
+		const started = session.start();
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(session.status).toBe('starting');
+		reply(answer(200, signedIn));
+		await started;
+		expect(session.status).toBe('signed-in');
+	});
+
+	test('goes offline only when the request actually fails', async () => {
+		localStorage.setItem('abshare.lastUser', JSON.stringify(signedIn.user));
+		const reply = slowFetch();
+		const started = session.start();
+		await vi.advanceTimersByTimeAsync(5_000);
+		expect(session.status).toBe('connecting');
+		reply(new TypeError('Failed to fetch'));
+		await started;
+		expect(session.status).toBe('offline');
+	});
+
+	test('a sign-in refused while connecting ends what was started (a downloaded book playing)', async () => {
+		localStorage.setItem('abshare.lastUser', JSON.stringify(signedIn.user));
+		const ended: string[] = [];
+		const before = session.onEnd;
+		session.onEnd = (reason, user) => void ended.push(`${reason}:${user}`);
+		try {
+			const reply = slowFetch();
+			const started = session.start();
+			await vi.advanceTimersByTimeAsync(5_000);
+			expect(session.status).toBe('connecting');
+			reply(answer(401, { error: 'unauthenticated', message: 'Please sign in.' }));
+			await started;
+			expect(session.status).toBe('signed-out');
+			expect(ended).toEqual(['expired:ada']);
+		} finally {
+			session.onEnd = before;
+		}
+	});
+
+	test('someone else answering ends the last person’s app before signing in', async () => {
+		localStorage.setItem('abshare.lastUser', JSON.stringify(signedIn.user));
+		const ended: string[] = [];
+		const before = session.onEnd;
+		session.onEnd = (reason, user) => void ended.push(`${reason}:${user}`);
+		try {
+			const reply = slowFetch();
+			const started = session.start();
+			await vi.advanceTimersByTimeAsync(5_000);
+			reply(answer(200, { ...signedIn, user: { ...signedIn.user, username: 'grace', display_name: 'Grace' } }));
+			await started;
+			expect(ended).toEqual(['signed-out:ada']);
+			expect(session.status).toBe('signed-in');
+			expect(session.user?.username).toBe('grace');
+		} finally {
+			session.onEnd = before;
+		}
+	});
+});

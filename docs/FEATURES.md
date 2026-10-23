@@ -53,6 +53,7 @@ Everything ABShare does today, by area. Only built and tested features are liste
 | Downloads | Download any book in original quality or data saver. The size and the space available are shown first. |
 | Resumable | Books download in 4 MiB pieces and carry on from where they stopped if interrupted. Keep ABShare open while it downloads. |
 | Offline playback | A downloaded book always plays from the device, with seeking, even with no connection at all. |
+| Slow connections | Nothing times out. If the server is slow to answer at start-up, the app opens after 3 seconds with a "Connecting…" banner: downloaded books play at once and everything else fills in when the answer comes. It says "Offline" only when the connection actually fails. |
 | Downloads page | Each book's state and size, total storage used against what the browser allows, and remove buttons. |
 | Persistent storage | ABShare asks the browser to keep downloads. On iPhone and iPad, add ABShare to the Home Screen so Safari keeps them. |
 | Per person | Each person's downloads, queued progress and speeds are kept separately. Signing out offers to keep or remove them. A device signed out remotely wipes its downloads. |

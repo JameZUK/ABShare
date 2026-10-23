@@ -29,6 +29,7 @@ Record the device, OS version and ABShare version (Settings → About) with the 
 - [ ] **An hour in airplane mode.** Turn on airplane mode, play a downloaded book for an hour, then turn airplane mode off and open the app. Within a minute, the second device shows the new position.
 - [ ] **Offline listening reaches history.** After that hour: Settings → History counts the hour, and "Where was I?" for the book shows the stretch heard offline.
 - [ ] **A big download survives the app being killed.** Start downloading a large book (2 GB or more), swipe the app away part-way, reopen it. The download carries on from where it was, not from the start.
+- [ ] **A slow connection.** On a weak mobile signal (or with a slow network set in the phone's developer options), close the app fully and reopen it. Within a few seconds the app opens with "Connecting… The connection is slow." A downloaded book plays straight away. When the connection catches up, the banner goes and Home fills in. It never says "Offline" unless the connection is really lost.
 - [ ] **Not downloaded, no connection.** In airplane mode, opening a book that isn't downloaded says it needs a connection, and nothing breaks.
 - [ ] **Wi-Fi only.** Settings → Downloads → *Download only on Wi-Fi*. On iPhone the page says the browser doesn't say whether you're on Wi-Fi, so downloads aren't held. (On Android Chrome: with mobile data, a new download waits with "Waiting for Wi-Fi".)
 
