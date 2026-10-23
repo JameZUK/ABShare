@@ -2,7 +2,9 @@
 
 What changed and when, newest first. Each entry says how it is tested. The design and the reasons behind it are in [`SPEC.md`](SPEC.md); what differs from the design is in SPEC §16.
 
-## Unreleased
+## 0.12.0 (2026-10-23)
+
+A distroless image, and slow connections no longer look like failures.
 
 ### Changed
 - **The Docker image is now distroless** (`distroless/static`, pinned by digest; SPEC §10). There is no shell, package manager or other program in it, only ABShare's own statically linked binaries and the web app, and it shrank from about 150 MB to 41 MB. It still runs as user 65534, so existing data directories need no change. Run commands by calling `/usr/local/bin/abshare` directly, as DEPLOY.md shows; `docker exec … sh` no longer works.
