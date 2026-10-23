@@ -88,6 +88,7 @@ Everything ABShare does today, by area. Only built and tested features are liste
 | Devices | See where you are signed in, and sign any device out. Changing your password, or removing a passkey or authenticator, signs out your other devices. |
 | Step-up | Changing your sign-in methods asks you to confirm it's you again. |
 | Lockouts | Repeated failures lock the address out, with doubling delays. A stranger can't lock you out of your own account. |
+| Limits per person | At most 60 changes a minute, audio from 30 different books a day (a book already started always carries on), and 6 books playing or downloading at once. Stops a script or a stolen session copying the library or flooding the server. |
 | Remote sign-out | A device signed out from elsewhere stops working at once, and wipes its downloads. |
 
 ## Administration
@@ -104,7 +105,7 @@ Everything ABShare does today, by area. Only built and tested features are liste
 | Jobs | What the media jobs are doing (listening, background and copy lanes), playable copies being built, failed copies with *Retry now*, the cache size and *Clear data-saver cache*. |
 | Edit details | Correct any book's title, people, series, genres or description. Corrections survive rescans. |
 | Server settings | What the config file sets (address, trusted proxies, libraries, ffmpeg jobs, cache limit) and the rules built into this version (sign-in lifetimes, device limit, invite validity, history and audit retention). Read-only: changed in the config file. |
-| Audit log | Sign-ins, failures, locks, enrolment, factor changes, invites, device sign-outs and admin actions, with a check that no entry has been edited or removed. |
+| Audit log | Sign-ins, failures, locks, enrolment, factor changes, invites, device sign-outs, admin actions, downloads and saved files, with a check that no entry has been edited or removed. |
 | Step-up | Every admin change asks for a fresh second factor. |
 | Command line | `abshare admin invite`, `reset`, `users`, `devices`, `revoke-all` and `verify-audit`, for bootstrap and recovery. `abshare doctor` checks the whole installation. |
 

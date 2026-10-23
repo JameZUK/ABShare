@@ -17,8 +17,10 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 pub fn routes() -> Router<State> {
@@ -27,6 +29,166 @@ pub fn routes() -> Router<State> {
         .route("/{id}/state", get(state))
         .route("/{id}/file", get(save_file))
         .route("/covers/{id}/{hash}", get(cover))
+}
+
+/// Different books whose audio one person may fetch in 24 hours: streaming, downloads and
+/// saved files together. Books already fetched in that time always carry on, so this never
+/// stops a book mid-listen or mid-download; it stops one account copying the library.
+pub const BOOKS_PER_DAY: usize = 30;
+/// Audio responses one person may have running at once, across their devices.
+pub const AT_ONCE: usize = 6;
+const DAY: i64 = 24 * 3600;
+
+/// Per-person audio limits (SPEC §5.3), in memory: a restart clears them.
+#[derive(Default)]
+pub struct AudioLimits {
+    /// Per person: each book fetched in the last 24 hours, with when it was first fetched,
+    /// and when the daily limit was last reported to the audit log.
+    books: Mutex<HashMap<i64, Fetched>>,
+    running: Arc<Mutex<HashMap<i64, usize>>>,
+}
+
+#[derive(Default)]
+struct Fetched {
+    books: HashMap<String, i64>,
+    reported: Option<i64>,
+}
+
+/// Why audio was refused.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Refused {
+    /// The daily limit, until the given number of seconds from now; `report` is true the first
+    /// time in a day, so it is audited once.
+    Daily {
+        retry_after: u64,
+        report: bool,
+    },
+    TooManyAtOnce,
+}
+
+/// One running audio response; dropping it (the response finished or was abandoned) frees
+/// its place.
+pub struct Running {
+    user: i64,
+    running: Arc<Mutex<HashMap<i64, usize>>>,
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        if let Ok(mut m) = self.running.lock()
+            && let Some(n) = m.get_mut(&self.user)
+        {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                m.remove(&self.user);
+            }
+        }
+    }
+}
+
+impl AudioLimits {
+    /// Whether `user` may fetch `book` now, without counting it.
+    pub fn would_allow(&self, user: i64, book: &str, now: i64) -> bool {
+        let Ok(mut m) = self.books.lock() else { return false };
+        let f = m.entry(user).or_default();
+        f.books.retain(|_, &mut at| at > now - DAY);
+        f.books.contains_key(book) || f.books.len() < BOOKS_PER_DAY
+    }
+
+    /// Counts `book` for `user` and takes a place among their running responses. Fails closed.
+    pub fn admit(&self, user: i64, book: &str, now: i64) -> Result<Running, Refused> {
+        {
+            let Ok(mut m) = self.books.lock() else { return Err(Refused::TooManyAtOnce) };
+            let f = m.entry(user).or_default();
+            f.books.retain(|_, &mut at| at > now - DAY);
+            if !f.books.contains_key(book) {
+                if f.books.len() >= BOOKS_PER_DAY {
+                    let oldest = f.books.values().copied().min().unwrap_or(now);
+                    let report = f.reported.is_none_or(|at| at <= now - DAY);
+                    if report {
+                        f.reported = Some(now);
+                    }
+                    return Err(Refused::Daily { retry_after: (oldest + DAY - now).max(1) as u64, report });
+                }
+                f.books.insert(book.to_owned(), now);
+            }
+        }
+        let Ok(mut r) = self.running.lock() else { return Err(Refused::TooManyAtOnce) };
+        let n = r.entry(user).or_default();
+        if *n >= AT_ONCE {
+            return Err(Refused::TooManyAtOnce);
+        }
+        *n += 1;
+        Ok(Running { user, running: self.running.clone() })
+    }
+}
+
+/// A request for only the first byte, which the app makes to learn a download's size. It
+/// reveals nothing of the book, so it isn't counted.
+fn size_only(range: Option<&str>) -> bool {
+    range.is_some_and(|r| r.trim() == "bytes=0-0")
+}
+
+/// Whether the response starts at the beginning of the book: a new download or saved file,
+/// not a later piece of one (or a resumed one).
+fn from_the_start(range: Option<&str>) -> bool {
+    range.is_none_or(|r| r.trim().starts_with("bytes=0-"))
+}
+
+/// Admits the caller's request for a book's audio, or refuses it. A refusal of the daily
+/// limit is audited once a day, so admins see an account reaching it.
+async fn admit(st: &State, s: &Session, book: &str, range: Option<&str>) -> Result<Option<Running>, ApiError> {
+    if size_only(range) {
+        return Ok(None);
+    }
+    match st.audio.admit(s.user, book, now()) {
+        Ok(r) => Ok(Some(r)),
+        Err(Refused::Daily { retry_after, report }) => {
+            if report {
+                st.audit(
+                    "media.daily_limit",
+                    Some(s.user),
+                    Some(s.device),
+                    None,
+                    format!("{BOOKS_PER_DAY} different books in 24 hours"),
+                )
+                .await;
+            }
+            Err(daily_limit().retry_after(retry_after))
+        }
+        Err(Refused::TooManyAtOnce) => Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too_many_at_once",
+            "Too many books playing or downloading at once. Try again in a moment.",
+        )
+        .retry_after(5)),
+    }
+}
+
+fn daily_limit() -> ApiError {
+    ApiError::new(
+        StatusCode::TOO_MANY_REQUESTS,
+        "daily_limit",
+        format!(
+            "You’ve played or downloaded {BOOKS_PER_DAY} different books today, the most for one day. Books you’ve already started today still work."
+        ),
+    )
+}
+
+fn held(r: Response, running: Option<Running>) -> Response {
+    let (parts, body) = r.into_parts();
+    Response::from_parts(parts, hold(body, running))
+}
+
+/// Keeps `running` until the body has been sent or abandoned.
+fn hold(body: Body, running: Option<Running>) -> Body {
+    match running {
+        None => body,
+        Some(r) => Body::from_stream(futures_util::StreamExt::map(body.into_data_stream(), move |chunk| {
+            let _ = &r;
+            chunk
+        })),
+    }
 }
 
 /// The caller, from the media cookie or `Authorization: Bearer`.
@@ -199,12 +361,30 @@ async fn stream(
     }
     let file = m.play_file(&src).ok_or_else(ApiError::not_found)?;
     let range_h = req.get(header::RANGE).and_then(|v| v.to_str().ok());
+    if q.dl.is_some_and(|d| d != 1) {
+        return Err(ApiError::bad("Unknown download flag."));
+    }
+    let quality = q.q.as_deref().unwrap_or("original");
+    if quality != "original" && bitrate_for(quality.parse().unwrap_or(0)).is_none() {
+        return Err(ApiError::bad("Unknown quality."));
+    }
+    let running = admit(&st, &s, &src.book_id, range_h).await?;
+    if q.dl.is_some() && running.is_some() && from_the_start(range_h) {
+        st.audit(
+            "media.download",
+            Some(s.user),
+            Some(s.device),
+            None,
+            format!("book {}, quality {quality}", src.book_id),
+        )
+        .await;
+    }
     let saver = q.q.as_deref().is_some_and(|k| k != "original");
     if saver || src.needs_copy {
         m.mark_used(&src.book_id, !saver);
     }
-    match q.q.as_deref().unwrap_or("original") {
-        "original" => serve_file(&src, &file, range_h, &m).await,
+    match quality {
+        "original" => Ok(held(serve_file(&src, &file, range_h, &m).await?, running)),
         k => {
             let kbps: u64 = k.parse().map_err(|_| ApiError::bad("Unknown quality."))?;
             let bitrate = bitrate_for(kbps).ok_or_else(|| ApiError::bad("Unknown quality."))?;
@@ -230,8 +410,6 @@ async fn stream(
                 let count = segs.end() - segs.start() + 1;
                 m.fill_span(&file, &src.book_id, &layout, *segs.start(), count).await.map_err(ApiError::internal)?;
                 m.read_ahead(file.clone(), src.book_id.clone(), layout, segs.end() + 1, MAX_SEGMENTS_PER_RESPONSE);
-            } else if q.dl.is_some() {
-                return Err(ApiError::bad("Unknown download flag."));
             }
             let generation = (status == StatusCode::PARTIAL_CONTENT).then(|| m.new_seek(s.device));
             let book = src.book_id.clone();
@@ -258,7 +436,7 @@ async fn stream(
                     };
                     Some((item, (m, segs, file, book)))
                 });
-            let mut r = (status, Body::from_stream(stream)).into_response();
+            let mut r = (status, hold(Body::from_stream(stream), running)).into_response();
             let h = r.headers_mut();
             base(h, "audio/mpeg");
             h.insert(header::CONTENT_LENGTH, hv((end - start + 1).to_string()));
@@ -329,10 +507,13 @@ async fn state(
     let m = media(&st)?.clone();
     let ready = m.ready(&src);
     let failed = !ready && m.copy_failed(&src.book_id);
+    // Past the daily limit (and not a book already started today): the player says so
+    // rather than failing to play.
+    let limited = !st.audio.would_allow(s.user, &src.book_id, now());
     if !ready && !failed {
         m.ensure_copy(src);
     }
-    Ok(Json(json!({ "ready": ready, "failed": failed })))
+    Ok(Json(json!({ "ready": ready, "failed": failed, "limited": limited })))
 }
 
 fn no_permission(message: &'static str) -> ApiError {
@@ -375,7 +556,11 @@ async fn save_file(
     }
     let file = m.play_file(&src).ok_or_else(ApiError::not_found)?;
     let range_h = req.get(header::RANGE).and_then(|v| v.to_str().ok());
-    let mut r = serve_file(&src, &file, range_h, &m).await?;
+    let running = admit(&st, &s, &src.book_id, range_h).await?;
+    if running.is_some() && from_the_start(range_h) {
+        st.audit("media.save", Some(s.user), Some(s.device), None, format!("book {}", src.book_id)).await;
+    }
+    let mut r = held(serve_file(&src, &file, range_h, &m).await?, running);
     let ext = file
         .extension()
         .and_then(|e| e.to_str())
@@ -449,7 +634,56 @@ async fn cover(
 
 #[cfg(test)]
 mod tests {
-    use super::save_name;
+    use super::*;
+
+    #[test]
+    fn different_books_a_day_are_limited_but_started_ones_carry_on() {
+        let l = AudioLimits::default();
+        for i in 0..BOOKS_PER_DAY {
+            drop(l.admit(1, &format!("b{i}"), 1000 + i as i64).expect("under the limit"));
+        }
+        assert!(!l.would_allow(1, "new", 2000));
+        assert_eq!(
+            l.admit(1, "new", 2000).err(),
+            Some(Refused::Daily { retry_after: (1000 + DAY - 2000) as u64, report: true })
+        );
+        assert_eq!(
+            l.admit(1, "new", 2001).err(),
+            Some(Refused::Daily { retry_after: (1000 + DAY - 2001) as u64, report: false })
+        );
+        assert!(l.would_allow(1, "b0", 2000) && l.admit(1, "b0", 2000).is_ok(), "already started today");
+        assert!(l.admit(2, "new", 2000).is_ok(), "per person");
+        // The first book's day ends: one more is allowed.
+        assert!(l.admit(1, "new", 1000 + DAY).is_ok());
+        assert!(matches!(l.admit(1, "newer", 1000 + DAY), Err(Refused::Daily { report: false, .. })));
+        // A day later, full again: reported again.
+        for i in 1..BOOKS_PER_DAY {
+            drop(l.admit(1, &format!("c{i}"), 3000 + DAY).expect("a new day"));
+        }
+        assert!(matches!(l.admit(1, "newest", 3000 + DAY), Err(Refused::Daily { report: true, .. })));
+    }
+
+    #[test]
+    fn responses_at_once_are_limited_and_freed_when_dropped() {
+        let l = AudioLimits::default();
+        let mut held: Vec<Running> = (0..AT_ONCE).map(|_| l.admit(1, "b", 0).expect("place")).collect();
+        assert_eq!(l.admit(1, "b", 0).err(), Some(Refused::TooManyAtOnce));
+        assert!(l.admit(2, "b", 0).is_ok(), "per person");
+        held.pop();
+        assert!(l.admit(1, "b", 0).is_ok());
+        held.clear();
+        assert!(l.running.lock().expect("lock").is_empty(), "nothing left behind");
+    }
+
+    #[test]
+    fn only_the_size_check_goes_uncounted() {
+        assert!(size_only(Some("bytes=0-0")));
+        for r in [None, Some("bytes=0-1"), Some("bytes=1-1"), Some("bytes=0-"), Some("bytes=0-0,5-9")] {
+            assert!(!size_only(r), "{r:?}");
+        }
+        assert!(from_the_start(None) && from_the_start(Some("bytes=0-499")));
+        assert!(!from_the_start(Some("bytes=500-")) && !from_the_start(Some("bytes=-500")));
+    }
 
     #[test]
     fn saved_file_names_are_plain_and_never_paths() {

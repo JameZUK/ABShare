@@ -231,6 +231,7 @@ class Downloads {
 		const started = performance.now();
 		let fetched = 0;
 		let retried401 = false;
+		let busyWaits = 0;
 		while (d.total === 0 || d.next < d.total) {
 			if (this.#stop.has(id)) {
 				await this.#set(id, { state: 'paused' });
@@ -251,6 +252,18 @@ class Downloads {
 			if (resp.status === 401 && !retried401) {
 				retried401 = true;
 				if (await session.refresh()) continue;
+			}
+			// Too many playing or downloading at once (another device): wait a moment and carry on.
+			// The daily limit of different books: stop, and say why (the server's words).
+			if (resp.status === 429) {
+				const why = (await resp.json().catch(() => null)) as { error?: string; message?: string } | null;
+				const wait = Number(resp.headers.get('retry-after')) || 5;
+				if (why?.error === 'too_many_at_once' && busyWaits++ < 6) {
+					await new Promise((r) => setTimeout(r, Math.min(wait, 60) * 1000));
+					continue;
+				}
+				await this.#set(id, { state: 'paused', error: why?.message ?? 'Too many downloads for now. Try again later.' });
+				return;
 			}
 			if (resp.status === 409) {
 				await this.#set(id, { state: 'paused', error: 'This book is being prepared. Try again in a few minutes.' });

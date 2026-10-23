@@ -78,6 +78,44 @@ async fn read_body(req: axum::extract::Request, next: axum::middleware::Next) ->
     }
 }
 
+/// Changes a person may make a minute, across all their devices, on every signed-in route
+/// outside `/v1/auth` (which has its own limits). Far above what the app sends (a position
+/// every 15 seconds while playing), so it only stops a script or a stolen session flooding
+/// the database. Routes with a tighter limit of their own keep it as well.
+pub const WRITES_PER_MINUTE: usize = 60;
+
+/// Applies [`WRITES_PER_MINUTE`] to every request that isn't a read. Requests without a
+/// valid session pass through, to be refused by the route with `401` as usual.
+async fn write_limit(
+    axum::extract::State(st): axum::extract::State<State>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if matches!(*req.method(), axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS) {
+        return next.run(req).await;
+    }
+    let t = now();
+    let user = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .and_then(|b| st.sessions.access(b, t))
+        .map(|s| s.user);
+    if let Some(user) = user
+        && !st.write_limit.allow(user, t)
+    {
+        return ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too_many_requests",
+            "Too many changes in a minute. Try again shortly.",
+        )
+        .retry_after(60)
+        .into_response();
+    }
+    next.run(req).await
+}
+
 pub fn now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
@@ -165,6 +203,10 @@ pub struct AppState {
     pub replay_limit: RateLimit<i64>,
     /// Review and recommendation writes, per calling device (review S11).
     pub social_limit: RateLimit<i64>,
+    /// Every change on a signed-in route, per person ([`WRITES_PER_MINUTE`]).
+    pub write_limit: RateLimit<i64>,
+    /// Audio per person: different books a day, and responses at once (SPEC §5.3).
+    pub audio: media_routes::AudioLimits,
     /// Start-up reports from blank pages: rate-limited per address, kept in memory only.
     pub diag_limit: RateLimit<abshare_core::auth::lockout::AddrKey>,
     pub diag: Mutex<std::collections::VecDeque<diag_routes::DiagReport>>,
@@ -237,6 +279,8 @@ impl AppState {
             history_limit: RateLimit::new(10),
             replay_limit: RateLimit::new(history_routes::REPLAYS_PER_MINUTE),
             social_limit: RateLimit::new(social_routes::WRITES_PER_MINUTE),
+            write_limit: RateLimit::new(WRITES_PER_MINUTE),
+            audio: media_routes::AudioLimits::default(),
             diag_limit: RateLimit::new(diag_routes::PER_MINUTE),
             diag: Mutex::new(std::collections::VecDeque::new()),
             media: None,
@@ -377,11 +421,19 @@ pub struct ApiError {
     pub status: StatusCode,
     pub code: &'static str,
     pub message: String,
+    /// Seconds to send as `Retry-After`, for a limit that clears at a known time.
+    pub retry_after: Option<u64>,
 }
 
 impl ApiError {
     pub fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
-        Self { status, code, message: message.into() }
+        Self { status, code, message: message.into(), retry_after: None }
+    }
+
+    /// The same error, telling the client when to try again.
+    pub fn retry_after(mut self, secs: u64) -> Self {
+        self.retry_after = Some(secs.max(1));
+        self
     }
 
     pub fn internal(detail: impl std::fmt::Display) -> Self {
@@ -422,7 +474,11 @@ impl ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let body = serde_json::json!({ "error": self.code, "message": self.message }).to_string();
-        (self.status, [(header::CONTENT_TYPE, "application/json")], body).into_response()
+        let mut r = (self.status, [(header::CONTENT_TYPE, "application/json")], body).into_response();
+        if let Some(secs) = self.retry_after {
+            r.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from(secs));
+        }
+        r
     }
 }
 
@@ -509,6 +565,7 @@ pub const MEDIA_COOKIE: &str = "abshare_media";
 
 pub fn router(state: State) -> Router {
     let g = state.guard.clone();
+    let writes = axum::middleware::from_fn_with_state(state.clone(), write_limit);
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .nest(
@@ -516,12 +573,15 @@ pub fn router(state: State) -> Router {
             auth_routes::routes(state.clone()).layer(axum::middleware::from_fn_with_state(g.clone(), guard::csrf)),
         )
         .nest("/v1/diag", diag_routes::routes().layer(axum::middleware::from_fn_with_state(g.clone(), guard::csrf)))
-        .nest("/v1/me", me_routes::routes())
-        .nest("/v1", library_routes::routes().merge(social_routes::routes()))
-        .nest("/v1/media", media_routes::routes())
+        .nest("/v1/me", me_routes::routes().layer(writes.clone()))
+        .nest("/v1", library_routes::routes().merge(social_routes::routes()).layer(writes.clone()))
+        .nest("/v1/media", media_routes::routes().layer(writes.clone()))
         .nest(
             "/v1/admin",
-            admin_routes::routes().merge(social_routes::admin_routes()).merge(history_routes::admin_routes()),
+            admin_routes::routes()
+                .merge(social_routes::admin_routes())
+                .merge(history_routes::admin_routes())
+                .layer(writes),
         )
         .fallback(web::fallback)
         .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY))

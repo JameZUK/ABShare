@@ -47,6 +47,9 @@
 			<div><dt>Invite links</dt><dd>Single use, valid for {count(v.rules.invite_hours, 'hour')}</dd></div>
 			<div><dt>Listening history kept</dt><dd>{count(v.rules.history_days, 'day')}</dd></div>
 			<div><dt>A book counts as abandoned</dt><dd>After {count(v.rules.abandoned_days, 'day')} without listening</dd></div>
+			<div><dt>Changes per person</dt><dd>Up to {v.rules.writes_per_minute} a minute</dd></div>
+			<div><dt>Books per person a day</dt><dd>Audio from up to {count(v.rules.books_per_day, 'different book')} in 24 hours (playing, downloading and saving)</dd></div>
+			<div><dt>Playing or downloading at once</dt><dd>Up to {v.rules.audio_at_once} per person</dd></div>
 			<div><dt>Audit log kept</dt><dd>{count(v.rules.audit_days, 'day')}, at most {count(v.rules.audit_rows, 'entry', 'entries')}</dd></div>
 		</dl>
 	{/if}

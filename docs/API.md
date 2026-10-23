@@ -113,7 +113,9 @@ Errors from ABShare itself look like this:
 | 422 | `clock` | A progress event is stamped more than 5 minutes in the future |
 | 422 | `too_old` | A progress event is more than 90 days old |
 | 422 | `unplayable` | The book's playable copy couldn't be built (a damaged file, perhaps) |
-| 429 | `too_many_requests` | A rate limit or lockout. No `Retry-After` is sent |
+| 429 | `too_many_requests` | A rate limit or lockout. `Retry-After` is sent only by the per-person change limit (60 seconds) |
+| 429 | `daily_limit` | Audio from the most different books for one day; `Retry-After` gives the seconds until one more is allowed |
+| 429 | `too_many_at_once` | The most audio responses at once for one person; `Retry-After: 5` |
 | 500 | `internal` | Something failed on the server; see the reference in the log |
 | 503 | `busy` | Every password-hashing slot was busy for 2 s. Try again in a moment |
 
@@ -169,6 +171,7 @@ Every response, refusals from the guard included, carries:
 | New devices | 10 an hour per user | `429` at sign-in |
 | Active devices | 20 per user | The least recently seen device is signed out |
 | Password hashing | 4 at once; others wait up to 2 s | `503 busy` |
+| Changes on every signed-in route outside `/v1/auth` (anything but `GET` and `HEAD`) | 60 a minute per person, across their devices; the tighter limits here apply as well | `429 too_many_requests`, `Retry-After: 60` |
 | Progress writes | 12 a minute per device per book | `429` |
 | Bookmarks | 1000 per book, 10 000 per user | `409 too_many_bookmarks` |
 | Listening-history changes (clear, turn on or off) | 10 a minute per device | `429` |
@@ -176,6 +179,8 @@ Every response, refusals from the guard included, carries:
 | Book list page | 1–100 items (default 50) | Clamped |
 | Search | 200 characters, 8 distinct words | `400` |
 | Data-saver response | 10 segments (about 10 minutes of audio) | A shorter `206` |
+| Audio (streams, downloads and saved files together) | 30 different books in 24 hours per person. A book fetched in that time always carries on. A request for only the first byte (`Range: bytes=0-0`, to learn the size) isn't counted | `429 daily_limit` |
+| Audio responses at once | 6 per person, across their devices; each counts until it has been sent or abandoned | `429 too_many_at_once` |
 
 A sign-in attempt counts as a failure from the moment it starts, and is only forgiven when the whole sign-in succeeds. Parallel guesses therefore can't get past the limits. A browser that already holds a live refresh cookie for the account it is signing in to isn't held back by the shared per-username allowance (address locks still apply).
 
@@ -805,7 +810,10 @@ The checks run in this order:
 1. Can the caller see the book? (`404`)
 2. The `offline` permission, if `dl` is present. (`403`)
 3. Is the playable copy ready, if one is needed? (`409` or `422`)
-4. The quality value. (`400`)
+4. The quality and `dl` values. (`400`)
+5. The audio limits: different books today and responses at once (`429 daily_limit`, `429 too_many_at_once`; see Rate limits).
+
+A download's first piece (`dl` present, from byte 0, more than the first byte) is written to the audit log as `media.download` with the book ID and quality. Reaching the daily limit is written once a day as `media.daily_limit`.
 
 **Original** (`q` absent or `original`): the file, or the playable copy.
 - No `Range` header, or one that isn't usable: `200` with the whole file. That includes multiple ranges, a header over 256 characters, or a unit other than `bytes`.
@@ -827,7 +835,7 @@ Errors: `400`, `403 not_permitted`, `404`, `409 preparing`, `409 changed`, `416`
 
 #### `GET /v1/media/{id}/state`
 
-- **Response:** `{"ready": true, "failed": false}`. `ready` means the book can be played now (always `true` for a book that needs no copy). If the copy is neither ready nor failed, this call also starts building it.
+- **Response:** `{"ready": true, "failed": false, "limited": false}`. `ready` means the book can be played now (always `true` for a book that needs no copy). If the copy is neither ready nor failed, this call also starts building it. `limited` means the caller has reached the daily limit of different books (below) and this isn't one of them, so its audio would be refused.
 
 #### `GET /v1/media/{id}/file`: save file
 
@@ -835,7 +843,8 @@ Errors: `400`, `403 not_permitted`, `404`, `409 preparing`, `409 changed`, `416`
 - **Response:** the original single file or the playable copy, with `Range` support as for originals, and `Content-Disposition: attachment; filename="The Copper Tide.m4b"; filename*=UTF-8''…`.
   - The plain name keeps only ASCII letters, digits, spaces and `- _ , ( )`, and is at most 120 characters (`audiobook` if nothing is left).
   - The UTF-8 name is the title, percent-encoded.
-- **Errors:** `403`, `404`, `409 preparing`, `422 unplayable`.
+- Counts towards the audio limits like a stream. A request from byte 0 (a new save, not a resumed one) is written to the audit log as `media.save` with the book ID.
+- **Errors:** `403`, `404`, `409 preparing`, `422 unplayable`, `429 daily_limit`, `429 too_many_at_once`.
 
 #### `GET /v1/media/covers/{id}/{hash}?size=<px>`
 
@@ -1033,7 +1042,8 @@ Server settings (SPEC D35), read-only: there is no route that changes them; they
   "rules": {
     "two_step": "always", "access_minutes": 15, "sign_in_days": 90, "step_up_minutes": 10,
     "max_devices": 20, "invite_hours": 72, "history_days": 395, "abandoned_days": 30,
-    "audit_days": 365, "audit_rows": 500000
+    "audit_days": 365, "audit_rows": 500000, "writes_per_minute": 60, "books_per_day": 30,
+    "audio_at_once": 6
   }
 }
 ```

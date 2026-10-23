@@ -87,6 +87,9 @@ export interface ServerSettings {
 		abandoned_days: number;
 		audit_days: number;
 		audit_rows: number;
+		writes_per_minute: number;
+		books_per_day: number;
+		audio_at_once: number;
 	};
 }
 

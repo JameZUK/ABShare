@@ -13,6 +13,8 @@ test('admins see the server settings, read-only and without file paths', async (
 	await expect(main.getByText('10 GiB', { exact: true })).toBeVisible();
 	await expect(main.getByText(/None: client addresses come from the connection/)).toBeVisible();
 	await expect(main.getByText('Single use, valid for 72 hours')).toBeVisible();
+	await expect(main.getByText('Up to 60 a minute')).toBeVisible();
+	await expect(main.getByText(/Audio from up to 30 different books in 24 hours/)).toBeVisible();
 	// Nothing to edit, and no paths from the config file (the e2e library lives in a temp dir).
 	await expect(main.locator('input, select, textarea')).toHaveCount(0);
 	await expect(main.getByRole('button')).toHaveCount(0);

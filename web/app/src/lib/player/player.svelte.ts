@@ -14,6 +14,7 @@ export type Sleep = { kind: 'off' } | { kind: 'time'; remainingMs: number } | { 
 
 const LAST_BOOK = 'abshare.lastBook';
 const REPORT_EVERY_MS = 15_000;
+export const LIMITED = 'You’ve played or downloaded the most different books for one day. Books you’ve already started today still play; this one will tomorrow.';
 
 function remember(id: string | null) {
 	try {
@@ -189,6 +190,15 @@ class Player {
 		if (play) await this.play();
 	}
 
+	/** Whether the server refuses this book's audio today (the daily limit of different books). */
+	async #limited(id: string): Promise<boolean> {
+		try {
+			return (await api<{ limited?: boolean }>(`v1/media/${encodeURIComponent(id)}/state`)).limited === true;
+		} catch {
+			return false;
+		}
+	}
+
 	/** Whether the book's playable copy is ready; null when building it failed. */
 	async #ready(id: string): Promise<boolean | null> {
 		try {
@@ -359,6 +369,12 @@ class Player {
 		const a = this.#audio!;
 		if (!this.book || !a.src) return;
 		const pos = a.currentTime > 0 ? a.currentTime * 1000 : this.position;
+		// Today's limit of different books: retrying won't help, so say why.
+		if (this.source !== 'device' && (await this.#limited(this.book.id))) {
+			this.playing = false;
+			this.notice = LIMITED;
+			return;
+		}
 		// A lapsed media cookie or a dropped connection: renew and pick up where it stopped.
 		if (this.#retried < 3 && this.source !== 'device') {
 			this.#retried++;

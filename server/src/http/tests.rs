@@ -3499,3 +3499,169 @@ async fn people_can_delete_their_own_review_after_losing_access_to_the_book() {
     let bad = "/v1/books/..%2F..%2Fetc/review";
     assert_eq!(as_user(&m.t, "DELETE", bad, None, &joe).await.status(), StatusCode::NOT_FOUND);
 }
+
+// ---------------------------------------------------------------- limits on every signed-in route
+
+fn audit_details(t: &T, event: &str) -> Vec<String> {
+    let c = t.st.db.0.lock().expect("db");
+    c.prepare("SELECT detail FROM audit WHERE event = ?1 ORDER BY id")
+        .expect("q")
+        .query_map([event], |r| r.get(0))
+        .expect("rows")
+        .collect::<Result<_, _>>()
+        .expect("details")
+}
+
+fn user_id(t: &T, username: &str) -> i64 {
+    let c = t.st.db.0.lock().expect("db");
+    c.query_row("SELECT id FROM user WHERE username = ?1", [username], |r| r.get(0)).expect("user")
+}
+
+#[tokio::test]
+async fn every_signed_in_change_counts_towards_one_limit_per_person() {
+    let m = setup_media();
+    let (joe, _) = listener(&m).await;
+    let (_, amy, _, _) = enrol(&m.t, "amy").await;
+    let joe_auth = format!("Bearer {joe}");
+    let uri = format!("/v1/books/{BOOK}/bookmarks");
+    for i in 0..super::WRITES_PER_MINUTE {
+        let r = send(
+            &m.t,
+            "POST",
+            &uri,
+            Some(json!({"position_ms": i * 1000, "note": ""})),
+            &[("authorization", &joe_auth)],
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK, "write {i}");
+    }
+    // The limit is per person across routes, not per route: an account change is refused too.
+    for (method, path, body) in [
+        ("POST", uri.as_str(), Some(json!({"position_ms": 1, "note": ""}))),
+        ("DELETE", "/v1/me/devices/999999", None),
+        ("PUT", &format!("/v1/books/{BOOK}/review") as &str, Some(json!({"stars": 5}))),
+    ] {
+        let r = send(&m.t, method, path, body, &[("authorization", &joe_auth)]).await;
+        assert_eq!(r.status(), StatusCode::TOO_MANY_REQUESTS, "{method} {path}");
+        assert_eq!(r.headers()["retry-after"], "60");
+        assert_eq!(json_of(r).await["error"], "too_many_requests");
+    }
+    // Reading still works, and someone else is unaffected.
+    assert_eq!(get_json(&m.t, &uri, &joe).await.0, StatusCode::OK);
+    let r = send(
+        &m.t,
+        "POST",
+        &uri,
+        Some(json!({"position_ms": 1, "note": ""})),
+        &[("authorization", &format!("Bearer {amy}"))],
+    )
+    .await;
+    assert_ne!(r.status(), StatusCode::TOO_MANY_REQUESTS);
+    // Without a valid session the route still answers 401, not the limit.
+    let r =
+        send(&m.t, "POST", &uri, Some(json!({"position_ms": 1, "note": ""})), &[("authorization", "Bearer forged")])
+            .await;
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn audio_from_too_many_different_books_in_a_day_is_refused_and_audited_once() {
+    let m = setup_media();
+    let (access, _) = listener(&m).await;
+    let auth = format!("Bearer {access}");
+    let joe = user_id(&m.t, "joe");
+    let now = super::now();
+    // Started earlier today: still plays after the limit is reached.
+    std::mem::forget(m.t.st.audio.admit(joe, MULTI_BOOK, now).expect("first"));
+    for i in 1..super::media_routes::BOOKS_PER_DAY {
+        drop(m.t.st.audio.admit(joe, &format!("{i:026}"), now).expect("under the limit"));
+    }
+    let uri = format!("/v1/media/{BOOK}");
+    let (_, v) = get_json(&m.t, &format!("{uri}/state"), &access).await;
+    assert_eq!(v["limited"], true);
+    for _ in 0..2 {
+        let r = send(&m.t, "GET", &uri, None, &[("authorization", &auth)]).await;
+        assert_eq!(r.status(), StatusCode::TOO_MANY_REQUESTS);
+        let wait: u64 = r.headers()["retry-after"].to_str().expect("header").parse().expect("seconds");
+        assert!(wait > 23 * 3600 && wait <= 24 * 3600, "{wait}");
+        assert_eq!(json_of(r).await["error"], "daily_limit");
+    }
+    // Downloads and saved files count the same way.
+    assert_eq!(
+        send(&m.t, "GET", &format!("{uri}?dl=1"), None, &[("authorization", &auth)]).await.status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    // Learning the size (the first byte) isn't audio, and a book already started carries on.
+    let r = send(&m.t, "GET", &uri, None, &[("authorization", &auth), ("range", "bytes=0-0")]).await;
+    assert_eq!(r.status(), StatusCode::PARTIAL_CONTENT);
+    let r = send(&m.t, "GET", &format!("/v1/media/{MULTI_BOOK}"), None, &[("authorization", &auth)]).await;
+    assert_ne!(r.status(), StatusCode::TOO_MANY_REQUESTS);
+    let (_, v) = get_json(&m.t, &format!("/v1/media/{MULTI_BOOK}/state"), &access).await;
+    assert_eq!(v["limited"], false);
+    assert_eq!(audit_details(&m.t, "media.daily_limit").len(), 1, "audited once, not per request");
+}
+
+#[tokio::test]
+async fn audio_responses_at_once_are_limited_until_each_finishes() {
+    let m = setup_media();
+    let (access, _) = listener(&m).await;
+    let auth = format!("Bearer {access}");
+    let uri = format!("/v1/media/{BOOK}");
+    // Responses not yet read keep their places.
+    let mut open = Vec::new();
+    for _ in 0..super::media_routes::AT_ONCE {
+        let r = send(&m.t, "GET", &uri, None, &[("authorization", &auth)]).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        open.push(r);
+    }
+    let r = send(&m.t, "GET", &uri, None, &[("authorization", &auth)]).await;
+    assert_eq!(r.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(r.headers()["retry-after"], "5");
+    assert_eq!(json_of(r).await["error"], "too_many_at_once");
+    // Someone else is unaffected.
+    let (_, amy, _, _) = enrol(&m.t, "amy").await;
+    let r = send(&m.t, "GET", &uri, None, &[("authorization", &format!("Bearer {amy}"))]).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    // One finished (read to the end) frees a place; one abandoned (dropped) frees another.
+    assert_eq!(body_of(open.pop().expect("one")).await.len(), 1000);
+    drop(open.pop());
+    for _ in 0..2 {
+        assert_eq!(send(&m.t, "GET", &uri, None, &[("authorization", &auth)]).await.status(), StatusCode::OK);
+    }
+}
+
+#[tokio::test]
+async fn downloads_and_saved_files_are_audited_once_each() {
+    let m = setup_media();
+    let (access, _) = listener(&m).await;
+    let auth = format!("Bearer {access}");
+    {
+        let c = m.t.st.db.0.lock().expect("db");
+        c.execute("UPDATE user SET can_save = 1 WHERE username = 'joe'", []).expect("perm");
+    }
+    let get = |uri: String, range: &'static str| {
+        let (t, a) = (&m.t, auth.clone());
+        async move {
+            let mut h = vec![("authorization", a.as_str())];
+            if !range.is_empty() {
+                h.push(("range", range));
+            }
+            send(t, "GET", &uri, None, &h).await.status()
+        }
+    };
+    // A download: its first piece is audited; later pieces, the size check and streaming aren't.
+    assert_eq!(get(format!("/v1/media/{BOOK}?dl=1"), "bytes=0-0").await, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(get(format!("/v1/media/{BOOK}?dl=1"), "bytes=0-499").await, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(get(format!("/v1/media/{BOOK}?dl=1"), "bytes=500-999").await, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(get(format!("/v1/media/{BOOK}"), "").await, StatusCode::OK);
+    assert_eq!(audit_details(&m.t, "media.download"), [format!("book {BOOK}, quality original")]);
+    // A saved file, likewise.
+    assert_eq!(get(format!("/v1/media/{BOOK}/file"), "").await, StatusCode::OK);
+    assert_eq!(get(format!("/v1/media/{BOOK}/file"), "bytes=500-").await, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(audit_details(&m.t, "media.save"), [format!("book {BOOK}")]);
+    // A refused request isn't audited as a download.
+    assert_eq!(get(format!("/v1/media/{BOOK}?dl=2"), "").await, StatusCode::BAD_REQUEST);
+    assert_eq!(audit_details(&m.t, "media.download").len(), 1);
+    let c = m.t.st.db.0.lock().expect("db");
+    assert!(crate::auth::audit::verify(&c, &m.t.st.audit_key).is_ok());
+}

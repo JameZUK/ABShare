@@ -757,6 +757,9 @@ async fn settings(S(st): S<State>, Admin(_): Admin, Query(_): Query<super::NoQue
             "abandoned_days": ABANDONED_AFTER_MS / 1000 / DAY,
             "audit_days": audit::MAX_AGE / DAY,
             "audit_rows": audit::MAX_ROWS,
+            "writes_per_minute": super::WRITES_PER_MINUTE,
+            "books_per_day": super::media_routes::BOOKS_PER_DAY,
+            "audio_at_once": super::media_routes::AT_ONCE,
         },
     })))
 }

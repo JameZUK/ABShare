@@ -115,3 +115,30 @@ test('removing a person’s downloads also forgets which books they were asked t
 		vi.unstubAllGlobals();
 	}
 });
+
+test('the daily limit of different books pauses the download with the server’s reason', async () => {
+	let status = 429;
+	const { f } = server(100, { status: () => status });
+	f.mockImplementationOnce(async () =>
+		new Response(JSON.stringify({ error: 'daily_limit', message: 'You’ve played or downloaded 30 different books today.' }), { status: 429, headers: { 'retry-after': '3600' } }),
+	);
+	await downloads.add(book, 'original');
+	await settle();
+	expect(downloads.byId(ID)?.state).toBe('paused');
+	expect(downloads.byId(ID)?.error).toBe('You’ve played or downloaded 30 different books today.');
+	status = 206;
+	await downloads.resume(ID);
+	await settle();
+	expect(downloads.byId(ID)?.state).toBe('complete');
+});
+
+test('too many at once (another device busy) waits and carries on by itself', async () => {
+	const { f } = server(100);
+	f.mockImplementationOnce(async () =>
+		new Response(JSON.stringify({ error: 'too_many_at_once', message: 'Too many at once.' }), { status: 429, headers: { 'retry-after': '1' } }),
+	);
+	await downloads.add(book, 'original');
+	for (let i = 0; i < 60 && downloads.byId(ID)?.state !== 'complete'; i++) await new Promise((r) => setTimeout(r, 50));
+	expect(downloads.byId(ID)?.state).toBe('complete');
+	expect(downloads.byId(ID)?.error).toBeUndefined();
+});

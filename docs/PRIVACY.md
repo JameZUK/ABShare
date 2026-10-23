@@ -21,7 +21,11 @@ the app loads nothing from other websites.
   can clear them all at any time, or turn history off so nothing new is recorded; your place
   in each book is kept either way. Listening done offline is kept on your device and added when it reconnects.
 - **The audit log:** security events (sign-ins, failed attempts, account changes, admin
-  actions) with time, account, device and IP address. Kept for at most a year.
+  actions) with time, account, device and IP address. Kept for at most a year. It also records
+  each book you download for offline listening or save as a file (the book, quality, time and
+  device, not your position), and when an account reaches the daily limit of different books,
+  so admins can see if an account is being used to copy the library. Playing a book isn't
+  recorded there.
 - **Start-up reports:** if the app is left showing a blank page after being on screen for 8
   seconds (or the address has `?diag`), the browser sends a short text report: the error,
   browser user agent, screen size, colours, whether cookies are allowed and whether the page

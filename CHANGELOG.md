@@ -2,6 +2,16 @@
 
 What changed and when, newest first. Each entry says how it is tested. The design and the reasons behind it are in [`SPEC.md`](SPEC.md); what differs from the design is in SPEC §16.
 
+## Unreleased
+
+### Security
+- **One limit on every change, per person** (SPEC D37). Every change on a signed-in route counts towards 60 a minute per person, across their devices, on top of the tighter limits some routes already had. Before, bookmarks, account changes and admin changes had no limit, so a script or a stolen session could flood the database. A new route is covered automatically.
+- **Audio is limited per person: 30 different books in 24 hours, and 6 at once** (D37). Playing, downloading and saving all count. A book already started that day always carries on, so the limit never stops a book mid-listen or mid-download. Before, one account could copy the whole library and nothing would show it. The player and downloads say plainly when the limit is reached, and a download waiting on another device's carries on by itself.
+- **Downloads and saved files are now in the audit log**, with the book and quality, as is an account reaching the daily limit. Playing isn't recorded. PRIVACY.md says so.
+- Admin → Server settings shows the new limits.
+
+**Tests:** server tests send 60 changes across three kinds of route and check the next is refused for that person only, while reads and other people carry on and an unsigned request still gets `401`. Others check that audio from a 31st book is refused with the time until one more is allowed, while a book already started and the size check still work, and the limit is audited once; that a seventh response at once is refused and that finishing or abandoning one frees its place; and that a download or save is audited once, from its first piece. Each test was checked to fail with its control removed. App tests cover a download pausing with the server's reason, and waiting then carrying on; a browser test checks the player's message.
+
 ## 0.12.0 (2026-10-23)
 
 A distroless image, and slow connections no longer look like failures.
