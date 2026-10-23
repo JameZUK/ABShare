@@ -24,7 +24,7 @@ test('ago rounds to something readable', () => {
 	expect(ago(now + 60_000, now)).toBe('just now');
 });
 
-test('items group by day, keeping their order', () => {
+test('items group by day, newest first', () => {
 	const items = [at(2026, 10, 18, 1), at(2026, 10, 17, 23), at(2026, 10, 17, 22), at(2026, 10, 15)];
 	const g = byDay(items, (t) => t, now);
 	expect(g.map((d) => [d.day, d.items.length])).toEqual([
@@ -33,4 +33,11 @@ test('items group by day, keeping their order', () => {
 		['Thursday 15 October', 1],
 	]);
 	expect(byDay([], (t: number) => t, now)).toEqual([]);
+});
+
+test('items out of order still make one group per day (a session recorded late, across midnight)', () => {
+	const items = [at(2026, 10, 18, 0, 7), at(2026, 10, 18, 0, 1), at(2026, 10, 17, 23, 55), at(2026, 10, 18, 0, 6)];
+	const g = byDay(items, (t) => t, now);
+	expect(g.map((d) => d.day)).toEqual(['Today', 'Yesterday']);
+	expect(g[0]!.items).toEqual([at(2026, 10, 18, 0, 7), at(2026, 10, 18, 0, 6), at(2026, 10, 18, 0, 1)]);
 });

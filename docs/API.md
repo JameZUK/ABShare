@@ -510,7 +510,7 @@ Your history here, and positions in it, are yours. Admins have a separate summar
 
 - `week_seconds` and `month_seconds` cover sessions that ended in the last 7 and 30 days. Totals count all your sessions, including books you can no longer see.
 - `books_finished` counts the books marked finished in your progress that you can still see.
-- `sessions` are newest first (by when they started); times are event times in milliseconds. Sessions under a second are left out, and so are books you can no longer see, so a page may be short. `next` is `null` on the last page.
+- `sessions` are newest first by when they were recorded (the order `before` pages by), so listening done offline, added when the device reconnects, can come after later sessions; sort by `started_at` to show them in time order. Times are event times in milliseconds. Sessions under a second are left out, and so are books you can no longer see, so a page may be short. `next` is `null` on the last page.
 
 #### `GET /v1/me/history/books/{id}`
 
@@ -1023,7 +1023,7 @@ Read-only: admin role, no step-up, not audited. Nothing here includes a position
 
 - **Response:** `{"id", "name", "history_on", "totals", "last_listened_at", "books": [{"book": {"id", "title", "authors", "cover", "duration_ms"}, "status", "heard_seconds", "last_at"}], "sessions": [{"book", "started_at", "ended_at", "seconds"}]}`.
   - `books` lists every book the person has started, whatever their library access, most recent activity first. A book no longer in the library has a `null` title.
-  - `sessions` are the latest 50.
+  - `sessions` are the 50 that started most recently, newest first by start.
 - **Errors:** `404`.
 
 ### Status

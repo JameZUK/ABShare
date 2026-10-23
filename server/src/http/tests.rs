@@ -3183,8 +3183,21 @@ async fn admins_see_each_persons_listening_but_never_positions() {
         json!({"week_seconds": 45, "month_seconds": 45, "all_seconds": 45, "finished": 0, "in_progress": 1, "abandoned": 1})
     );
 
+    // Listening done offline is recorded late: it still takes its place by when it started.
+    {
+        let c = m.t.st.db.0.lock().expect("db");
+        c.execute(
+            "INSERT INTO listening (user_id, book_id, started_at, ended_at, end_position_ms, heard_ms) VALUES (?1, ?2, ?3, ?4, 0, 60000)",
+            rusqlite::params![joe_id, BOOK, t0 - 3_600_000, t0 - 3_540_000],
+        )
+        .expect("late session");
+    }
     let (s, v) = get_json(&m.t, &format!("/v1/admin/users/{joe_id}/listening"), &admin).await;
     assert_eq!(s, StatusCode::OK, "{v}");
+    let starts: Vec<i64> =
+        v["sessions"].as_array().expect("sessions").iter().filter_map(|x| x["started_at"].as_i64()).collect();
+    assert_eq!(starts.len(), 2);
+    assert!(starts[0] > starts[1], "newest first by start, not by when recorded: {starts:?}");
     let statuses: Vec<(&str, &str)> = v["books"]
         .as_array()
         .expect("books")

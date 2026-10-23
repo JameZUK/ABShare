@@ -32,10 +32,11 @@ export function ago(ms: number, now = Date.now()): string {
 	return dayLabel(ms, now);
 }
 
-/** Groups items by the day of `at(item)`, keeping their order. */
+/** Groups items by the day of `at(item)`, newest first: one group per day, whatever order the
+ *  items come in (offline listening is recorded late, so lists by record order can mix days). */
 export function byDay<T>(items: T[], at: (t: T) => number, now = Date.now()): { day: string; items: T[] }[] {
 	const out: { day: string; items: T[] }[] = [];
-	for (const it of items) {
+	for (const it of [...items].sort((a, b) => at(b) - at(a))) {
 		const day = dayLabel(at(it), now);
 		const last = out[out.length - 1];
 		if (last?.day === day) last.items.push(it);

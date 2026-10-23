@@ -513,7 +513,7 @@ async fn admin_person(
             let mut q = c
                 .prepare(
                     "SELECT book_id, started_at, ended_at, heard_ms FROM listening
-                     WHERE user_id = ?1 AND heard_ms >= ?2 ORDER BY id DESC LIMIT 50",
+                     WHERE user_id = ?1 AND heard_ms >= ?2 ORDER BY started_at DESC, id DESC LIMIT 50",
                 )
                 .map_err(crate::db::sql_err)?;
             let sessions: Vec<Session> = q
