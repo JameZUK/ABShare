@@ -11,6 +11,9 @@ What changed and when, newest first. Each entry says how it is tested. The desig
 - **Slow connections no longer look like failures** (SPEC D36). If the server is slow to answer at start-up, the app opens after 3 seconds for whoever last used the device, with a "Connecting…" banner, instead of showing only the logo. Downloaded books play at once, and everything else fills in when the answer comes. Nothing times out: the app goes offline only when a request actually fails. On a device no one has signed in on, the start screen says "Connecting…", then that the connection is slow.
 - **Start-up reports are sent only for real failures.** All 20 reports in the first four days were false alarms: pages loaded in the background (phone locked while listening), whose fade-in hadn't run, or the start screen waiting on a slow connection. Now a page is judged only after 8 seconds on screen, a fade still running is waited for, and still connecting is reported, quietly and labelled, only after 30 seconds. Reports also say whether the page was visible, and the connection type and speed where the browser tells.
 
+### Security
+- **ctutils 0.4.5** (RUSTSEC-2026-0385): earlier versions could branch on secret values in constant-time comparisons. It sits under the HMAC and password-hashing code.
+
 ### Added
 - **[`docs/DEVICE-TESTS.md`](docs/DEVICE-TESTS.md):** the checks only a real phone can do (the lock screen, two devices, airplane mode, the newer features), as a checklist.
 
