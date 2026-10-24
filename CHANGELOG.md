@@ -2,7 +2,9 @@
 
 What changed and when, newest first. Each entry says how it is tested. The design and the reasons behind it are in [`SPEC.md`](SPEC.md); what differs from the design is in SPEC §16.
 
-## Unreleased
+## 0.13.0 (2026-10-24)
+
+Limits per person on changes and on audio, downloads in the audit log, and a fix for listening pages around midnight.
 
 ### Security
 - **One limit on every change, per person** (SPEC D37). Every change on a signed-in route counts towards 60 a minute per person, across their devices, on top of the tighter limits some routes already had. Before, bookmarks, account changes and admin changes had no limit, so a script or a stolen session could flood the database. A new route is covered automatically.
