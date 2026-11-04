@@ -2,7 +2,9 @@
 
 What changed and when, newest first. Each entry says how it is tested. The design and the reasons behind it are in [`SPEC.md`](SPEC.md); what differs from the design is in SPEC §16.
 
-## Unreleased
+## 0.14.0 (2026-11-04)
+
+Carrying on after a call, playback reports, and ffmpeg built from FFmpeg's GitHub mirror.
 
 ### Added
 - **Carrying on after a call** (SPEC D38). When the phone pauses the book for a call, it carries on when the call ends. Settings → Playback → *Calls* chooses: carry on (the default), carry on after a wait of 3 to 60 seconds, or stay paused. Auto-rewind applies after a long call. A pause the listener made is never undone: if the browser starts the book again afterwards, it is paused again. ABShare can't see calls itself; it follows the browser, so on a phone whose browser doesn't pause for calls nothing changes, and the settings page says so.
