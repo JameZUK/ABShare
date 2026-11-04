@@ -32,10 +32,19 @@ COPY web/app ./
 RUN npm run build
 
 # A minimal, statically linked ffmpeg and ffprobe (SPEC D10, §9.3), from pinned source
-# tarballs checked by SHA-256. The FFmpeg checksum was taken from a tarball whose release
-# signature (key FCF9 86EA 15E6 E293 A564 4F10 B432 2F04 D676 58D8) verified. To update:
-# download the new tarball and its .asc from ffmpeg.org/releases, verify the signature,
-# then change FFMPEG_VERSION and FFMPEG_SHA256 together.
+# tarballs checked by SHA-256.
+#
+# FFmpeg's source comes from its official GitHub mirror (github.com/FFmpeg/FFmpeg, the tag
+# n<version>), not ffmpeg.org, which can be unreachable for hours (2026-11-04). The archive's
+# checksum was pinned only after checking that its files are byte-identical to the release
+# tarball from ffmpeg.org/releases, whose signature (key FCF9 86EA 15E6 E293 A564 4F10 B432
+# 2F04 D676 58D8) verified. The only differences are the .gitignore and .gitattributes files a
+# release leaves out, and VERSION, which a release adds and is written below. To update:
+#   1. download ffmpeg-X.Y.Z.tar.xz and its .asc from ffmpeg.org/releases and verify it;
+#   2. download https://github.com/FFmpeg/FFmpeg/archive/refs/tags/nX.Y.Z.tar.gz;
+#   3. extract both and run diff -r: nothing may differ but those files;
+#   4. change FFMPEG_VERSION and FFMPEG_SHA256 (the GitHub archive's) together.
+# If GitHub ever regenerates the archive differently, the checksum fails and the build stops.
 #
 # Only what ABShare runs is built (server/src/{probe,covers,media,tools}.rs):
 #   inputs     the forced demuxers mov, mp3, ogg, flac and wav (tools::demuxer_for), and
@@ -50,16 +59,18 @@ RUN npm run build
 # No GPL parts: FFmpeg stays LGPL 2.1+, as does LAME.
 FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS ffmpeg
 ARG FFMPEG_VERSION=7.1.5
-ARG FFMPEG_SHA256=de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f
+ARG FFMPEG_SHA256=e3963a50831c985933e1a625ed566ec4c7adb5c012c34fa9f84438e1d61bdacc
 ARG LAME_VERSION=3.100
 ARG LAME_SHA256=ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e
-RUN apk add --no-cache build-base nasm curl xz file
+RUN apk add --no-cache build-base nasm curl file
 WORKDIR /build
-RUN curl -fsSL --proto '=https' --tlsv1.2 -o ffmpeg.tar.xz "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" \
+RUN curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 -o ffmpeg.tar.gz "https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n${FFMPEG_VERSION}.tar.gz" \
  && curl -fsSL --proto '=https' --tlsv1.2 -o lame.tar.gz "https://downloads.sourceforge.net/project/lame/lame/${LAME_VERSION}/lame-${LAME_VERSION}.tar.gz" \
- && echo "${FFMPEG_SHA256}  ffmpeg.tar.xz" | sha256sum -c - \
+ && echo "${FFMPEG_SHA256}  ffmpeg.tar.gz" | sha256sum -c - \
  && echo "${LAME_SHA256}  lame.tar.gz" | sha256sum -c - \
- && tar -xJf ffmpeg.tar.xz && tar -xzf lame.tar.gz
+ && tar -xzf ffmpeg.tar.gz && mv "FFmpeg-n${FFMPEG_VERSION}" "ffmpeg-${FFMPEG_VERSION}" \
+ && printf '%s\n' "${FFMPEG_VERSION}" > "ffmpeg-${FFMPEG_VERSION}/VERSION" \
+ && tar -xzf lame.tar.gz
 # LAME 3.100 predates C23, the default of current GCC.
 RUN cd "lame-${LAME_VERSION}" \
  && CFLAGS="-O2 -std=gnu17 -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE" ./configure \
