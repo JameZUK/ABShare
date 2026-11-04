@@ -2,7 +2,9 @@
 
 What changed and when, newest first. Each entry says how it is tested. The design and the reasons behind it are in [`SPEC.md`](SPEC.md); what differs from the design is in SPEC §16.
 
-## Unreleased
+## 0.14.1 (2026-11-04)
+
+The start-up diagnostics page is gone, playback reports need sign-in, and CI caches the ffmpeg source.
 
 ### Removed
 - **The start-up diagnostics page.** The plain-text page that appeared when the app seemed not to have drawn (`static/diag.js`), and the start-up reports it sent, are gone. It still appeared at random on phones where the app was working, and nothing it caught needed it any more. The Connecting banner for slow connections stays.
