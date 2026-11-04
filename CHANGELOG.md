@@ -2,6 +2,13 @@
 
 What changed and when, newest first. Each entry says how it is tested. The design and the reasons behind it are in [`SPEC.md`](SPEC.md); what differs from the design is in SPEC §16.
 
+## Unreleased
+
+### Changed
+- **CI keeps the ffmpeg and LAME source archives in its cache**, keyed by their checksums, so the image build no longer depends on their download sites being up. They are downloaded once per version, with retries, in a new `sources` stage of the Dockerfile that CI replaces with the cached files. The checksums are now checked in the stage that uses the archives, so a wrong file fails the build whoever supplied it. Local builds work as before.
+
+**Tests:** CI builds with an archive that doesn't match its checksum and checks the build stops there; with the check removed, that step fails. Locally, a build from supplied archives skipped the download and gave ffmpeg and ffprobe byte-identical to the deployed ones.
+
 ## 0.14.0 (2026-11-04)
 
 Carrying on after a call, playback reports, and ffmpeg built from FFmpeg's GitHub mirror.

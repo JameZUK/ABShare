@@ -139,7 +139,31 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: docker build -f deploy/Dockerfile -t abshare:ci .
+      # The ffmpeg and LAME source archives come from the cache, keyed by their checksums, so
+      # the build doesn't depend on their download sites being up (ffmpeg.org was down for hours
+      # on 2026-11-04). The build checks the checksums itself, so a bad cache entry fails it.
+      - name: Key for the source archives
+        id: sources-key
+        run: echo "key=image-sources-$(grep -E '^ARG (FFMPEG|LAME)_SHA256=' deploy/Dockerfile | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      - name: Source archives from the cache
+        id: sources
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ci-sources
+          key: ${{ steps.sources-key.outputs.key }}
+      - name: Download the source archives (not in the cache yet)
+        if: steps.sources.outputs.cache-hit != 'true'
+        run: docker build --target sources -o type=local,dest=ci-sources -f deploy/Dockerfile .
+      - run: docker build --build-context sources=ci-sources -f deploy/Dockerfile -t abshare:ci .
+      - name: A source archive that doesn't match its checksum fails the build
+        run: |
+          mkdir -p bad-sources/src
+          cp ci-sources/src/lame.tar.gz bad-sources/src/
+          printf 'not ffmpeg' | gzip > bad-sources/src/ffmpeg.tar.gz
+          if docker build --progress=plain --target ffmpeg --build-context sources=bad-sources -f deploy/Dockerfile . > bad.txt 2>&1; then
+            echo "built with a bad archive"; exit 1
+          fi
+          grep -q "ffmpeg.tar.gz: FAILED" bad.txt || { tail -20 bad.txt; exit 1; }
       - name: Deploy test (the image behind nginx with TLS)
         run: deploy/ci/run.sh
       - name: Image scan (high and critical, with fixes available)

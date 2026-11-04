@@ -9,6 +9,12 @@
 #   docker buildx imagetools inspect rust:1.99-alpine    (the "Digest:" line)
 # then rebuild and run tools/check.sh and deploy/ci/run.sh.
 
+# The ffmpeg and LAME sources, pinned by version and SHA-256: see the ffmpeg stage below.
+ARG FFMPEG_VERSION=7.1.5
+ARG FFMPEG_SHA256=e3963a50831c985933e1a625ed566ec4c7adb5c012c34fa9f84438e1d61bdacc
+ARG LAME_VERSION=3.100
+ARG LAME_SHA256=ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e
+
 FROM rust:1.99-alpine@sha256:557a94c82b485a14b569120e00867267108c734efe33f10cc31ca0cd5dd1eca9 AS build
 # perl and make build the vendored OpenSSL (webauthn-rs, D25).
 RUN apk add --no-cache musl-dev file perl make
@@ -46,6 +52,11 @@ RUN npm run build
 #   4. change FFMPEG_VERSION and FFMPEG_SHA256 (the GitHub archive's) together.
 # If GitHub ever regenerates the archive differently, the checksum fails and the build stops.
 #
+# The archives are downloaded in a stage of their own, "sources", so CI can supply them from
+# its cache instead (--build-context sources=DIR, with the two files in DIR/src): a download
+# site being down then doesn't fail every build. The checksums are checked where the files are
+# used, in the ffmpeg stage, whoever supplied them.
+#
 # Only what ABShare runs is built (server/src/{probe,covers,media,tools}.rs):
 #   inputs     the forced demuxers mov, mp3, ogg, flac and wav (tools::demuxer_for), and
 #              lavfi for the generated silence (media::silent_frame);
@@ -57,16 +68,27 @@ RUN npm run build
 #              inserts itself;
 #   protocols  file only: no network protocol is compiled in, and the build fails if one is.
 # No GPL parts: FFmpeg stays LGPL 2.1+, as does LAME.
+FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS fetch
+ARG FFMPEG_VERSION
+ARG LAME_VERSION
+RUN apk add --no-cache curl
+WORKDIR /src
+RUN curl -fsSL --retry 4 --retry-all-errors --retry-delay 15 --proto '=https' --proto-redir '=https' --tlsv1.2 -o ffmpeg.tar.gz "https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n${FFMPEG_VERSION}.tar.gz" \
+ && curl -fsSL --retry 4 --retry-all-errors --retry-delay 15 --proto '=https' --tlsv1.2 -o lame.tar.gz "https://downloads.sourceforge.net/project/lame/lame/${LAME_VERSION}/lame-${LAME_VERSION}.tar.gz"
+
+# Just the two archives (what CI caches and supplies in place of this stage).
+FROM scratch AS sources
+COPY --from=fetch /src/ /src/
+
 FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS ffmpeg
-ARG FFMPEG_VERSION=7.1.5
-ARG FFMPEG_SHA256=e3963a50831c985933e1a625ed566ec4c7adb5c012c34fa9f84438e1d61bdacc
-ARG LAME_VERSION=3.100
-ARG LAME_SHA256=ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e
-RUN apk add --no-cache build-base nasm curl file
+ARG FFMPEG_VERSION
+ARG FFMPEG_SHA256
+ARG LAME_VERSION
+ARG LAME_SHA256
+RUN apk add --no-cache build-base nasm file
 WORKDIR /build
-RUN curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 -o ffmpeg.tar.gz "https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n${FFMPEG_VERSION}.tar.gz" \
- && curl -fsSL --proto '=https' --tlsv1.2 -o lame.tar.gz "https://downloads.sourceforge.net/project/lame/lame/${LAME_VERSION}/lame-${LAME_VERSION}.tar.gz" \
- && echo "${FFMPEG_SHA256}  ffmpeg.tar.gz" | sha256sum -c - \
+COPY --from=sources /src/ffmpeg.tar.gz /src/lame.tar.gz ./
+RUN echo "${FFMPEG_SHA256}  ffmpeg.tar.gz" | sha256sum -c - \
  && echo "${LAME_SHA256}  lame.tar.gz" | sha256sum -c - \
  && tar -xzf ffmpeg.tar.gz && mv "FFmpeg-n${FFMPEG_VERSION}" "ffmpeg-${FFMPEG_VERSION}" \
  && printf '%s\n' "${FFMPEG_VERSION}" > "ffmpeg-${FFMPEG_VERSION}/VERSION" \
