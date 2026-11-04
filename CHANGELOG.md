@@ -4,10 +4,16 @@ What changed and when, newest first. Each entry says how it is tested. The desig
 
 ## Unreleased
 
+### Removed
+- **The start-up diagnostics page.** The plain-text page that appeared when the app seemed not to have drawn (`static/diag.js`), and the start-up reports it sent, are gone. It still appeared at random on phones where the app was working, and nothing it caught needed it any more. The Connecting banner for slow connections stays.
+
+### Security
+- **Playback reports need a signed-in listener** (`POST /v1/diag`). The route only took anonymous reports because a blank page had nobody signed in; with that page gone, it takes a bearer token, limits each person to 5 reports a minute, and admins see who sent each report.
+
 ### Changed
 - **CI keeps the ffmpeg and LAME source archives in its cache**, keyed by their checksums, so the image build no longer depends on their download sites being up. They are downloaded once per version, with retries, in a new `sources` stage of the Dockerfile that CI replaces with the cached files. The checksums are now checked in the stage that uses the archives, so a wrong file fails the build whoever supplied it. Local builds work as before.
 
-**Tests:** CI builds with an archive that doesn't match its checksum and checks the build stops there; with the check removed, that step fails. Locally, a build from supplied archives skipped the download and gave ffmpeg and ffprobe byte-identical to the deployed ones.
+**Tests:** CI builds with an archive that doesn't match its checksum and checks the build stops there; with the check removed, that step fails. Locally, a build from supplied archives skipped the download and gave ffmpeg and ffprobe byte-identical to the deployed ones. Server tests check a report without a token, or with a made-up one, is refused and nothing kept (with the sign-in requirement removed, the test fails), that admins see who sent each report, and that the limit is per person whatever the address; the browser test sends a report and finds it under the sender's name.
 
 ## 0.14.0 (2026-11-04)
 

@@ -15,10 +15,6 @@ test('a slow sign-in answer opens the app as connecting, then carries on', async
 		await held;
 		await route.continue();
 	});
-	const reports: string[] = [];
-	page.on('request', (r) => {
-		if (r.url().endsWith('/v1/diag')) reports.push(r.postData() ?? '');
-	});
 
 	await page.reload();
 	const banner = page.getByText('Connecting… The connection is slow. Downloaded books play now.');
@@ -32,5 +28,4 @@ test('a slow sign-in answer opens the app as connecting, then carries on', async
 	release();
 	await expect(banner).toHaveCount(0, { timeout: 10_000 });
 	await expect(page.getByRole('heading', { level: 1 }).first()).toBeVisible();
-	expect(reports).toEqual([]);
 });

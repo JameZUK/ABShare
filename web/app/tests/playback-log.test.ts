@@ -1,11 +1,15 @@
 // The playback log (D38): kept in this browser, at most 38 lines, never which book, and sent only
-// when the listener asks, through the start-up report route.
+// when the listener asks, as the signed-in listener (POST /v1/diag).
 import { forgetLog, KEEP, logEvent, place, playbackLog, sendReport } from '$lib/player/log';
+
+const { post } = vi.hoisted(() => ({ post: vi.fn() }));
+vi.mock('$lib/api/session.svelte', () => ({ post }));
 
 beforeEach(() => {
 	localStorage.clear();
 	forgetLog();
 	vi.restoreAllMocks();
+	post.mockReset();
 });
 
 test('places in the book read as hours, minutes and seconds', () => {
@@ -38,15 +42,13 @@ test('forgetting the log (at sign-out) empties it here and in storage', () => {
 	expect(localStorage.getItem('abshare.playbackLog')).toBeNull();
 });
 
-test('a report posts the log through the start-up report route, same-origin, with the app header', async () => {
+test('a report posts the log as the signed-in listener, within the route’s limits', async () => {
 	logEvent('play (app) @ 0:00');
-	const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 204 }));
+	post.mockResolvedValue(null);
 	expect(await sendReport()).toBe(true);
-	const [url, init] = fetch.mock.calls[0]!;
-	expect(url).toBe('v1/diag');
-	expect(init).toMatchObject({ method: 'POST', credentials: 'same-origin' });
-	expect((init!.headers as Record<string, string>)['x-abshare-client']).toBe('1');
-	const body = JSON.parse(init!.body as string) as { lines: string[] };
+	expect(post).toHaveBeenCalledTimes(1);
+	const [path, body] = post.mock.calls[0] as [string, { lines: string[] }];
+	expect(path).toBe('v1/diag');
 	expect(body.lines[0]).toMatch(/^Playback report/);
 	expect(body.lines[1]).toMatch(/^Browser: /);
 	expect(body.lines.slice(2)).toEqual(playbackLog());
@@ -54,9 +56,7 @@ test('a report posts the log through the start-up report route, same-origin, wit
 });
 
 test('a refused or failed report says so', async () => {
-	vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 429 }));
-	expect(await sendReport()).toBe(false);
-	vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('offline'));
+	post.mockRejectedValue(new Error('429'));
 	expect(await sendReport()).toBe(false);
 });
 

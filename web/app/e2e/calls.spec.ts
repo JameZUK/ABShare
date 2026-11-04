@@ -107,7 +107,9 @@ test('a playback report shows what will be sent and reaches the admins', async (
 	await expect(page.getByRole('button', { name: 'Report sent' })).toBeDisabled();
 
 	await page.goto('#/admin');
-	const report = page.locator('.reports details').filter({ hasText: 'Playback' }).first();
+	await expect(page.getByRole('heading', { name: /Playback reports/ })).toBeVisible();
+	const report = page.locator('.reports details').first();
+	await expect(report.locator('summary'), 'with who sent it').toContainText('ada');
 	await report.locator('summary').click();
 	await expect(report).toContainText('pause (by the browser)');
 	await expect(report).toContainText('Browser: ');

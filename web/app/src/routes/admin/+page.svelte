@@ -40,11 +40,11 @@
 	{/if}
 	{#if reports.length}
 		<section class="reports">
-			<h2>Reports from browsers ({reports.length})</h2>
-			<p class="muted">Start-up reports, from browsers left with a blank page, and playback reports, which listeners send from Settings → About. Kept in memory until the server restarts.</p>
+			<h2>Playback reports ({reports.length})</h2>
+			<p class="muted">Sent by listeners from Settings → About when a book stopped by itself or played through a call. Kept in memory until the server restarts.</p>
 			{#each reports as r (r.at + r.addr + r.lines.length)}
 				<details>
-					<summary>{when(r.at)} · {r.lines[0]?.startsWith('Playback report') ? 'Playback' : 'Start-up'} · {r.addr}</summary>
+					<summary>{when(r.at)} · {r.user} · {r.addr}</summary>
 					<pre>{r.lines.join('\n')}</pre>
 				</details>
 			{/each}

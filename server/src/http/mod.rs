@@ -208,7 +208,7 @@ pub struct AppState {
     /// Audio per person: different books a day, and responses at once (SPEC §5.3).
     pub audio: media_routes::AudioLimits,
     /// Start-up reports from blank pages: rate-limited per address, kept in memory only.
-    pub diag_limit: RateLimit<abshare_core::auth::lockout::AddrKey>,
+    pub diag_limit: RateLimit<i64>,
     pub diag: Mutex<std::collections::VecDeque<diag_routes::DiagReport>>,
     pub media: Option<Arc<crate::media::Media>>,
     pub web_dir: Option<std::path::PathBuf>,

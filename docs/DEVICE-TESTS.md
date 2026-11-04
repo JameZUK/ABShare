@@ -41,7 +41,7 @@ Record the device, OS version and ABShare version (Settings → About) with the 
 - [ ] **The slider.** Drag the scrubber in the full player: the time label follows your finger, and playback jumps to where you let go. Small adjustments are possible with one thumb.
 - [ ] **Scrubbing fast doesn't trip the limit.** In data saver, drag the native scrubber back and forth quickly for a few seconds (Firefox on Android fires many seeks), then let go. Playback starts at the new place within a few seconds, with no "couldn't be played" message. (Each person may have 6 audio requests running at once; abandoned ones should free their place straight away.)
 - [ ] **The mini player.** It shows on every screen while a book is open; tapping it opens the full player, and play/pause works from it.
-- [ ] **Playback report.** Settings → About → *What will be sent* lists recent pauses and plays with times and places, and no book title. *Send a playback report*, then find it in Admin → Overview under *Reports from browsers*, labelled Playback.
+- [ ] **Playback report.** Settings → About → *What will be sent* lists recent pauses and plays with times and places, and no book title. *Send a playback report*, then find it in Admin → Overview under *Playback reports*, with your username.
 - [ ] **Speed.** Change speed in the player; it stays for that book after closing and reopening the app.
 - [ ] **Data saver.** Settings → Playback → *Data saver*. Playback continues, and seeking anywhere in a long book starts within a second or two.
 

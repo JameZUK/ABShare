@@ -93,10 +93,12 @@ export interface ServerSettings {
 	};
 }
 
-/** A start-up report from a browser left with a blank page (static/diag.js). */
+/** A playback report a listener sent from Settings → About (SPEC D38). */
 export interface DiagReport {
 	at: number;
 	addr: string;
+	/** Who sent it. */
+	user: string;
 	lines: string[];
 }
 

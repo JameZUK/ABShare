@@ -3,9 +3,10 @@
 // call), they can send what happened to the admins: Settings → About → Send a playback report.
 // It holds times, positions in the book and what the player saw; never which book. It goes
 // nowhere unless the listener sends it, and it is cleared at sign-out.
+import { post } from '$lib/api/session.svelte';
 
 const KEY = 'abshare.playbackLog';
-/** Lines kept: a report is at most 40 lines (the start-up report route), two of them headings. */
+/** Lines kept: a report is at most 40 lines (POST /v1/diag), two of them headings. */
 export const KEEP = 38;
 
 let lines: string[] | null = null;
@@ -56,12 +57,12 @@ export function forgetLog() {
 	}
 }
 
-/** Sends the log to the admins through the start-up report route (POST /v1/diag). */
+/** Sends the log to the admins (POST /v1/diag), as the signed-in listener. */
 export async function sendReport(): Promise<boolean> {
 	const body = { lines: ['Playback report (sent from Settings → About)', `Browser: ${navigator.userAgent}`, ...load()] };
 	try {
-		const r = await fetch('v1/diag', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-abshare-client': '1' }, body: JSON.stringify(body) });
-		return r.ok;
+		await post('v1/diag', body);
+		return true;
 	} catch {
 		return false;
 	}

@@ -45,7 +45,7 @@
 		<p>
 			<button class="btn" onclick={send} disabled={sent === 'sending' || sent === 'sent'}>{sent === 'sent' ? 'Report sent' : 'Send a playback report'}</button>
 		</p>
-		{#if sent === 'sent'}<p class="muted" role="status">Sent. Your admin can read it in Admin → Overview.</p>{/if}
+		{#if sent === 'sent'}<p class="muted" role="status">Sent. Your admin can read it in Admin → Overview, under Playback reports.</p>{/if}
 		{#if sent === 'failed'}<p class="muted" role="status">That didn’t send. Check you’re online and try again in a minute.</p>{/if}
 	{:else}
 		<p class="muted">Nothing to report yet: play a book first.</p>

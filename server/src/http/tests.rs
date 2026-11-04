@@ -2201,11 +2201,13 @@ async fn a_flood_of_failed_sign_ins_cannot_roll_the_audit_log() {
     assert_eq!(real, 1, "real security events are always written");
 }
 
-/// A start-up report from `client`, as the reverse proxy would forward it.
-async fn diag_from(t: &T, client: &str, body: Value) -> Response {
+/// A playback report from `client`, signed in with `access`, as the reverse proxy would
+/// forward it.
+async fn diag_from(t: &T, client: &str, access: &str, body: Value) -> Response {
     let mut r = req("POST", "/v1/diag", Some(json!({})))
         .header("x-forwarded-proto", "https")
         .header("x-forwarded-for", client)
+        .header("authorization", format!("Bearer {access}"))
         .body(Body::from(body.to_string()))
         .expect("req");
     r.extensions_mut().insert(Peer(SocketAddr::from(([10, 0, 0, 10], 4000))));
@@ -2213,10 +2215,12 @@ async fn diag_from(t: &T, client: &str, body: Value) -> Response {
 }
 
 #[tokio::test]
-async fn start_up_reports_are_kept_cleaned_and_shown_only_to_admins() {
+async fn playback_reports_are_kept_cleaned_with_who_sent_them_and_shown_only_to_admins() {
     let t = setup();
+    let (_, listener_access, ..) = enrol(&t, "lis").await;
     let long = "x".repeat(1000);
-    let r = diag_from(&t, "203.0.113.9", json!({"lines": ["Browser: test\u{202e}\u{0007}", long]})).await;
+    let r =
+        diag_from(&t, "203.0.113.9", &listener_access, json!({"lines": ["Browser: test\u{202e}\u{0007}", long]})).await;
     assert_eq!(r.status(), StatusCode::NO_CONTENT);
     let (_, admin_access, ..) = enrol_role(&t, "adm", Role::Admin).await;
     let r = as_user(&t, "GET", "/v1/admin/diagnostics", None, &admin_access).await;
@@ -2224,11 +2228,11 @@ async fn start_up_reports_are_kept_cleaned_and_shown_only_to_admins() {
     let v = json_of(r).await;
     let report = &v["reports"][0];
     assert_eq!(report["addr"], "203.0.113.9");
+    assert_eq!(report["user"], "lis", "admins see whose report it is");
     // Control and bidi characters removed; lines capped.
     assert_eq!(report["lines"][0], "Browser: test");
     assert!(report["lines"][1].as_str().expect("line").chars().count() <= 300);
     // Listeners and strangers can't read them.
-    let (_, listener_access, ..) = enrol(&t, "lis").await;
     assert_eq!(
         as_user(&t, "GET", "/v1/admin/diagnostics", None, &listener_access).await.status(),
         StatusCode::FORBIDDEN
@@ -2237,15 +2241,29 @@ async fn start_up_reports_are_kept_cleaned_and_shown_only_to_admins() {
 }
 
 #[tokio::test]
-async fn start_up_reports_refuse_other_sites_and_bad_bodies() {
+async fn playback_reports_need_a_signed_in_listener_and_the_app() {
     let t = setup();
-    // Same-origin only: the app's header and the exact Origin.
+    let (_, access, ..) = enrol(&t, "lis").await;
+    // Nobody signed in, or a made-up token: refused, and nothing kept. (Anonymous start-up
+    // reports were accepted here until 2026-11-04.)
+    let r = call(
+        &t.app,
+        req("POST", "/v1/diag", Some(json!({}))).body(Body::from(json!({"lines": ["x"]}).to_string())).expect("req"),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        diag_from(&t, "203.0.113.1", "not-a-token", json!({"lines": ["x"]})).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    // Same-origin only: the app's header and the exact Origin, even with a token.
     for (hdr, origin) in [(None, Some(ORIGIN)), (Some("1"), None), (Some("1"), Some("https://evil.example"))] {
         let mut b = Request::builder()
             .method("POST")
             .uri("/v1/diag")
             .header("host", HOST)
-            .header("content-type", "application/json");
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {access}"));
         if let Some(h) = hdr {
             b = b.header("x-abshare-client", h);
         }
@@ -2257,45 +2275,50 @@ async fn start_up_reports_refuse_other_sites_and_bad_bodies() {
     }
     // Strict schema and size.
     assert_eq!(
-        diag_from(&t, "203.0.113.1", json!({"lines": ["x"], "extra": 1})).await.status(),
+        diag_from(&t, "203.0.113.1", &access, json!({"lines": ["x"], "extra": 1})).await.status(),
         StatusCode::UNPROCESSABLE_ENTITY
     );
-    assert_eq!(diag_from(&t, "203.0.113.2", json!({"lines": []})).await.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(diag_from(&t, "203.0.113.2", &access, json!({"lines": []})).await.status(), StatusCode::BAD_REQUEST);
     let many: Vec<String> = (0..41).map(|i| i.to_string()).collect();
-    assert_eq!(diag_from(&t, "203.0.113.3", json!({"lines": many})).await.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(diag_from(&t, "203.0.113.3", &access, json!({"lines": many})).await.status(), StatusCode::BAD_REQUEST);
     let huge = "y".repeat(20 * 1024);
-    assert_eq!(diag_from(&t, "203.0.113.4", json!({"lines": [huge]})).await.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(
+        diag_from(&t, "203.0.113.4", &access, json!({"lines": [huge]})).await.status(),
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
     assert!(super::diag_routes::recent(&t.st).is_empty());
 }
 
 #[tokio::test]
-async fn start_up_reports_are_rate_limited_and_only_the_newest_kept() {
+async fn playback_reports_are_limited_per_person_and_only_the_newest_kept() {
     let t = setup();
+    let (_, a, ..) = enrol(&t, "ana").await;
     for i in 0..super::diag_routes::PER_MINUTE {
         assert_eq!(
-            diag_from(&t, "203.0.113.5", json!({"lines": [format!("r{i}")]})).await.status(),
+            diag_from(&t, "203.0.113.5", &a, json!({"lines": [format!("r{i}")]})).await.status(),
             StatusCode::NO_CONTENT
         );
     }
+    // Changing address doesn't help: the limit is the person's.
     assert_eq!(
-        diag_from(&t, "203.0.113.5", json!({"lines": ["one too many"]})).await.status(),
+        diag_from(&t, "198.51.100.77", &a, json!({"lines": ["one too many"]})).await.status(),
         StatusCode::TOO_MANY_REQUESTS
     );
-    // Rotating through one IPv6 /64 doesn't help.
-    for i in 0..super::diag_routes::PER_MINUTE {
-        diag_from(&t, &format!("2001:db8:1:2::{i:x}"), json!({"lines": ["v6"]})).await;
-    }
-    assert_eq!(
-        diag_from(&t, "2001:db8:1:2::ff", json!({"lines": ["v6"]})).await.status(),
-        StatusCode::TOO_MANY_REQUESTS
-    );
+    // Someone else, from the same address, isn't held up by it.
+    let (_, b, ..) = enrol(&t, "ben").await;
+    assert_eq!(diag_from(&t, "203.0.113.5", &b, json!({"lines": ["mine"]})).await.status(), StatusCode::NO_CONTENT);
     // Memory only, and bounded: the newest MAX_REPORTS.
-    for i in 0..60 {
-        diag_from(&t, &format!("198.51.100.{i}"), json!({"lines": [format!("n{i}")]})).await;
+    let mut last = String::new();
+    for p in 0..10 {
+        let (_, access, ..) = enrol(&t, &format!("person{p}")).await;
+        for i in 0..super::diag_routes::PER_MINUTE {
+            last = format!("p{p} r{i}");
+            diag_from(&t, "203.0.113.6", &access, json!({"lines": [last.clone()]})).await;
+        }
     }
     let kept = super::diag_routes::recent(&t.st);
     assert_eq!(kept.len(), super::diag_routes::MAX_REPORTS);
-    assert_eq!(kept[0].lines[0], "n59");
+    assert_eq!(kept[0].lines[0], last);
 }
 
 /// Signs `username` in on another device with the password and a fresh code: (access, refresh).

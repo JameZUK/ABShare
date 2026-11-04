@@ -26,22 +26,14 @@ the app loads nothing from other websites.
   device, not your position), and when an account reaches the daily limit of different books,
   so admins can see if an account is being used to copy the library. Playing a book isn't
   recorded there.
-- **Start-up reports:** if the app is left showing a blank page after being on screen for 8
-  seconds (or the address has `?diag`), the browser sends a short text report: the error,
-  browser user agent, screen size, colours, whether cookies are allowed and whether the page
-  was visible, with the IP address it came from. If the app is still connecting after 30
-  seconds, a shorter one says so: the user agent and whether the browser counts itself
-  online. Both include the connection type, speed estimate and data-saver setting where the
-  browser reports them (Chrome on Android does; Safari and Firefox don't). Reports are
-  kept in memory only (the newest 50, gone when the server restarts) and written to the
-  server log. No account is involved.
 - **Playback reports:** the player keeps a log of its last 38 events in your browser (when
   it paused or played and why, stalls, errors, the app going into the background, and a line
   every 5 minutes while playing), with times and places in the book but not which book. It
   leaves your device only if you tap *Send a playback report* in Settings → About, which
-  shows exactly what will be sent; it then goes the way of a start-up report (with your
-  browser's user agent and IP address, kept in memory and written to the server log). The
-  log is cleared when you sign out.
+  shows exactly what will be sent. The report goes with your username, your browser's user
+  agent and your IP address, is kept in memory only (the newest 50, gone when the server
+  restarts) and is written to the server log. The log on your device is cleared when you
+  sign out.
 
 Admins can see the account list, devices, permissions and the audit log. They can also see
 each person's listening: time heard (last 7 and 30 days and in all), when they last listened,

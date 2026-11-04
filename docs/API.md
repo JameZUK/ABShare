@@ -22,8 +22,8 @@ Examples use `https://books.example.com` as the public origin, `10.0.0.10` as th
 | `/v1/me/…` | Your profile, devices, sign-in methods and listening history | bearer (step-up for changes to sign-in methods) |
 | `/v1/libraries`, `/v1/books…`, `/v1/genres`, `/v1/groups…`, `/v1/home`, `/v1/progress…`, `/v1/bookmarks/…`, `/v1/recommendations/…` | Browsing, progress, bookmarks, reviews and recommendations | bearer |
 | `GET /v1/media/…` | Audio, the preparation state, saved files and covers | media cookie or bearer |
-| `/v1/admin/…` | Users, invites, audit log, library, status, book corrections, recommendations, reviews, listening, start-up reports | bearer, admin role, step-up for changes |
-| `POST /v1/diag` | A start-up report from a blank page | none; CSRF check; rate-limited |
+| `/v1/admin/…` | Users, invites, audit log, library, status, book corrections, recommendations, reviews, listening, playback reports | bearer, admin role, step-up for changes |
+| `POST /v1/diag` | A playback report from Settings → About | bearer; CSRF check; rate-limited |
 | `GET /healthz` | Liveness | none |
 | anything else | The built web app (static files) | none |
 
@@ -1090,20 +1090,20 @@ This is the only place the version is shown.
 
 #### `GET /v1/admin/diagnostics`
 
-- **Response:** `{"reports": [{"at", "addr", "lines": [...]}]}`, newest first: the start-up and playback reports below, at most 50, kept in memory only.
+- **Response:** `{"reports": [{"at", "addr", "user", "lines": [...]}]}`, newest first: the playback reports below, with the username of whoever sent each, at most 50, kept in memory only.
 - **Errors:** `401`; `403` for non-admins.
 
-### Start-up reports
+### Playback reports
 
 #### `POST /v1/diag`
 
-Sent by `static/diag.js` when the app is left showing a blank page after being on screen for 8 seconds, or when the address has `?diag`. A page in the background isn't judged until it has been on screen, and a fade still running is waited for. If the app is still connecting after 30 seconds (its start screen, or the app open with the Connecting banner), a short report starting "ABShare still connecting" is sent instead, without covering the screen. One report per page. **Playback reports** (SPEC D38) use the same route: the app sends them when the listener taps *Send a playback report* in Settings → About, with "Playback report" as the first line, the user agent, and up to 38 lines of the player's log. Anonymous (nobody can be signed in when the app didn't start), so it is kept narrow:
+Sent when a listener taps *Send a playback report* in Settings → About (SPEC D38): "Playback report" as the first line, the user agent, and up to 38 lines of the player's log. (Until 2026-11-04 this route also took anonymous start-up reports from a page left blank; they were removed with the page.)
 
-- **Auth:** none, but the CSRF check applies: `X-ABShare-Client: 1` and the exact `Origin`, so only the app's own pages can send one (`403 csrf` otherwise).
+- **Auth:** bearer (a signed-in listener; `401` otherwise), and the CSRF check: `X-ABShare-Client: 1` and the exact `Origin` (`403 csrf` otherwise).
 - **Body:** `{"lines": ["…"]}`, 1 to 40 lines. Each line is cleaned (control, bidi and invisible characters removed) and capped at 300 characters. Bodies over 16 KiB get `413`.
-- **Limits:** 5 a minute per address (IPv6 by /64; `429` beyond). Reports are kept in memory only, the newest 50, and also written to the server log as one JSON-escaped line.
+- **Limits:** 5 a minute per person (`429` beyond). Reports are kept in memory only, the newest 50, with who sent each and the address, and also written to the server log as one JSON-escaped line.
 - **Response:** `204`.
-- **Errors:** `400` (no lines, or more than 40), `403`, `413`, `422` (unknown fields), `429`.
+- **Errors:** `400` (no lines, or more than 40), `401`, `403`, `413`, `422` (unknown fields), `429`.
 
 ## 7. Health and the web app
 
