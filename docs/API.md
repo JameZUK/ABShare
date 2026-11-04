@@ -1090,14 +1090,14 @@ This is the only place the version is shown.
 
 #### `GET /v1/admin/diagnostics`
 
-- **Response:** `{"reports": [{"at", "addr", "lines": [...]}]}`, newest first: the start-up reports below, at most 50, kept in memory only.
+- **Response:** `{"reports": [{"at", "addr", "lines": [...]}]}`, newest first: the start-up and playback reports below, at most 50, kept in memory only.
 - **Errors:** `401`; `403` for non-admins.
 
 ### Start-up reports
 
 #### `POST /v1/diag`
 
-Sent by `static/diag.js` when the app is left showing a blank page after being on screen for 8 seconds, or when the address has `?diag`. A page in the background isn't judged until it has been on screen, and a fade still running is waited for. If the app is still connecting after 30 seconds (its start screen, or the app open with the Connecting banner), a short report starting "ABShare still connecting" is sent instead, without covering the screen. One report per page. Anonymous (nobody can be signed in when the app didn't start), so it is kept narrow:
+Sent by `static/diag.js` when the app is left showing a blank page after being on screen for 8 seconds, or when the address has `?diag`. A page in the background isn't judged until it has been on screen, and a fade still running is waited for. If the app is still connecting after 30 seconds (its start screen, or the app open with the Connecting banner), a short report starting "ABShare still connecting" is sent instead, without covering the screen. One report per page. **Playback reports** (SPEC D38) use the same route: the app sends them when the listener taps *Send a playback report* in Settings → About, with "Playback report" as the first line, the user agent, and up to 38 lines of the player's log. Anonymous (nobody can be signed in when the app didn't start), so it is kept narrow:
 
 - **Auth:** none, but the CSRF check applies: `X-ABShare-Client: 1` and the exact `Origin`, so only the app's own pages can send one (`403 csrf` otherwise).
 - **Body:** `{"lines": ["…"]}`, 1 to 40 lines. Each line is cleaned (control, bidi and invisible characters removed) and capped at 300 characters. Bodies over 16 KiB get `413`.

@@ -32,6 +32,10 @@ test('saved settings are checked; anything odd falls back to defaults', () => {
 	expect(sanitise({ saverKbps: 40, quality: 'saver', speed: 1.5 })).toMatchObject({ saverKbps: 40, quality: 'saver', speed: 1.5 });
 	expect(sanitise({ saverKbps: 64, quality: 'turbo', speed: 99, skipBack: '15', autoRewind: 'yes' })).toEqual(DEFAULTS);
 	expect(DEFAULTS.saverKbps, 'data saver defaults to 48 kb/s (D23)').toBe(48);
+	expect(sanitise({ resumeAfterCall: false, resumeDelay: 10 })).toMatchObject({ resumeAfterCall: false, resumeDelay: 10 });
+	expect(sanitise({ resumeAfterCall: 'no', resumeDelay: 7 })).toEqual(DEFAULTS);
+	expect(sanitise({ resumeDelay: -1 }).resumeDelay).toBe(0);
+	expect(DEFAULTS, 'carrying on after a call is on, with no wait, as browsers do by themselves (D38)').toMatchObject({ resumeAfterCall: true, resumeDelay: 0 });
 });
 
 test('the service worker never touches the API, streams, covers or other origins', () => {

@@ -22,6 +22,8 @@ Everything ABShare does today, by area. Only built and tested features are liste
 | Speed | 0.75× to 3× (0.75, 0.9, 1, 1.1, 1.2, 1.3, 1.5, 1.75, 2, 2.5, 3), with the pitch kept. Remembered for each book, with a default of your choosing. |
 | Sleep timer | 5, 10, 15, 30, 45 or 60 minutes, or the end of the chapter. Fades out over the last 10 seconds. Works in the background. |
 | Auto-rewind | After a pause, playback steps back a little: nothing under a minute, 2 seconds under 10 minutes, 5 seconds under an hour, 10 seconds after that. |
+| Calls | When your phone pauses the book for a call, it carries on when the call ends: straight away, after a wait of 3 to 60 seconds, or not at all (Settings → Playback). A pause you made is never undone. It follows the browser, which has to pause for the call: ABShare can't see calls itself. |
+| Playback report | Settings → About shows the player's recent events (pauses, plays, stalls, the app going into the background) and can send them to your admin, to find out why a book stopped or played through a call. Times and places in the book, never which book. |
 | Bookmarks | Add a bookmark at the current position from the player, see a book's bookmarks and jump to them, add or edit a note on each, and delete them. |
 | Lock screen and headsets | Title, chapter, author and cover on the lock screen; play, pause, skip, seek, and previous and next chapter from the lock screen, headsets and car controls (Media Session). AirPlay through Safari's own controls. |
 | Mark finished | Books are marked finished near the end automatically. You can also mark a book finished or unfinished, or start it again. |

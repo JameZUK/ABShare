@@ -35,6 +35,13 @@ the app loads nothing from other websites.
   browser reports them (Chrome on Android does; Safari and Firefox don't). Reports are
   kept in memory only (the newest 50, gone when the server restarts) and written to the
   server log. No account is involved.
+- **Playback reports:** the player keeps a log of its last 38 events in your browser (when
+  it paused or played and why, stalls, errors, the app going into the background, and a line
+  every 5 minutes while playing), with times and places in the book but not which book. It
+  leaves your device only if you tap *Send a playback report* in Settings → About, which
+  shows exactly what will be sent; it then goes the way of a start-up report (with your
+  browser's user agent and IP address, kept in memory and written to the server log). The
+  log is cleared when you sign out.
 
 Admins can see the account list, devices, permissions and the audit log. They can also see
 each person's listening: time heard (last 7 and 30 days and in all), when they last listened,

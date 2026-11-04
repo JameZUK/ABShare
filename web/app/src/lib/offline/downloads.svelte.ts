@@ -3,6 +3,7 @@
 // while the app is open (no browser lets a web app download in the background).
 import { session } from '$lib/api/session.svelte';
 import type { BookDetail } from '$lib/api/types';
+import { forgetLog } from '$lib/player/log';
 import { streamUrl } from '$lib/player/rules';
 import { all, dropDb, get, PIECE, reqP, tx, type Download, type Quality } from './db';
 import { closeUserDb, userDb } from './userdb';
@@ -48,6 +49,7 @@ function pendingWipe(user: string, on: boolean) {
 function forgetPerson(user: string) {
 	settings.forgetSpeeds(user);
 	forgetAsked(user);
+	forgetLog();
 }
 
 class Downloads {

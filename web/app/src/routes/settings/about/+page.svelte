@@ -3,8 +3,16 @@
 	import { bytes } from '$lib/format';
 	import { downloads } from '$lib/offline/downloads.svelte';
 	import Icon from '$lib/components/Icon.svelte';
+	import { playbackLog, sendReport } from '$lib/player/log';
 
 	$effect(() => void downloads.refreshStorage());
+
+	const log = playbackLog();
+	let sent = $state<'idle' | 'sending' | 'sent' | 'failed'>('idle');
+	async function send() {
+		sent = 'sending';
+		sent = (await sendReport()) ? 'sent' : 'failed';
+	}
 </script>
 
 <main class="page narrow">
@@ -27,6 +35,21 @@
 	{:else}
 		<p class="muted">This browser doesn’t report storage.</p>
 	{/if}
+	<h2>Playback report</h2>
+	<p>If the book stops by itself in the background, or keeps playing through calls, send your admin a report of what the player saw: times, places in the book and what happened. It doesn’t say which book.</p>
+	{#if log.length}
+		<details>
+			<summary>What will be sent ({log.length} lines)</summary>
+			<pre class="log">{log.join('\n')}</pre>
+		</details>
+		<p>
+			<button class="btn" onclick={send} disabled={sent === 'sending' || sent === 'sent'}>{sent === 'sent' ? 'Report sent' : 'Send a playback report'}</button>
+		</p>
+		{#if sent === 'sent'}<p class="muted" role="status">Sent. Your admin can read it in Admin → Overview.</p>{/if}
+		{#if sent === 'failed'}<p class="muted" role="status">That didn’t send. Check you’re online and try again in a minute.</p>{/if}
+	{:else}
+		<p class="muted">Nothing to report yet: play a book first.</p>
+	{/if}
 </main>
 
 <style>
@@ -36,6 +59,13 @@
 	.lede {
 		font-size: 1.2rem;
 		font-style: italic;
+	}
+	.log {
+		font-size: 0.8rem;
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+		max-height: 20rem;
+		overflow-y: auto;
 	}
 	h2 {
 		margin-top: 2rem;

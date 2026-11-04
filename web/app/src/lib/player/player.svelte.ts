@@ -6,7 +6,8 @@ import { downloads } from '$lib/offline/downloads.svelte';
 import { sync } from '$lib/offline/sync.svelte';
 import { settings, type SaverKbps } from '$lib/settings.svelte';
 import { chapterAt, nextTarget, previousTarget } from './chapters';
-import { autoRewindMs, chooseQuality, clampStart, fadeVolume, streamUrl } from './rules';
+import { logEvent, place } from './log';
+import { afterBrowserPlay, ASKED_MS, autoRewindMs, chooseQuality, clampStart, fadeVolume, pauseCause, streamUrl } from './rules';
 import { swContainer } from '$lib/pwa/update.svelte';
 
 export type Source = 'original' | SaverKbps | 'device';
@@ -14,6 +15,9 @@ export type Sleep = { kind: 'off' } | { kind: 'time'; remainingMs: number } | { 
 
 const LAST_BOOK = 'abshare.lastBook';
 const REPORT_EVERY_MS = 15_000;
+/** While playing, a line in the playback log this often, so a report shows when sound stopped. */
+const LOG_EVERY_MS = 5 * 60_000;
+export const PAUSED_BY_PHONE = 'Paused by your phone, for a call or another app.';
 export const LIMITED = 'You’ve played or downloaded the most different books for one day. Books you’ve already started today still play; this one will tomorrow.';
 
 function remember(id: string | null) {
@@ -72,6 +76,19 @@ class Player {
 	#retried = 0;
 	#coverUrl: string | null = null;
 	#prepareTimer: ReturnType<typeof setTimeout> | undefined;
+	// Calls (SPEC D38). The browser pauses the book for a call and starts it again afterwards,
+	// straight to the element, so the app tells its own pauses and plays from the browser's by
+	// when it asked. The listener's choice always wins over the browser's.
+	#askedPause = 0;
+	#askedPlay = 0;
+	/** What the listener (or the sleep timer, or the end of the book) last left the player doing. */
+	#wanted: 'play' | 'pause' = 'pause';
+	/** The browser paused the book by itself and hasn't started it again. */
+	#interrupted = false;
+	/** The app has just paused the browser's restart: stay paused, or carry on after a wait. */
+	#holding: { kind: 'stay'; call: boolean } | { kind: 'later'; ms: number } | null = null;
+	#resumeTimer: ReturnType<typeof setTimeout> | undefined;
+	#lastLog = 0;
 
 	get chapter(): number {
 		return this.book ? chapterAt(this.book.chapters, this.position) : -1;
@@ -94,18 +111,21 @@ class Player {
 			this.#retried = 0;
 		});
 		a.addEventListener('timeupdate', () => this.#tick());
+		a.addEventListener('play', () => this.#onPlay());
 		a.addEventListener('playing', () => {
+			// The app may already have paused a play the browser started (#onPlay).
+			if (a.paused) return;
 			this.playing = true;
 			this.buffering = false;
 			this.notice = null;
 			this.#lastTick = performance.now();
 		});
-		a.addEventListener('pause', () => {
-			this.playing = false;
-			this.#pausedAt = Date.now();
-			this.#report(true);
+		a.addEventListener('pause', () => this.#onPause());
+		a.addEventListener('waiting', () => {
+			this.buffering = true;
+			logEvent(`waiting for audio @ ${place(this.position)}`);
 		});
-		a.addEventListener('waiting', () => (this.buffering = true));
+		a.addEventListener('stalled', () => logEvent(`stalled @ ${place(this.position)}`));
 		a.addEventListener('seeked', () => {
 			this.buffering = false;
 			this.position = a.currentTime * 1000;
@@ -113,18 +133,31 @@ class Player {
 		});
 		a.addEventListener('ended', () => {
 			this.playing = false;
+			this.#wanted = 'pause';
+			logEvent('the book ended');
 			if (this.book) {
 				void sync.record(this.book.id, 'finished');
 				this.finishedNow = { id: this.book.id, title: this.book.title, cover: this.book.cover };
 			}
 			this.#clearSleep();
 		});
-		a.addEventListener('error', () => void this.#onError());
+		a.addEventListener('error', () => {
+			logEvent(`error ${a.error?.code ?? '?'} @ ${place(this.position)}`);
+			void this.#onError();
+		});
 		document.addEventListener('visibilitychange', () => {
+			logEvent(document.visibilityState === 'hidden' ? 'app hidden' : 'app shown');
 			if (document.visibilityState === 'hidden') this.#report(true);
 			else void this.checkElsewhere();
 		});
 		addEventListener('pagehide', () => this.#report(true));
+		// Chrome freezes pages it thinks are idle, and may discard them; a report then shows a
+		// gap, or "app opened" again with no "app hidden" before it.
+		document.addEventListener('freeze', () => logEvent('frozen by the browser'));
+		document.addEventListener('resume', () => logEvent('unfrozen'));
+		addEventListener('online', () => logEvent('online'));
+		addEventListener('offline', () => logEvent('offline'));
+		logEvent(`app opened (${document.visibilityState})`);
 		this.#mediaSession();
 	}
 
@@ -183,6 +216,7 @@ class Player {
 			src = streamUrl(book.id, q);
 		}
 		this.#pendingSeek = at;
+		logEvent(`load ${this.source === 'device' ? 'downloaded copy' : this.source === 'original' ? 'original' : `data saver ${this.source} kb/s`} @ ${place(at)}`);
 		a.src = src;
 		a.playbackRate = this.speed;
 		a.preservesPitch = true;
@@ -212,6 +246,9 @@ class Player {
 	async play() {
 		const a = this.#audio;
 		if (!a || !this.book || this.preparing) return;
+		this.#wanted = 'play';
+		this.#endInterruption();
+		a.muted = false;
 		if (!a.src) await this.#load(this.position, false);
 		if (settings.prefs.autoRewind && this.#pausedAt && a.readyState > 0) {
 			const back = autoRewindMs(Date.now() - this.#pausedAt);
@@ -225,16 +262,99 @@ class Player {
 			this.book = { ...b, progress: { ...b.progress, finished: false, position_ms: 0 } };
 		}
 		try {
+			if (a.paused) this.#askedPlay = performance.now();
 			await a.play();
 			this.notice = null;
 		} catch (e) {
+			this.#askedPlay = 0;
 			if (e instanceof DOMException && e.name === 'NotAllowedError') this.notice = 'Tap play to start listening.';
-			else if (e instanceof DOMException && e.name === 'AbortError' && this.#retried++ < 1) await this.play();
+			// Interrupted by a new load: try once more. Not when the browser paused it for a call
+			// (#onPause runs before the rejection): that waits for the call to end.
+			else if (e instanceof DOMException && e.name === 'AbortError' && !this.#interrupted && this.#retried++ < 1) await this.play();
 		}
 	}
 
 	pause() {
-		this.#audio?.pause();
+		this.#wanted = 'pause';
+		this.#endInterruption();
+		this.#pauseAudio();
+	}
+
+	/** Pauses the element, marked as the app's own pause. */
+	#pauseAudio() {
+		const a = this.#audio;
+		if (!a) return;
+		if (!a.paused) this.#askedPause = performance.now();
+		a.pause();
+	}
+
+	/** Forgets a call in progress and any wait to carry on after one. */
+	#endInterruption() {
+		clearTimeout(this.#resumeTimer);
+		this.#interrupted = false;
+		this.#holding = null;
+		if (this.notice === PAUSED_BY_PHONE || this.notice?.startsWith('Carrying on')) this.notice = null;
+	}
+
+	#onPause() {
+		const a = this.#audio!;
+		this.playing = false;
+		const cause = pauseCause({ askedAt: this.#askedPause, now: performance.now(), ended: a.ended, failed: a.error !== null });
+		this.#askedPause = 0;
+		const hold = this.#holding;
+		if (hold && cause === 'asked') {
+			// The app paused the browser's restart after a call (#onPlay). The pause time stays the
+			// call's, so rewinding after a long call still works.
+			a.muted = false;
+			if (hold.kind === 'later') {
+				const secs = Math.round(hold.ms / 1000);
+				this.notice = `Carrying on in ${secs} second${secs === 1 ? '' : 's'}.`;
+				this.#resumeTimer = setTimeout(() => {
+					logEvent('carrying on after the wait');
+					void this.play();
+				}, hold.ms);
+			} else {
+				this.#holding = null;
+				if (hold.call) this.notice = PAUSED_BY_PHONE;
+			}
+			return;
+		}
+		logEvent(`pause (${cause === 'asked' ? 'app' : cause === 'browser' ? 'by the browser' : cause}) @ ${place(a.currentTime * 1000)}`);
+		if (cause === 'browser' && this.#wanted === 'play') {
+			this.#interrupted = true;
+			this.notice = PAUSED_BY_PHONE;
+		}
+		this.#pausedAt = Date.now();
+		this.#report(true);
+	}
+
+	/** The element started playing. When the browser started it by itself (after a call, or after
+	 *  the listener paused), do what the listener chose. */
+	#onPlay() {
+		const a = this.#audio!;
+		const asked = this.#askedPlay > 0 && performance.now() - this.#askedPlay < ASKED_MS;
+		this.#askedPlay = 0;
+		logEvent(`play (${asked ? 'app' : 'by the browser'}) @ ${place(a.currentTime * 1000)}`);
+		if (asked) return;
+		const next = afterBrowserPlay({ interrupted: this.#interrupted, wanted: this.#wanted, resume: settings.prefs.resumeAfterCall, delayS: settings.prefs.resumeDelay });
+		const afterCall = this.#interrupted;
+		this.#interrupted = false;
+		if (next.kind === 'go') {
+			if (!afterCall) return;
+			logEvent('carrying on after a call');
+			if (settings.prefs.autoRewind && this.#pausedAt) {
+				const back = autoRewindMs(Date.now() - this.#pausedAt);
+				if (back > 0) a.currentTime = Math.max(0, a.currentTime - back / 1000);
+			}
+			this.#pausedAt = 0;
+			this.notice = null;
+			return;
+		}
+		logEvent(next.kind === 'stay' ? (afterCall ? 'staying paused after a call, as chosen' : 'staying paused, as the listener left it') : `waiting ${next.ms / 1000} s before carrying on`);
+		// Muted first, so nothing is heard before the pause takes effect.
+		this.#holding = next.kind === 'stay' ? { kind: 'stay', call: afterCall } : next;
+		a.muted = true;
+		this.#pauseAudio();
 	}
 
 	toggle() {
@@ -301,8 +421,10 @@ class Player {
 	close() {
 		const a = this.#audio;
 		this.#report(true);
+		this.#wanted = 'pause';
+		this.#endInterruption();
 		if (a) {
-			a.pause();
+			this.#pauseAudio();
 			a.removeAttribute('src');
 			a.load();
 		}
@@ -340,7 +462,9 @@ class Player {
 			const remainingMs = s.remainingMs - delta;
 			a.volume = fadeVolume(remainingMs);
 			if (remainingMs <= 0) {
-				a.pause();
+				this.#wanted = 'pause';
+				this.#pauseAudio();
+				logEvent('sleep timer ended');
 				this.#clearSleep();
 			} else this.sleep = { kind: 'time', remainingMs };
 		} else if (!a.paused && s.kind === 'chapter' && this.book) {
@@ -348,11 +472,17 @@ class Player {
 			const end = i >= 0 && i + 1 < this.book.chapters.length ? this.book.chapters[i + 1]!.start_ms : this.duration;
 			a.volume = fadeVolume(end - this.position);
 			if (this.position >= end - 250) {
-				a.pause();
+				this.#wanted = 'pause';
+				this.#pauseAudio();
+				logEvent('sleep timer ended (end of chapter)');
 				this.#clearSleep();
 			}
 		}
 		if (!a.paused && Date.now() - this.#lastReport > REPORT_EVERY_MS) this.#report(false);
+		if (!a.paused && Date.now() - this.#lastLog > LOG_EVERY_MS) {
+			this.#lastLog = Date.now();
+			logEvent(`playing @ ${place(this.position)}${document.visibilityState === 'hidden' ? ' (in the background)' : ''}`);
+		}
 		this.#positionState();
 	}
 

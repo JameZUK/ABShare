@@ -17,6 +17,28 @@ export function autoRewindMs(pausedMs: number): number {
 	return 10_000;
 }
 
+/** How long after the app pauses or plays the audio its event still counts as the app's. */
+export const ASKED_MS = 1_500;
+
+/** Why the audio paused: the app asked (the listener or the sleep timer), the book ended or
+ *  failed, or the browser paused it by itself, as it does for a phone call or another app's
+ *  sound (SPEC D38). */
+export function pauseCause(o: { askedAt: number; now: number; ended: boolean; failed: boolean }): 'asked' | 'ended' | 'failed' | 'browser' {
+	if (o.ended) return 'ended';
+	if (o.failed) return 'failed';
+	return o.askedAt > 0 && o.now - o.askedAt < ASKED_MS ? 'asked' : 'browser';
+}
+
+/** What to do when the browser starts the book again by itself. After its own pause (a call that
+ *  has ended): carry on, carry on after the chosen wait, or stay paused, as the listener chose.
+ *  After the listener's pause: stay paused, whatever the browser does. */
+export function afterBrowserPlay(o: { interrupted: boolean; wanted: 'play' | 'pause'; resume: boolean; delayS: number }): { kind: 'go' } | { kind: 'stay' } | { kind: 'later'; ms: number } {
+	if (o.wanted === 'pause') return { kind: 'stay' };
+	if (!o.interrupted) return { kind: 'go' };
+	if (!o.resume) return { kind: 'stay' };
+	return o.delayS > 0 ? { kind: 'later', ms: o.delayS * 1000 } : { kind: 'go' };
+}
+
 /** The volume during the sleep timer's last 10 s: 1 down to 0. */
 export function fadeVolume(remainingMs: number, fadeMs = 10_000): number {
 	if (remainingMs >= fadeMs) return 1;

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { KBPS, SKIPS, SPEEDS, settings, type QualityMode } from '$lib/settings.svelte';
+	import { KBPS, RESUME_DELAYS, SKIPS, SPEEDS, settings, type QualityMode } from '$lib/settings.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 
 	const p = $derived(settings.prefs);
@@ -59,6 +59,20 @@
 		<input type="checkbox" checked={p.autoRewind} onchange={(e) => settings.set({ autoRewind: e.currentTarget.checked })} />
 		<span><strong>Rewind a little after a pause</strong><br /><span class="muted">A few seconds after a long pause, so you don’t lose the thread.</span></span>
 	</label>
+
+	<h2 class="eyebrow section">Calls</h2>
+	<label class="choice toggle">
+		<input type="checkbox" checked={p.resumeAfterCall} onchange={(e) => settings.set({ resumeAfterCall: e.currentTarget.checked })} />
+		<span><strong>Carry on after a call</strong><br /><span class="muted">When your phone pauses the book for a call or another app’s sound, the book carries on when it ends. Off: it stays paused until you press play.</span></span>
+	</label>
+	<div class="grid">
+	<label class="field">Wait after the call
+		<select value={p.resumeDelay} disabled={!p.resumeAfterCall} onchange={(e) => settings.set({ resumeDelay: Number(e.currentTarget.value) })}>
+			{#each RESUME_DELAYS as d (d)}<option value={d}>{d === 0 ? 'No wait' : `${d} seconds`}</option>{/each}
+		</select>
+	</label>
+	</div>
+	<p class="muted note">ABShare can’t see calls itself: it follows your browser, which pauses the book for a call and says when the call is over. Most do; if yours doesn’t, the book plays on through calls. If that happens, Settings → About can send a playback report to your admin.</p>
 </main>
 
 <style>
@@ -108,6 +122,10 @@
 		border-top: 1px solid var(--line);
 		border-bottom: 1px solid var(--line);
 		margin-top: 0.5rem;
+	}
+	.note {
+		font-size: 0.875rem;
+		margin-top: 0.75rem;
 	}
 	.pointer {
 		font-size: 0.875rem;

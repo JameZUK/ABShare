@@ -1,6 +1,6 @@
 // Pure player rules: chapters, auto-rewind, the sleep fade, quality choice and resume.
 import { chapterAt, nextTarget, previousTarget, span } from '$lib/player/chapters';
-import { autoRewindMs, chooseQuality, clampStart, fadeVolume, streamUrl } from '$lib/player/rules';
+import { afterBrowserPlay, ASKED_MS, autoRewindMs, chooseQuality, clampStart, fadeVolume, pauseCause, streamUrl } from '$lib/player/rules';
 import type { Chapter } from '$lib/api/types';
 
 vi.mock('$lib/api/session.svelte', () => ({ session: { status: 'signed-out', user: null }, api: vi.fn() }));
@@ -86,4 +86,25 @@ test('a requested start position stays within the book, short of its end (review
 	expect(clampStart(NaN, D)).toBe(0);
 	expect(clampStart(Infinity, D)).toBe(0);
 	expect(clampStart(10_000, 0)).toBe(0);
+});
+
+test('a pause is the app’s only just after it asked; otherwise the browser paused it (a call)', () => {
+	const p = (askedAt: number, now: number, ended = false, failed = false) => pauseCause({ askedAt, now, ended, failed });
+	expect(p(1000, 1010)).toBe('asked');
+	expect(p(1000, 1000 + ASKED_MS - 1)).toBe('asked');
+	expect(p(1000, 1000 + ASKED_MS), 'an old request does not cover a later pause').toBe('browser');
+	expect(p(0, 5000), 'never asked').toBe('browser');
+	expect(p(0, 5000, true), 'the end of the book is not a call').toBe('ended');
+	expect(p(0, 5000, false, true), 'nor is a failure').toBe('failed');
+	expect(p(1000, 1010, true)).toBe('ended');
+});
+
+test('after a call the book carries on, waits or stays paused, as chosen; the listener’s pause always holds', () => {
+	const b = (interrupted: boolean, wanted: 'play' | 'pause', resume: boolean, delayS: number) => afterBrowserPlay({ interrupted, wanted, resume, delayS });
+	expect(b(true, 'play', true, 0)).toEqual({ kind: 'go' });
+	expect(b(true, 'play', true, 5)).toEqual({ kind: 'later', ms: 5000 });
+	expect(b(true, 'play', false, 5), 'carrying on switched off').toEqual({ kind: 'stay' });
+	expect(b(true, 'pause', true, 0), 'paused by the listener during the call').toEqual({ kind: 'stay' });
+	expect(b(false, 'pause', true, 0), 'a restart after the listener’s own pause').toEqual({ kind: 'stay' });
+	expect(b(false, 'play', false, 0), 'nothing to undo').toEqual({ kind: 'go' });
 });

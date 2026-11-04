@@ -13,12 +13,17 @@ export interface Prefs {
 	downloadQuality: 'original' | 'saver';
 	/** Hold downloads while the browser reports mobile data. */
 	wifiOnly: boolean;
+	/** Carry on after a call, when the browser paused the book for it (SPEC D38). */
+	resumeAfterCall: boolean;
+	/** Seconds to wait after the call before carrying on. */
+	resumeDelay: number;
 }
 
-export const DEFAULTS: Prefs = { skipBack: 15, skipForward: 30, speed: 1, autoRewind: true, quality: 'auto', saverKbps: 48, downloadQuality: 'original', wifiOnly: false };
+export const DEFAULTS: Prefs = { skipBack: 15, skipForward: 30, speed: 1, autoRewind: true, quality: 'auto', saverKbps: 48, downloadQuality: 'original', wifiOnly: false, resumeAfterCall: true, resumeDelay: 0 };
 export const SKIPS = [5, 10, 15, 30, 45, 60];
 export const SPEEDS = [0.75, 0.9, 1, 1.1, 1.2, 1.3, 1.5, 1.75, 2, 2.5, 3];
 export const KBPS: SaverKbps[] = [48, 40, 32];
+export const RESUME_DELAYS = [0, 3, 5, 10, 30, 60];
 
 const KEY = 'abshare.prefs';
 // Per person, so the next person on a shared device doesn't see which books were played
@@ -38,6 +43,8 @@ export function sanitise(v: unknown): Prefs {
 		saverKbps: pick(o.saverKbps, KBPS, DEFAULTS.saverKbps),
 		downloadQuality: pick(o.downloadQuality, ['original', 'saver'] as const, DEFAULTS.downloadQuality),
 		wifiOnly: typeof o.wifiOnly === 'boolean' ? o.wifiOnly : DEFAULTS.wifiOnly,
+		resumeAfterCall: typeof o.resumeAfterCall === 'boolean' ? o.resumeAfterCall : DEFAULTS.resumeAfterCall,
+		resumeDelay: pick(o.resumeDelay, RESUME_DELAYS, DEFAULTS.resumeDelay),
 	};
 }
 

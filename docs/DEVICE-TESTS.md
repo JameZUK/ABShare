@@ -16,7 +16,10 @@ Record the device, OS version and ABShare version (Settings → About) with the 
 - [ ] **Two hours locked.** Start a book, lock the phone and leave it. After 2 hours it is still playing, and the position has moved on by about 2 hours.
 - [ ] **Lock-screen controls.** The lock screen shows the cover, the book and chapter title, and play/pause. Skip back and forward move by your skip intervals (iOS may show previous and next chapter instead), and dragging the lock-screen position seeks.
 - [ ] **Headphones.** Pause and play from the headphones (or AirPods). Taking them out pauses playback.
-- [ ] **Interruptions.** A phone call or a Siri request pauses the book; afterwards it can be resumed from the lock screen.
+- [ ] **Interruptions.** A phone call or a Siri request pauses the book, and the player says "Paused by your phone". When the call ends the book carries on by itself (Settings → Playback → *Carry on after a call*, on by default).
+- [ ] **The wait after a call.** Set *Wait after the call* to 5 seconds. After a call, the player says "Carrying on in 5 seconds" and then carries on. With *Carry on after a call* off, it stays paused until you press play. (On iPhone, check the wait also works with the phone locked: the browser may not let a page start sound in the background.)
+- [ ] **Your pause holds.** Pause the book, then take a call. After the call it is still paused.
+- [ ] **Android.** Repeat the call checks on an Android phone in Chrome. If the book plays on through the call, or stops by itself in the background, send a playback report (Settings → About) and note the phone's make and model: Chrome doesn't tell the server. On phones that stop apps in the background (OnePlus, Xiaomi, Samsung and others), first set Chrome's battery use to *Unrestricted* in the phone's settings.
 - [ ] **Sleep timer.** Set 5 minutes, lock the phone. It fades out and stops after 5 minutes.
 
 ## 2. Two devices (Phase 3 gate)
@@ -38,6 +41,7 @@ Record the device, OS version and ABShare version (Settings → About) with the 
 - [ ] **The slider.** Drag the scrubber in the full player: the time label follows your finger, and playback jumps to where you let go. Small adjustments are possible with one thumb.
 - [ ] **Scrubbing fast doesn't trip the limit.** In data saver, drag the native scrubber back and forth quickly for a few seconds (Firefox on Android fires many seeks), then let go. Playback starts at the new place within a few seconds, with no "couldn't be played" message. (Each person may have 6 audio requests running at once; abandoned ones should free their place straight away.)
 - [ ] **The mini player.** It shows on every screen while a book is open; tapping it opens the full player, and play/pause works from it.
+- [ ] **Playback report.** Settings → About → *What will be sent* lists recent pauses and plays with times and places, and no book title. *Send a playback report*, then find it in Admin → Overview under *Reports from browsers*, labelled Playback.
 - [ ] **Speed.** Change speed in the player; it stays for that book after closing and reopening the app.
 - [ ] **Data saver.** Settings → Playback → *Data saver*. Playback continues, and seeking anywhere in a long book starts within a second or two.
 

@@ -132,9 +132,15 @@ export async function setProgress(book: Book, at: number | 'finished', when = Da
 /** The audio element's current time, in seconds. */
 export const audioTime = (page: Page) => page.evaluate(() => document.querySelector('audio')?.currentTime ?? -1);
 
-/** Waits until the audio is really playing: not paused, and its time moving. */
+/** Waits until the audio is really playing: not paused, not seeking to where the book resumes,
+ *  and its time moving. */
 export async function expectPlaying(page: Page, timeout = 20_000) {
-	await expect.poll(() => page.evaluate(() => document.querySelector('audio')?.paused === false), { timeout }).toBe(true);
+	const started = () =>
+		page.evaluate(() => {
+			const a = document.querySelector('audio');
+			return !!a && !a.paused && !a.seeking && a.readyState >= 3;
+		});
+	await expect.poll(started, { timeout }).toBe(true);
 	const t0 = await audioTime(page);
 	await expect.poll(() => audioTime(page), { timeout }).toBeGreaterThan(t0 + 1);
 }
