@@ -125,8 +125,8 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           manifest-path: fuzz/Cargo.toml
+          # deny.toml at the repository root is found from the working directory.
           command: check advisories
-          command-arguments: --config deny.toml
 
   # No private information in the tracked files (the repository is public): addresses, emails
   # and private host names. A contributor's own list of private strings can't exist here; the
