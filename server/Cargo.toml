@@ -17,7 +17,7 @@ tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "fs", "proc
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.154"
 toml = "1.1"
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.42", features = ["bundled"] }
 getrandom = "0.4"
 hkdf = "0.13"
 sha2 = "0.11"

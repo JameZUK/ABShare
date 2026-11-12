@@ -18,6 +18,7 @@ Fixes from a full code review for security, stability and reliability (SPEC D39)
 - **The scanner** opens directories through a descriptor of the library root, so a directory swapped for a symlink is never followed, and it bounds what it keeps in memory. Covers are limited to 6,000 pixels a side and 16 megapixels, checked before decoding.
 - **Text cleaning** removes six more invisible characters, and the address scrub catches more forms.
 - **`serve` refuses a library it could write to**, as the docs said it did. The systemd unit now has the `IPAddressDeny=any` the design names.
+- **Dependencies:** rusqlite 0.42 (the bundled SQLite, RUSTSEC-2026-0459) and rustix 1.1.6 (RUSTSEC-2026-0486), both advisories published since 0.14.1.
 - **The private-data check** runs generic checks without its patterns file, scans the whole tree in CI, and its hooks are tracked (`git config core.hooksPath .githooks`).
 
 ### Fixed
