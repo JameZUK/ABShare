@@ -1,6 +1,6 @@
 // The playback log (D38): kept in this browser, at most 38 lines, never which book, and sent only
 // when the listener asks, as the signed-in listener (POST /v1/diag).
-import { forgetLog, KEEP, logEvent, place, playbackLog, sendReport } from '$lib/player/log';
+import { claimLog, forgetLog, KEEP, logEvent, place, playbackLog, sendReport } from '$lib/player/log';
 
 const { post } = vi.hoisted(() => ({ post: vi.fn() }));
 vi.mock('$lib/api/session.svelte', () => ({ post }));
@@ -67,4 +67,39 @@ test('whatever is in storage, only lines of text are kept', async () => {
 		const fresh = await import('$lib/player/log');
 		expect(fresh.playbackLog()).toEqual(kept);
 	}
+});
+
+// One log for the browser, but it belongs to one person at a time (review L25).
+test('the log is dropped when someone else signs in, and kept for the same person', () => {
+	claimLog('ada');
+	logEvent('play (app) @ 0:00');
+	claimLog('ada'); // the app opened again
+	expect(playbackLog()).toHaveLength(1);
+	claimLog('grace');
+	expect(playbackLog(), 'Grace can’t send Ada’s log').toEqual([]);
+	expect(localStorage.getItem('abshare.playbackLog')).toBeNull();
+	logEvent('play (app) @ 1:00');
+	claimLog('grace');
+	expect(playbackLog()).toHaveLength(1);
+});
+
+test('lines written for nobody known (before a first sign-in, or after a sign-out) are dropped too', () => {
+	logEvent('app opened (visible)');
+	claimLog('ada');
+	expect(playbackLog()).toEqual([]);
+	logEvent('play (app) @ 0:00');
+	forgetLog(); // any sign-out, downloads kept or not
+	expect(localStorage.getItem('abshare.playbackLogOwner'), 'nothing naming the person is left').toBeNull();
+	logEvent('pause (app) @ 0:05'); // the player closing after the sign-out
+	claimLog('ada');
+	expect(playbackLog()).toEqual([]);
+});
+
+test('if storage can’t say whose the log is, it is dropped', () => {
+	logEvent('play (app) @ 0:00');
+	vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+		throw new DOMException('denied', 'SecurityError');
+	});
+	claimLog('ada');
+	expect(playbackLog()).toEqual([]);
 });

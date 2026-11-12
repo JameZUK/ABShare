@@ -12,7 +12,14 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/abshare serve --config /etc/abshare/abshare.toml
+# One user for both units. DynamicUser=yes with the same User= name in abshare.service and
+# abshare-scan.service makes systemd give them one shared user (allocated when the first
+# starts, or the static system user "abshare" if you have created one), so both own the
+# state directory. Without a shared name each unit would get a different user and the two
+# would take the data directory from each other. Keep User= and Group= identical in both.
 DynamicUser=yes
+User=abshare
+Group=abshare
 StateDirectory=abshare
 StateDirectoryMode=0700
 Restart=on-failure
@@ -42,6 +49,10 @@ MemoryDenyWriteExecute=yes
 RemoveIPC=yes
 UMask=0077
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# No network beyond this machine: the server never connects out, and only a reverse proxy
+# here reaches it. A proxy on another machine: add its address to IPAddressAllow.
+IPAddressDeny=any
+IPAddressAllow=localhost
 SystemCallArchitectures=native
 # The jail (abshare-jail) applies Landlock, seccomp and resource limits around ffmpeg.
 SystemCallFilter=@system-service landlock_create_ruleset landlock_add_rule landlock_restrict_self seccomp setrlimit prlimit64

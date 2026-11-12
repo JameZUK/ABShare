@@ -9,6 +9,7 @@
 	import { sync } from '$lib/offline/sync.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { lastBook, player } from '$lib/player/player.svelte';
+	import { claimLog, forgetLog } from '$lib/player/log';
 	import Icon from '$lib/components/Icon.svelte';
 	import MiniPlayer from '$lib/components/MiniPlayer.svelte';
 	import PlayerView from '$lib/components/PlayerView.svelte';
@@ -22,6 +23,9 @@
 	player.start();
 	session.onEnd = (reason, user) => {
 		player.close();
+		// The playback log goes at every sign-out, whether or not downloads are kept.
+		if (reason !== 'expired') forgetLog();
+		sync.clock = 'ok';
 		if (reason === 'revoked' && user) void downloads.removeAll(user);
 	};
 	void session.start();
@@ -50,6 +54,8 @@
 		if (!ready || limited || !user || restoredFor === user) return;
 		restoredFor = user;
 		settings.owner = user;
+		// Someone else's playback log (or nobody's) is dropped before this person can send it.
+		claimLog(user);
 		void downloads.finishWipes().then(() => downloads.load());
 		void sync.flush();
 		const id = lastBook();
@@ -107,6 +113,8 @@
 		<p class="banner" role="status" data-connecting="banner">Connecting… The connection is slow. Downloaded books play now.</p>
 	{:else if session.status === 'offline'}
 		<p class="banner" role="status"><Icon name="offline" size={18} /> Offline. Downloaded books still play.</p>
+	{:else if sync.clock !== 'ok'}
+		<p class="banner" role="alert">This device’s clock is {sync.clock}, so your place in books may not be saved. Check the date and time in this device’s settings.</p>
 	{:else if updates.available}
 		<p class="banner" role="status">An update is ready. <button class="link" onclick={() => updates.apply()}>Reload</button></p>
 	{/if}

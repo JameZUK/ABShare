@@ -198,6 +198,10 @@ async fn enrol_password(S(st): S<State>, Json(b): Json<EnrolPassword>) -> Result
         st.enrol.put_back(&b.enrol, e, now());
         return Err(ApiError::bad(err.to_string()));
     }
+    // The enrolment stays redeemable while the password is hashed and if hashing fails: a
+    // busy hasher or a second tap used to end it with "Enrolment expired" (2026-11-12
+    // review, L6).
+    st.enrol.put_back(&b.enrol, e.clone(), now());
     e.password_hash = Some(st.hasher.hash(b.password).await?);
     let seed = random::<{ totp::SECRET_LEN }>().to_vec();
     let uri = totp::otpauth_uri(&st.issuer, &e.username, &seed);
@@ -247,10 +251,14 @@ struct EnrolOnly {
 
 async fn enrol_passkey_start(S(st): S<State>, Json(b): Json<EnrolOnly>) -> Result<Json<Value>, ApiError> {
     let mut e = take_enrol(&st, &b.enrol)?;
-    let (options, reg) = st
-        .webauthn
-        .start_passkey_registration(e.webauthn_id, &e.username, &e.display_name, None)
-        .map_err(ApiError::internal)?;
+    let (options, reg) = match st.webauthn.start_passkey_registration(e.webauthn_id, &e.username, &e.display_name, None)
+    {
+        Ok(started) => started,
+        Err(err) => {
+            st.enrol.put_back(&b.enrol, e, now());
+            return Err(ApiError::internal(err));
+        }
+    };
     e.passkey_reg = Some(reg);
     st.enrol.put_back(&b.enrol, e, now());
     Ok(Json(json!({ "options": options })))
@@ -309,16 +317,31 @@ async fn enrol_finish(
         .passkey
         .as_ref()
         .map(|(name, pk)| Ok::<_, String>((name.clone(), passkeys::cred_id(pk), passkeys::to_json(pk)?)))
-        .transpose()
-        .map_err(ApiError::internal)?;
+        .transpose();
+    let passkey = match passkey {
+        Ok(p) => p,
+        Err(err) => {
+            st.enrol.put_back(&b.enrol, e, now());
+            return Err(ApiError::internal(err));
+        }
+    };
     let seeds_key = st.seeds.clone();
     let e2 = e.clone();
-    let user_id = st
+    enum Finished {
+        User(i64),
+        InviteUsed,
+        NameTaken,
+    }
+    let finished = st
         .db
         .run(move |c| {
             let tx = c.transaction().map_err(crate::db::sql_err)?;
+            // Someone else took the name since this enrolment started.
+            if e2.purpose != "reset" && store::user_by_name(&tx, &e2.username)?.is_some() {
+                return Ok(Finished::NameTaken);
+            }
             if !store::consume_invite(&tx, &e2.invite_hash, now())? {
-                return Ok(None);
+                return Ok(Finished::InviteUsed);
             }
             let uid = if e2.purpose == "reset" {
                 let uid = e2.for_user.ok_or("reset invite without a user")?;
@@ -353,15 +376,29 @@ async fn enrol_finish(
             }
             store::replace_recovery(&tx, uid, &hashes)?;
             tx.commit().map_err(crate::db::sql_err)?;
-            Ok(Some(uid))
+            Ok(Finished::User(uid))
         })
-        .await?;
-    let Some(uid) = user_id else {
-        return Err(ApiError::new(
-            StatusCode::GONE,
-            "invite_used",
-            "This invite has already been used or has expired.",
-        ));
+        .await;
+    let uid = match finished {
+        Ok(Finished::User(uid)) => uid,
+        Ok(Finished::InviteUsed) => {
+            return Err(ApiError::new(
+                StatusCode::GONE,
+                "invite_used",
+                "This invite has already been used or has expired.",
+            ));
+        }
+        // Nothing was written (the transaction was dropped): the invite still works, with
+        // another name.
+        Ok(Finished::NameTaken) => {
+            return Err(ApiError::new(StatusCode::CONFLICT, "username_taken", "That username is taken."));
+        }
+        // A database error: nothing was written either, so the enrolment can be finished on
+        // another try.
+        Err(err) => {
+            st.enrol.put_back(&b.enrol, e, now());
+            return Err(err);
+        }
     };
     if e.purpose == "reset" {
         st.sessions.revoke_user(uid);
@@ -612,7 +649,17 @@ async fn refresh(S(st): S<State>, Ip(ip): Ip, headers: HeaderMap) -> Result<Resp
         })
         .await?;
     match outcome {
-        RefreshOutcome::Rotated { device, user } => {
+        RefreshOutcome::Rotated { device, user } | RefreshOutcome::Reissued { device, user } => {
+            if matches!(outcome, RefreshOutcome::Reissued { .. }) {
+                st.audit(
+                    "refresh.reissued",
+                    Some(user),
+                    Some(device),
+                    Some(ip),
+                    "a spent refresh token was replaced again".into(),
+                )
+                .await;
+            }
             let u = st.db.run(move |c| store::user_by_id(c, user)).await?.ok_or_else(ApiError::unauthenticated)?;
             let (access, media) = st
                 .sessions
@@ -698,7 +745,7 @@ async fn step_up_totp(
     let uid = s.user;
     let user = st.db.run(move |c| store::user_by_id(c, uid)).await?.ok_or_else(ApiError::unauthenticated)?;
     let attempt = st
-        .limiter
+        .step_up_limiter
         .lock()
         .map_err(|_| ApiError::internal("limiter"))?
         .begin(ip, &user.username, now())
@@ -717,7 +764,7 @@ async fn step_up_totp(
         st.audit("step_up.failed", Some(uid), Some(s.device), Some(ip), "password+totp".into()).await;
         return Err(ApiError::denied());
     }
-    if let Ok(mut l) = st.limiter.lock() {
+    if let Ok(mut l) = st.step_up_limiter.lock() {
         l.succeeded(&attempt);
     }
     st.sessions.mark_stepped_up(s.device, now());
@@ -732,7 +779,8 @@ async fn step_up_passkey_start(S(st): S<State>, Authed(s): Authed) -> Result<Jso
         return Err(ApiError::bad("No passkeys on this account."));
     }
     let (options, state) = st.webauthn.start_passkey_authentication(&keys).map_err(ApiError::internal)?;
-    let challenge = st.passkey_login.start(PasskeyLogin::ForUser(uid, state), now()).ok_or_else(ApiError::too_many)?;
+    let challenge =
+        st.passkey_step_up.start(PasskeyLogin::ForUser(uid, state), now()).ok_or_else(ApiError::too_many)?;
     Ok(Json(json!({ "challenge": challenge, "options": options })))
 }
 
@@ -749,7 +797,7 @@ async fn step_up_passkey_finish(
     Authed(s): Authed,
     Json(b): Json<StepUpPasskey>,
 ) -> Result<Json<Value>, ApiError> {
-    let Some(PasskeyLogin::ForUser(uid, state)) = st.passkey_login.take(&b.challenge, now()) else {
+    let Some(PasskeyLogin::ForUser(uid, state)) = st.passkey_step_up.take(&b.challenge, now()) else {
         return Err(ApiError::denied());
     };
     let ok = uid == s.user

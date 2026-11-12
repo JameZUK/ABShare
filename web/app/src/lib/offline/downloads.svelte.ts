@@ -4,7 +4,7 @@
 import { session } from '$lib/api/session.svelte';
 import type { BookDetail } from '$lib/api/types';
 import { forgetLog } from '$lib/player/log';
-import { streamUrl } from '$lib/player/rules';
+import { streamUrl, type DeviceCopy } from '$lib/player/rules';
 import { all, dropDb, get, PIECE, reqP, tx, type Download, type Quality } from './db';
 import { closeUserDb, userDb } from './userdb';
 import { forgetAsked } from '$lib/reviewAsked';
@@ -59,6 +59,9 @@ class Downloads {
 	rate = $state(0);
 	#running = false;
 	#stop = new Set<string>();
+	/** The download being fetched. Aborted when it is removed, so a piece on its way is
+	 *  never written back for a download that is gone (or was added again since). */
+	#active: { id: string; ctl: AbortController } | null = null;
 
 	byId(id: string): DownloadInfo | undefined {
 		return this.list.find((d) => d.id === id);
@@ -146,6 +149,7 @@ class Downloads {
 
 	async remove(id: string) {
 		this.#stop.add(id);
+		if (this.#active?.id === id) this.#active.ctl.abort();
 		const dbp = userDb();
 		if (!dbp) return;
 		const db = await dbp;
@@ -177,6 +181,7 @@ class Downloads {
 		// Remembered until done, so a wipe interrupted (the app closed, another tab holding
 		// the database) is finished at the next start (review W3).
 		pendingWipe(username, true);
+		this.#active?.ctl.abort();
 		await closeUserDb();
 		await dropDb(username);
 		forgetPerson(username);
@@ -226,6 +231,20 @@ class Downloads {
 		const db = await userDb()!;
 		let d = await get<Download>(db, 'books', id);
 		if (!d) return;
+		const ctl = new AbortController();
+		this.#active = { id, ctl };
+		try {
+			await this.#fetchPieces(db, d, ctl.signal);
+		} finally {
+			if (this.#active?.ctl === ctl) this.#active = null;
+		}
+	}
+
+	/** Fetches a download's remaining pieces. `signal` aborts when the download is removed:
+	 *  checked after every wait, before anything is written. */
+	async #fetchPieces(db: IDBDatabase, d: Download, signal: AbortSignal) {
+		const id = d.id;
+		const gone = () => signal.aborted;
 		await this.#set(id, { state: 'downloading' });
 		// dl=1: the server encodes each data-saver piece in one run (downloads read in order).
 		const base = streamUrl(id, d.quality === 'original' ? 'original' : d.quality);
@@ -235,6 +254,7 @@ class Downloads {
 		let retried401 = false;
 		let busyWaits = 0;
 		while (d.total === 0 || d.next < d.total) {
+			if (gone()) return;
 			if (this.#stop.has(id)) {
 				await this.#set(id, { state: 'paused' });
 				return;
@@ -246,23 +266,27 @@ class Downloads {
 			}
 			let resp: Response;
 			try {
-				resp = await fetch(url, { credentials: 'same-origin', cache: 'no-store', headers: { Range: `bytes=${d.next}-${d.next + PIECE - 1}` } });
+				resp = await fetch(url, { credentials: 'same-origin', cache: 'no-store', signal, headers: { Range: `bytes=${d.next}-${d.next + PIECE - 1}` } });
 			} catch {
+				if (gone()) return;
 				await this.#set(id, { state: 'paused', error: 'The connection dropped. It carries on from where it stopped.' });
 				return;
 			}
 			if (resp.status === 401 && !retried401) {
 				retried401 = true;
-				if (await session.refresh()) continue;
+				const renewed = await session.refresh();
+				if (gone()) return;
+				if (renewed) continue;
 			}
 			// Too many playing or downloading at once (another device): wait a moment and carry on.
 			// The daily limit of different books: stop, and say why (the server's words).
 			if (resp.status === 429) {
 				const why = (await resp.json().catch(() => null)) as { error?: string; message?: string } | null;
+				if (gone()) return;
 				const wait = Number(resp.headers.get('retry-after')) || 5;
 				if (why?.error === 'too_many_at_once' && busyWaits++ < 6) {
 					await new Promise((r) => setTimeout(r, Math.min(wait, 60) * 1000));
-					continue;
+					continue; // the loop checks first whether the download was removed meanwhile
 				}
 				await this.#set(id, { state: 'paused', error: why?.message ?? 'Too many downloads for now. Try again later.' });
 				return;
@@ -285,42 +309,73 @@ class Downloads {
 			if (d.next > 0 && d.etag !== etag) {
 				// The book changed on the server: the stored part is no good. Start again.
 				await tx(db, ['pieces'], 'readwrite', (t) => t.objectStore('pieces').delete(IDBKeyRange.bound([id, 0], [id, Number.MAX_SAFE_INTEGER])));
+				if (gone()) return;
 				d = { ...d, etag: '', next: 0, total: 0, pieces: [] };
 				await this.#set(id, d);
 				continue;
 			}
-			const blob = await resp.blob();
+			let blob: Blob;
+			try {
+				blob = await resp.blob();
+			} catch {
+				if (gone()) return;
+				await this.#set(id, { state: 'paused', error: 'The connection dropped. It carries on from where it stopped.' });
+				return;
+			}
+			if (gone()) return;
 			const end = Number(cr[2]) + 1;
 			if (blob.size !== end - d.next) {
 				await this.#set(id, { state: 'paused', error: 'A piece arrived incomplete. It carries on from where it stopped.' });
 				return;
 			}
+			const from = d.next;
+			const added = d.added;
+			let removed = false;
 			const updated: Download = { ...d, etag, type: resp.headers.get('content-type') ?? d.type, total: Number(cr[3]), next: end, pieces: [...d.pieces, d.next], state: 'downloading', error: undefined };
 			try {
 				await tx(db, ['books', 'pieces'], 'readwrite', (t) => {
-					t.objectStore('pieces').put(blob, [id, d!.next]);
-					// Keep the cover written by #coverFor.
 					const books = t.objectStore('books');
 					const r = books.get(id);
-					r.onsuccess = () => books.put({ ...updated, cover: (r.result as Download | undefined)?.cover });
+					r.onsuccess = () => {
+						// Removed (here or in another tab), or removed and added again: this piece
+						// belongs to nothing now. Writing the row back would point at deleted pieces.
+						const cur = r.result as Download | undefined;
+						if (!cur || cur.added !== added) {
+							removed = true;
+							return;
+						}
+						t.objectStore('pieces').put(blob, [id, from]);
+						// Keep the cover written by #coverFor.
+						books.put({ ...updated, cover: cur.cover });
+					};
 				});
 			} catch {
+				if (gone()) return;
 				await this.#set(id, { state: 'paused', error: 'This device is out of space for downloads.' });
 				return;
 			}
+			if (removed || gone()) return;
 			d = updated;
 			fetched += blob.size;
 			this.rate = fetched / Math.max(0.001, (performance.now() - started) / 1000);
 			const i = this.list.findIndex((x) => x.id === id);
 			if (i >= 0) this.list[i] = strip(updated);
 		}
+		if (gone()) return;
 		await this.#set(id, { state: 'complete', error: undefined });
 	}
 
-	/** Is this book playable from the device (fully or partly downloaded)? */
+	/** Is anything of this book on the device (fully or partly downloaded)? */
 	playable(id: string): boolean {
+		return this.copy(id) !== null;
+	}
+
+	/** What this device holds of a book: all of it, the first part, or nothing. The player
+	 *  chooses between it and the stream (rules: useDeviceCopy). */
+	copy(id: string): DeviceCopy {
 		const d = this.byId(id);
-		return !!d && d.next > 0;
+		if (!d || d.next <= 0) return null;
+		return d.state === 'complete' && d.total > 0 && d.next >= d.total ? 'complete' : 'partial';
 	}
 }
 

@@ -13,6 +13,8 @@ export class ApiError extends Error {
 		message: string,
 		/** Seconds to wait before trying again, if the server said. */
 		readonly retryAfter?: number,
+		/** The server's clock when it answered (its Date header, ms since the epoch), if sent. */
+		readonly serverTime?: number,
 	) {
 		super(message);
 		this.name = 'ApiError';
@@ -31,6 +33,12 @@ export class NetworkError extends Error {
 export function retryAfterOf(v: string | null): number | undefined {
 	if (v === null || !/^\s*\d{1,9}\s*$/.test(v)) return undefined;
 	return Math.min(Math.max(Number(v), 1), 86_400);
+}
+
+/** A `Date` header as ms since the epoch; missing or nonsense gives undefined. */
+export function serverTimeOf(v: string | null): number | undefined {
+	const t = v === null ? NaN : Date.parse(v);
+	return Number.isFinite(t) ? t : undefined;
 }
 
 /** fetch() that returns parsed JSON (or null for 204) and throws ApiError on failure. */
@@ -60,7 +68,7 @@ export async function callJson<T>(path: string, init: RequestInit = {}): Promise
 	if (!resp.ok) {
 		const code = typeof body.error === 'string' ? body.error : `http_${resp.status}`;
 		const message = typeof body.message === 'string' ? body.message : `Something went wrong (${resp.status}).`;
-		throw new ApiError(resp.status, code, message, retryAfterOf(resp.headers.get('retry-after')));
+		throw new ApiError(resp.status, code, message, retryAfterOf(resp.headers.get('retry-after')), serverTimeOf(resp.headers.get('date')));
 	}
 	// A success that isn't JSON came from something in the way (a proxy's page), not ABShare.
 	if (parsed === undefined) throw new ApiError(502, 'unexpected_answer', 'The server sent something unexpected.');

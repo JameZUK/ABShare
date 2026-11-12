@@ -23,7 +23,7 @@ pub struct Media {
     fg: Semaphore,
     prefetch: Semaphore,
     copies: Semaphore,
-    locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    locks: LockMap,
     copying: Mutex<HashSet<String>>,
     /// Books whose playable copy failed: (failures, don't retry before). Backs off, so a
     /// hostile book can't keep the copy lane busy for everyone (review M5).
@@ -134,18 +134,59 @@ pub fn read_inside(root: &Path, rel: &str, max: u64) -> Result<Vec<u8>, String> 
     Ok(out)
 }
 
-/// Removes a key from the encode-lock map however the encode ends (review M4: early returns
-/// used to leave entries behind).
-struct LockKey<'a> {
-    map: &'a Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+type LockMap = Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>;
+
+/// One holder of a keyed encode lock. The key leaves the map however the encode ends (review
+/// M4: early returns used to leave entries behind), but only once nobody else is waiting on
+/// it: removing it earlier let a waiter and a newcomer hold "the" lock for one segment at the
+/// same time (2026-11-12 review, L10).
+struct KeyLock<'a> {
+    map: &'a LockMap,
     key: String,
+    lock: Arc<tokio::sync::Mutex<()>>,
+    held: Option<tokio::sync::OwnedMutexGuard<()>>,
 }
 
-impl Drop for LockKey<'_> {
+impl<'a> KeyLock<'a> {
+    async fn take(map: &'a LockMap, key: String) -> Result<Self, String> {
+        let lock = { map.lock().map_err(|_| "poisoned")?.entry(key.clone()).or_default().clone() };
+        // In the map from here on, so a cancelled wait cleans up after itself too.
+        let mut me = Self { map, key, lock: lock.clone(), held: None };
+        me.held = Some(lock.lock_owned().await);
+        Ok(me)
+    }
+}
+
+impl Drop for KeyLock<'_> {
     fn drop(&mut self) {
-        if let Ok(mut l) = self.map.lock() {
+        let Ok(mut l) = self.map.lock() else { return };
+        self.held = None;
+        // Waiters took their clone under the map's lock: two left means the map's and ours.
+        if Arc::strong_count(&self.lock) <= 2 {
             l.remove(&self.key);
         }
+    }
+}
+
+/// A job directory under `jobs/`, removed when the job ends however it ends. A request the
+/// client abandons is dropped mid-encode: before this guard, its directory and partial output
+/// stayed until the next restart, so aborted requests could fill the data disk (2026-11-12
+/// review, H1).
+struct JobDir(PathBuf);
+
+impl JobDir {
+    async fn new(data_dir: &Path, kind: &str) -> Result<Self, String> {
+        let name: String = crate::auth::crypto::random::<6>().iter().map(|b| format!("{b:02x}")).collect();
+        let me = Self(data_dir.join("jobs").join(format!("{kind}-{name}")));
+        tokio::fs::create_dir_all(&me.0).await.map_err(|e| e.to_string())?;
+        Ok(me)
+    }
+}
+
+impl Drop for JobDir {
+    fn drop(&mut self) {
+        // A handful of small files: removed in place, since a dropped future can't await.
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
@@ -346,9 +387,8 @@ impl Media {
 
     async fn build_copy(&self, src: &Source) -> Result<(), String> {
         let _permit = self.copies.acquire().await.map_err(|e| e.to_string())?;
-        let job = self.data_dir.join("jobs").join(format!("copy-{}", src.book_id));
-        let _ = tokio::fs::remove_dir_all(&job).await;
-        tokio::fs::create_dir_all(&job).await.map_err(|e| e.to_string())?;
+        let job_dir = JobDir::new(&self.data_dir, "copy").await?;
+        let job = job_dir.0.clone();
         tokio::fs::create_dir_all(self.data_dir.join("copies")).await.map_err(|e| e.to_string())?;
         let out = job.join("copy.m4b");
         let mut args =
@@ -392,11 +432,9 @@ impl Media {
         let reads: Vec<&Path> = src.parts.iter().map(PathBuf::as_path).collect();
         let r = run_jailed(&self.ff, &reads, Some(&job), &self.ff.ffmpeg, &args, &limits).await?;
         if !r.success || !r.stderr.trim().is_empty() {
-            let _ = tokio::fs::remove_dir_all(&job).await;
             return Err(format!("ffmpeg: {}", r.stderr.lines().next().unwrap_or("failed")));
         }
         tokio::fs::rename(&out, self.copy_path(&src.book_id)).await.map_err(|e| e.to_string())?;
-        let _ = tokio::fs::remove_dir_all(&job).await;
         Ok(())
     }
 
@@ -522,6 +560,14 @@ impl Media {
         self.data_dir.join("saver").join(book).join(format!("k{kbps}"))
     }
 
+    /// A temporary name no other encode of the same segment shares.
+    fn tmp_name(dir: &Path, index: u64) -> PathBuf {
+        dir.join(format!(
+            ".{index:06}.{}.tmp",
+            crate::auth::crypto::random::<4>().iter().map(|b| format!("{b:02x}")).collect::<String>()
+        ))
+    }
+
     /// One segment (cached on disk). `seek` = Some((device, generation)) for the first segment
     /// of a listener's request, which is dropped if a newer request from that device came in.
     pub async fn segment(
@@ -541,14 +587,23 @@ impl Media {
             return Ok(b.into());
         }
         let key = format!("{book}/{kbps}/{index}");
-        let lock = { self.locks.lock().map_err(|_| "poisoned")?.entry(key.clone()).or_default().clone() };
-        let _g = lock.lock().await;
-        let _release = LockKey { map: &self.locks, key: key.clone() };
+        // Background work queues for its lane before taking the segment's lock. Taking the
+        // lock first let a read-ahead queued behind downloads hold it, so the listener's own
+        // request for that segment waited on the background queue (2026-11-12 review, L9).
+        let (_p, _lock);
+        if prefetch {
+            _p = self.prefetch.acquire().await.map_err(|e| e.to_string())?;
+            _lock = KeyLock::take(&self.locks, key).await?;
+        } else {
+            _lock = KeyLock::take(&self.locks, key).await?;
+            if let Ok(b) = tokio::fs::read(&path).await {
+                return Ok(b.into());
+            }
+            _p = self.fg.acquire().await.map_err(|e| e.to_string())?;
+        }
         if let Ok(b) = tokio::fs::read(&path).await {
             return Ok(b.into());
         }
-        let lane = if prefetch { &self.prefetch } else { &self.fg };
-        let _p = lane.acquire().await.map_err(|e| e.to_string())?;
         if let Some((device, g)) = seek
             && self.superseded(device, g)
         {
@@ -557,7 +612,7 @@ impl Media {
         let w = layout.window(index).ok_or("no such segment")?;
         let kept = self.encode(file, &dir, layout, &w).await?;
         tokio::fs::create_dir_all(&dir).await.map_err(|e| e.to_string())?;
-        let tmp = path.with_extension("tmp");
+        let tmp = Self::tmp_name(&dir, index);
         tokio::fs::write(&tmp, &kept).await.map_err(|e| e.to_string())?;
         tokio::fs::rename(&tmp, &path).await.map_err(|e| e.to_string())?;
         Ok(kept.into())
@@ -579,9 +634,7 @@ impl Media {
         // One fill per span start at a time: a download's next request waits for the
         // read-ahead already encoding it instead of encoding it again.
         let key = format!("span:{book}/{kbps}/{first}");
-        let lock = { self.locks.lock().map_err(|_| "poisoned")?.entry(key.clone()).or_default().clone() };
-        let _g = lock.lock().await;
-        let _release = LockKey { map: &self.locks, key };
+        let _lock = KeyLock::take(&self.locks, key).await?;
         self.fill_span_locked(file, book, layout, &dir, first, count).await
     }
 
@@ -618,10 +671,7 @@ impl Media {
                     at += len;
                     let path = dir.join(format!("{idx:06}.mp3"));
                     // A unique temporary name: a concurrent single-segment encode may race.
-                    let tmp = dir.join(format!(
-                        ".{idx:06}.{}.tmp",
-                        crate::auth::crypto::random::<4>().iter().map(|b| format!("{b:02x}")).collect::<String>()
-                    ));
+                    let tmp = Self::tmp_name(dir, idx);
                     tokio::fs::write(&tmp, chunk).await.map_err(|e| e.to_string())?;
                     tokio::fs::rename(&tmp, &path).await.map_err(|e| e.to_string())?;
                 }
@@ -696,9 +746,10 @@ impl Media {
         if let Some(f) = self.silent.lock().ok().and_then(|m| m.get(&kbps).cloned()) {
             return Ok(f);
         }
-        let job = self.data_dir.join("jobs").join(format!("silent-{kbps}"));
-        let _ = tokio::fs::remove_dir_all(&job).await;
-        tokio::fs::create_dir_all(&job).await.map_err(|e| e.to_string())?;
+        // Its own directory each time: two first encodes at one bitrate used to share (and
+        // delete) one (2026-11-12 review, L14).
+        let job_dir = JobDir::new(&self.data_dir, "silent").await?;
+        let job = job_dir.0.clone();
         let out = job.join("s.mp3");
         let mut args = [
             "-nostdin",
@@ -720,7 +771,7 @@ impl Media {
             Limits { mem_mib: 2048, cpu_secs: 30, fsize_mib: 4, wall: Duration::from_secs(60), stdout_cap: 1024 };
         run_jailed(&self.ff, &[], Some(&job), &self.ff.ffmpeg, &args, &limits).await?;
         let bytes = tokio::fs::read(&out).await.map_err(|e| e.to_string())?;
-        let _ = tokio::fs::remove_dir_all(&job).await;
+        drop(job_dir);
         let fb = bitrate.frame_bytes() as usize;
         let frame = bytes.get(20 * fb..21 * fb).ok_or("silence too short")?.to_vec();
         if let Ok(mut m) = self.silent.lock() {
@@ -730,11 +781,8 @@ impl Media {
     }
 
     async fn encode(&self, file: &Path, dir: &Path, layout: &Layout, w: &SegmentWindow) -> Result<Vec<u8>, String> {
-        let job = self.data_dir.join("jobs").join(format!(
-            "seg-{}",
-            crate::auth::crypto::random::<6>().iter().map(|b| format!("{b:02x}")).collect::<String>()
-        ));
-        tokio::fs::create_dir_all(&job).await.map_err(|e| e.to_string())?;
+        let job_dir = JobDir::new(&self.data_dir, "seg").await?;
+        let job = job_dir.0.clone();
         let _ = dir;
         let out = job.join("out.mp3");
         let demuxer = demuxer_for(&ext(file)).ok_or("unsupported source")?;
@@ -769,7 +817,7 @@ impl Media {
             Limits { mem_mib: 2048, cpu_secs: 120, fsize_mib: 64, wall: Duration::from_secs(180), stdout_cap: 1024 };
         let r = run_jailed(&self.ff, &[file], Some(&job), &self.ff.ffmpeg, &args, &limits).await;
         let bytes = tokio::fs::read(&out).await;
-        let _ = tokio::fs::remove_dir_all(&job).await;
+        drop(job_dir);
         let r = r?;
         if !r.success {
             return Err(format!("ffmpeg: {}", r.stderr.lines().next().unwrap_or("failed")));
@@ -851,6 +899,95 @@ mod tests {
         assert!(m.sweep(400).await.expect("sweep") > 0);
         assert!(!c.exists(), "over twice the limit, in-use entries are evicted too");
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    fn job_count(data: &Path) -> usize {
+        std::fs::read_dir(data.join("jobs")).map_or(0, |rd| rd.count())
+    }
+
+    // 2026-11-12 review, H1: a request the client abandons is dropped mid-encode, and its job
+    // directory used to stay until the next restart.
+    #[tokio::test]
+    async fn a_job_directory_goes_when_its_job_is_dropped() {
+        let base = std::env::temp_dir().join(format!("abshare-jobdir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let job = JobDir::new(&base, "seg").await.expect("job dir");
+        std::fs::write(job.0.join("out.mp3"), b"partial").expect("write");
+        assert_eq!(job_count(&base), 1);
+        drop(job);
+        assert_eq!(job_count(&base), 0, "the job directory must not outlive the job");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn an_abandoned_encode_leaves_nothing_in_jobs() {
+        let Some(ff) = crate::tools::test_ffmpeg().await else {
+            eprintln!("skipped: the jailed ffmpeg cannot run here");
+            return;
+        };
+        let base = std::env::temp_dir().join(format!("abshare-abandon-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (lib, data) = (base.join("lib"), base.join("data"));
+        for d in [&lib, &data] {
+            std::fs::create_dir_all(d).expect("mkdir");
+        }
+        let file = tone(&lib, 210);
+        let layout =
+            Profile::new(Bitrate::K48, 2_500).expect("profile").layout(samples_from_ms(210_000)).expect("layout");
+        let m = Arc::new(Media::new(ff, data.clone(), HashMap::new()));
+        let book = "aaaaaaaaaaaaaaaaaaaaaaaaaa";
+        // The client goes away while ffmpeg is running: the request's future is dropped.
+        let mut started = false;
+        for wait_ms in [20, 60, 150] {
+            let gone = tokio::time::timeout(Duration::from_millis(wait_ms), async {
+                let seg = m.segment(&file, book, &layout, 1, false, None);
+                tokio::pin!(seg);
+                loop {
+                    tokio::select! {
+                        r = &mut seg => break r.is_ok(),
+                        () = tokio::time::sleep(Duration::from_millis(2)) => started |= job_count(&data) > 0,
+                    }
+                }
+            })
+            .await;
+            assert_eq!(job_count(&data), 0, "an abandoned encode left its job directory behind");
+            if gone.is_err() && started {
+                break;
+            }
+            let _ = std::fs::remove_dir_all(data.join("saver"));
+        }
+        assert!(started, "the encode never got as far as its job directory");
+        assert!(m.locks.lock().expect("locks").is_empty(), "an abandoned encode left its lock behind");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // 2026-11-12 review, L10: the key used to leave the map while others still waited on it, so
+    // a newcomer got a fresh lock and encoded the same segment alongside the waiter.
+    #[tokio::test]
+    async fn a_keyed_lock_stays_one_lock_while_anyone_waits_and_goes_when_nobody_does() {
+        let map = LockMap::default();
+        let first = KeyLock::take(&map, "k".into()).await.expect("first");
+        let waiter = KeyLock::take(&map, "k".into());
+        tokio::pin!(waiter);
+        assert!(tokio::time::timeout(Duration::from_millis(20), &mut waiter).await.is_err(), "the lock is held");
+        drop(first);
+        assert_eq!(map.lock().expect("map").len(), 1, "the key must stay while someone waits on it");
+        let second = waiter.await.expect("the waiter");
+        // A newcomer now must wait for the waiter, not get a lock of its own.
+        let newcomer = KeyLock::take(&map, "k".into());
+        tokio::pin!(newcomer);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut newcomer).await.is_err(),
+            "two holders of one key"
+        );
+        drop(second);
+        drop(newcomer.await.expect("the newcomer"));
+        assert!(map.lock().expect("map").is_empty(), "the key must go once nobody holds or waits");
+        // A wait that is given up cleans up after itself too.
+        let held = KeyLock::take(&map, "k".into()).await.expect("held");
+        assert!(tokio::time::timeout(Duration::from_millis(20), KeyLock::take(&map, "k".into())).await.is_err());
+        drop(held);
+        assert!(map.lock().expect("map").is_empty(), "a cancelled wait left the key behind");
     }
 
     #[tokio::test]

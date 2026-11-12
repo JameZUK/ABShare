@@ -61,3 +61,41 @@ export function chooseQuality(mode: QualityMode, kbps: SaverKbps, conn: Connecti
 
 /** The stream URL for a book at a quality. */
 export const streamUrl = (book: string, q: 'original' | SaverKbps) => (q === 'original' ? `v1/media/${book}` : `v1/media/${book}?q=${q}`);
+
+/** How close to the end counts as finished: 30 s, or 2% of a short item (the server's rule,
+ *  core::progress). */
+export const finishMargin = (durationMs: number) => Math.min(30_000, Math.floor(durationMs / 50));
+
+/** Whether the audio ending means the book is finished: only when it stopped at the book's
+ *  real end. A part-downloaded copy plays as a shorter file and ends early, and so can a
+ *  stream cut short; neither finishes the book. */
+export function endedAtEnd(positionMs: number, durationMs: number): boolean {
+	if (!Number.isFinite(durationMs) || durationMs <= 0) return true; // length unknown: believe the audio
+	return Number.isFinite(positionMs) && positionMs >= durationMs - finishMargin(durationMs);
+}
+
+/** What this device holds of a book. */
+export type DeviceCopy = 'complete' | 'partial' | null;
+
+/** Whether to play the copy on this device rather than stream. A complete copy always. A
+ *  part-downloaded one only with no connection: it stops where the download did, so with the
+ *  server in reach (or its answer on the way) the stream is the sound choice. */
+export function useDeviceCopy(copy: DeviceCopy, status: string): boolean {
+	if (copy === 'complete') return true;
+	return copy === 'partial' && status === 'offline';
+}
+
+/** Tries to recover from a playback error before giving up with a notice. */
+export const MAX_ERROR_RETRIES = 3;
+/** This much playing since the last error counts as recovered: the next error starts afresh. */
+export const RETRY_RESET_AFTER_MS = 30_000;
+
+/** The error count after `playedMs` of playing since the last error. Loading the audio again
+ *  is not progress (an error can follow every load); only sound that played is. */
+export const retriesAfterPlaying = (retries: number, playedMs: number) => (playedMs >= RETRY_RESET_AFTER_MS ? 0 : retries);
+
+/** Time to take off the sleep timer at a tick. Nothing while paused, nor at the first tick
+ *  after a pause: the time since the last tick was not spent playing. */
+export function sleepDelta(lastTick: number, now: number, paused: boolean): number {
+	return paused || !lastTick ? 0 : Math.max(0, now - lastTick);
+}

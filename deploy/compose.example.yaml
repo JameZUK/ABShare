@@ -29,10 +29,19 @@ services:
     # firewalls such as ufw, so bind the address the proxy connects to: loopback when nginx
     # runs on this host, or this host's LAN address (never all interfaces) when it doesn't.
     ports: ["127.0.0.1:8743:8743"]
+    # The image has no shell or curl: the binary asks its own /healthz (loopback only).
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/abshare", "health", "--config", "/etc/abshare/abshare.toml"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
   # Rescans the library every hour (only changed files are probed), or at once when an admin
   # asks from the app.
   scan:
     <<: *hardening
     mem_limit: 1g
+    # The scanner reads the library and writes the data directory: it needs no network.
+    network_mode: none
     command: ["scan", "--config", "/etc/abshare/abshare.toml", "--every", "3600"]

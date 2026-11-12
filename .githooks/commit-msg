@@ -1,0 +1,3 @@
+#!/bin/sh
+# Refuses a commit message that holds private information (tools/check-private.py).
+exec python3 -I "$(git rev-parse --show-toplevel)/tools/check-private.py" message "$1"

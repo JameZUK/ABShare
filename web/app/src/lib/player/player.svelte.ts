@@ -7,7 +7,23 @@ import { sync } from '$lib/offline/sync.svelte';
 import { settings, type SaverKbps } from '$lib/settings.svelte';
 import { chapterAt, nextTarget, previousTarget } from './chapters';
 import { logEvent, place } from './log';
-import { afterBrowserPlay, ASKED_MS, autoRewindMs, chooseQuality, clampStart, fadeVolume, pauseCause, streamUrl } from './rules';
+import {
+	afterBrowserPlay,
+	ASKED_MS,
+	autoRewindMs,
+	chooseQuality,
+	clampStart,
+	endedAtEnd,
+	fadeVolume,
+	finishMargin,
+	MAX_ERROR_RETRIES,
+	pauseCause,
+	retriesAfterPlaying,
+	sleepDelta,
+	streamUrl,
+	useDeviceCopy,
+	type DeviceCopy,
+} from './rules';
 import { swContainer } from '$lib/pwa/update.svelte';
 
 export type Source = 'original' | SaverKbps | 'device';
@@ -18,6 +34,8 @@ const REPORT_EVERY_MS = 15_000;
 /** While playing, a line in the playback log this often, so a report shows when sound stopped. */
 const LOG_EVERY_MS = 5 * 60_000;
 export const PAUSED_BY_PHONE = 'Paused by your phone, for a call or another app.';
+export const COULD_NOT_PLAY = 'This book couldn’t be played. Try again in a moment.';
+export const PART_ENDS_HERE = 'The downloaded part of this book ends here. Connect to hear the rest.';
 export const LIMITED = 'You’ve played or downloaded the most different books for one day. Books you’ve already started today still play; this one will tomorrow.';
 
 function remember(id: string | null) {
@@ -38,8 +56,7 @@ export function lastBook(): string | null {
 	}
 }
 
-/** How close to the end counts as finished: 30 s, or 2% of a short item. */
-export const finishMargin = (durationMs: number) => Math.min(30_000, Math.floor(durationMs / 50));
+export { finishMargin };
 
 /** Picks where to start: the newer of the server's and this device's positions. */
 export function startPosition(server: Progress | null, local: { position_ms: number; at: number } | undefined, durationMs: number): number {
@@ -73,7 +90,17 @@ class Player {
 	#lastReport = 0;
 	#lastTick = 0;
 	#pausedAt = 0;
+	/** Plays tried again after a new load interrupted one (reset when the audio loads). */
 	#retried = 0;
+	/** Playback errors retried, and the playing time since the last one: the count starts
+	 *  afresh only after real playing, never just because the audio loaded again. */
+	#errors = 0;
+	#playedSinceError = 0;
+	#retryTimer: ReturnType<typeof setTimeout> | undefined;
+	/** Counts loads (and closing): work begun for an earlier one must stop when it changes. */
+	#loadGen = 0;
+	/** The copy playing from this device is a part-finished download: it ends early. */
+	#partial = false;
 	#coverUrl: string | null = null;
 	#prepareTimer: ReturnType<typeof setTimeout> | undefined;
 	// Calls (SPEC D38). The browser pauses the book for a call and starts it again afterwards,
@@ -133,6 +160,11 @@ class Player {
 		});
 		a.addEventListener('ended', () => {
 			this.playing = false;
+			// A part-downloaded copy plays as a shorter file: its end is not the book's.
+			if (this.book && this.#partial && !endedAtEnd(a.currentTime * 1000, this.book.duration_ms)) {
+				this.#partEnded(a.currentTime * 1000);
+				return;
+			}
 			this.#wanted = 'pause';
 			logEvent('the book ended');
 			if (this.book) {
@@ -170,8 +202,12 @@ class Player {
 		this.duration = detail.duration_ms;
 		this.speed = settings.speedFor(detail.id);
 		this.notice = null;
+		this.#errors = 0;
+		this.#playedSinceError = 0;
 		remember(detail.id);
 		const local = await sync.local(detail.id);
+		// Another book was opened, or the player closed, meanwhile.
+		if (this.book?.id !== detail.id) return;
 		const at = opts.at === undefined ? startPosition(detail.progress, local, detail.duration_ms) : clampStart(opts.at, detail.duration_ms);
 		this.position = at;
 		void this.#artwork(detail);
@@ -181,25 +217,35 @@ class Player {
 	async #load(at: number, play: boolean) {
 		const a = this.#audio!;
 		const book = this.book!;
+		// A newer load, or closing, supersedes this one: checked after every wait, and by the
+		// timers set here, so nothing acts on whichever book is open later.
+		const gen = ++this.#loadGen;
+		const stale = () => gen !== this.#loadGen;
 		clearTimeout(this.#prepareTimer);
+		clearTimeout(this.#retryTimer);
 		this.preparing = false;
 		let src: string;
-		if (downloads.playable(book.id) && session.user && swContainer()?.controller) {
+		let copy = this.#deviceCopy(book.id);
+		// Still connecting on a slow connection: wait for the answer rather than give up.
+		if (!copy && session.status === 'connecting') {
+			this.notice = 'Connecting… The book starts when the server answers.';
+			await session.settled();
+			if (stale()) return;
+			this.notice = null;
+			copy = this.#deviceCopy(book.id);
+		}
+		if (copy && session.user) {
 			this.source = 'device';
+			this.#partial = copy === 'partial';
 			src = `offline/${session.user.username}/${book.id}`;
 		} else {
-			// Still connecting on a slow connection: wait for the answer rather than give up.
-			if (session.status === 'connecting') {
-				this.notice = 'Connecting… The book starts when the server answers.';
-				await session.settled();
-				if (this.book !== book) return;
-				this.notice = null;
-			}
+			this.#partial = false;
 			if (session.status !== 'signed-in') {
 				this.notice = 'This book isn’t downloaded. Connect to listen.';
 				return;
 			}
 			const ready = book.media.preparing ? await this.#ready(book.id) : true;
+			if (stale()) return;
 			if (ready === null) {
 				this.notice = 'This book couldn’t be prepared for playback. The library may have a damaged file.';
 				return;
@@ -207,7 +253,9 @@ class Player {
 			if (!ready) {
 				this.preparing = true;
 				this.notice = 'Preparing this book for playback. It starts by itself in a moment.';
-				this.#prepareTimer = setTimeout(() => void this.#load(at, play), 5_000);
+				this.#prepareTimer = setTimeout(() => {
+					if (!stale()) void this.#load(at, play);
+				}, 5_000);
 				return;
 			}
 			const conn = (navigator as Navigator & { connection?: { type?: string; effectiveType?: string; saveData?: boolean } }).connection;
@@ -222,6 +270,26 @@ class Player {
 		a.preservesPitch = true;
 		a.load();
 		if (play) await this.play();
+	}
+
+	/** The copy of a book on this device, if it should be played rather than the stream. */
+	#deviceCopy(id: string): DeviceCopy {
+		const copy = downloads.copy(id);
+		return session.user && swContainer()?.controller && useDeviceCopy(copy, session.status) ? copy : null;
+	}
+
+	/** A part-downloaded copy reached its end, short of the book's: the book isn't finished.
+	 *  With the server in reach, carry on from the stream; otherwise stop here and say why. */
+	#partEnded(pos: number) {
+		logEvent(`the downloaded part ended @ ${place(pos)}`);
+		this.#report(true);
+		if (session.status === 'signed-in') {
+			void this.#load(pos, this.#wanted === 'play');
+			return;
+		}
+		this.#wanted = 'pause';
+		this.#clearSleep();
+		this.notice = PART_ENDS_HERE;
 	}
 
 	/** Whether the server refuses this book's audio today (the daily limit of different books). */
@@ -250,6 +318,8 @@ class Player {
 		this.#endInterruption();
 		a.muted = false;
 		if (!a.src) await this.#load(this.position, false);
+		// Closed while that waited.
+		if (!this.book) return;
 		if (settings.prefs.autoRewind && this.#pausedAt && a.readyState > 0) {
 			const back = autoRewindMs(Date.now() - this.#pausedAt);
 			if (back > 0) a.currentTime = Math.max(0, a.currentTime - back / 1000);
@@ -325,6 +395,7 @@ class Player {
 			this.notice = PAUSED_BY_PHONE;
 		}
 		this.#pausedAt = Date.now();
+		this.#lastTick = 0;
 		this.#report(true);
 	}
 
@@ -423,6 +494,11 @@ class Player {
 		this.#report(true);
 		this.#wanted = 'pause';
 		this.#endInterruption();
+		// Nothing waiting (a retry after an error, a book being prepared, a load) may start again.
+		this.#loadGen++;
+		clearTimeout(this.#prepareTimer);
+		clearTimeout(this.#retryTimer);
+		this.preparing = false;
 		if (a) {
 			this.#pauseAudio();
 			a.removeAttribute('src');
@@ -452,8 +528,15 @@ class Player {
 	#tick() {
 		const a = this.#audio!;
 		const now = performance.now();
-		const delta = this.#lastTick ? now - this.#lastTick : 0;
-		this.#lastTick = now;
+		// A tick while paused (a seek) must not start the clock: the first tick after playing
+		// starts again would take the whole pause off the sleep timer.
+		const delta = sleepDelta(this.#lastTick, now, a.paused);
+		this.#lastTick = a.paused ? 0 : now;
+		if (this.#errors && delta > 0) {
+			// Ticks come several times a second while sound plays; a longer gap was a stall.
+			this.#playedSinceError += Math.min(delta, 1_000);
+			this.#errors = retriesAfterPlaying(this.#errors, this.#playedSinceError);
+		}
 		this.position = a.currentTime * 1000;
 		if (Number.isFinite(a.duration) && a.duration > 0 && this.source !== 'device') this.duration = Math.max(this.duration, a.duration * 1000);
 		// The sleep timer runs from timeupdate events, which keep coming in the background.
@@ -497,25 +580,36 @@ class Player {
 
 	async #onError() {
 		const a = this.#audio!;
-		if (!this.book || !a.src) return;
+		const book = this.book;
+		if (!book || !a.src) return;
+		// The error belongs to this book and this load: after each wait, stop if either changed.
+		const gen = this.#loadGen;
+		const stale = () => gen !== this.#loadGen || this.book?.id !== book.id;
 		const pos = a.currentTime > 0 ? a.currentTime * 1000 : this.position;
 		// Today's limit of different books: retrying won't help, so say why.
-		if (this.source !== 'device' && (await this.#limited(this.book.id))) {
+		if (this.source !== 'device' && (await this.#limited(book.id))) {
+			if (stale()) return;
 			this.playing = false;
 			this.notice = LIMITED;
 			return;
 		}
+		if (stale()) return;
 		// A lapsed media cookie or a dropped connection: renew and pick up where it stopped.
-		if (this.#retried < 3 && this.source !== 'device') {
-			this.#retried++;
+		if (this.#errors < MAX_ERROR_RETRIES && this.source !== 'device') {
+			this.#errors++;
+			this.#playedSinceError = 0;
 			const ok = await session.refresh();
+			if (stale()) return;
 			if (ok) {
-				setTimeout(() => void this.#load(pos, this.playing || !a.paused), 1_000 * this.#retried);
+				clearTimeout(this.#retryTimer);
+				this.#retryTimer = setTimeout(() => {
+					if (!stale()) void this.#load(pos, this.playing || !a.paused);
+				}, 1_000 * this.#errors);
 				return;
 			}
 		}
 		this.playing = false;
-		this.notice = session.status === 'offline' ? 'You’re offline. Downloaded books still play.' : 'This book couldn’t be played. Try again in a moment.';
+		this.notice = session.status === 'offline' ? 'You’re offline. Downloaded books still play.' : COULD_NOT_PLAY;
 	}
 
 	async #artwork(detail: BookDetail) {

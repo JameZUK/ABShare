@@ -131,8 +131,19 @@ fn size_only(range: Option<&str>) -> bool {
 
 /// Whether the response starts at the beginning of the book: a new download or saved file,
 /// not a later piece of one (or a resumed one).
+///
+/// Decided from the range as the server reads it, not from its spelling: `bytes=00-` starts
+/// at byte 0 as well, and used to slip past the audit (2026-11-12 review, M1). Anything that
+/// isn't plainly a later piece counts as the start: a missing or unreadable range is answered
+/// with the whole file, and `bytes=-N` (the last N bytes) can be the whole file too.
 fn from_the_start(range: Option<&str>) -> bool {
-    range.is_none_or(|r| r.trim().starts_with("bytes=0-"))
+    let Some(spec) = range.and_then(|r| r.trim().strip_prefix("bytes=")) else { return true };
+    let Some((first, _)) = spec.split_once('-') else { return true };
+    let first = first.trim();
+    if first.is_empty() || first.len() > 19 || spec.contains(',') || !first.bytes().all(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    first.parse::<u64>().map_or(true, |n| n == 0)
 }
 
 /// Admits the caller's request for a book's audio, or refuses it. A refusal of the daily
@@ -274,17 +285,22 @@ async fn resolve_with_perms(st: &State, s: &Session, id: &str) -> Result<(Book, 
         .first()
         .and_then(|(_, _, p)| p.as_deref())
         .and_then(|p| serde_json::from_str::<crate::probe::ProbeRecord>(p).ok().map(|r| r.container));
-    let mut parts = Vec::new();
-    let mut sizes = Vec::new();
-    for (rel, size, _) in rels {
-        let p = root.join(&rel);
-        // Re-checked at open time too; this rejects anything that escapes the root early.
-        if open_inside(&root, &p).is_err() {
-            return Err(ApiError::not_found());
+    // File system calls (one per part, slow on a network share) stay off the async runtime.
+    let (parts, sizes) = tokio::task::spawn_blocking(move || {
+        let mut parts = Vec::new();
+        let mut sizes = Vec::new();
+        for (rel, size, _) in rels {
+            let p = root.join(&rel);
+            // Re-checked at open time too; this rejects anything that escapes the root early.
+            open_inside(&root, &p).ok()?;
+            parts.push(p);
+            sizes.push(size.and_then(|s| u64::try_from(s).ok()));
         }
-        parts.push(p);
-        sizes.push(size.and_then(|s| u64::try_from(s).ok()));
-    }
+        Some((parts, sizes))
+    })
+    .await
+    .map_err(ApiError::internal)?
+    .ok_or_else(ApiError::not_found)?;
     if parts.is_empty() {
         return Err(ApiError::not_found());
     }
@@ -352,14 +368,6 @@ async fn stream(
         return Err(no_permission("Downloads aren’t enabled for your account."));
     }
     let m = media(&st)?.clone();
-    if !m.ready(&src) {
-        if m.copy_failed(&src.book_id) {
-            return Ok(unplayable());
-        }
-        m.ensure_copy(src);
-        return Ok(preparing());
-    }
-    let file = m.play_file(&src).ok_or_else(ApiError::not_found)?;
     let range_h = req.get(header::RANGE).and_then(|v| v.to_str().ok());
     if q.dl.is_some_and(|d| d != 1) {
         return Err(ApiError::bad("Unknown download flag."));
@@ -368,8 +376,19 @@ async fn stream(
     if quality != "original" && bitrate_for(quality.parse().unwrap_or(0)).is_none() {
         return Err(ApiError::bad("Unknown quality."));
     }
-    let running = admit(&st, &s, &src.book_id, range_h).await?;
-    if q.dl.is_some() && running.is_some() && from_the_start(range_h) {
+    if !m.ready(&src) {
+        if m.copy_failed(&src.book_id) {
+            return Ok(unplayable());
+        }
+        start_copy(&st, &s, &m, src).await?;
+        return Ok(preparing());
+    }
+    let file = m.play_file(&src).ok_or_else(ApiError::not_found)?;
+    // The uncounted first-byte request is for the original only: in data saver even one byte
+    // means encoding, which must stay inside the limits (2026-11-12 review, M2).
+    let counted = if quality == "original" { range_h } else { range_h.filter(|_| !size_only(range_h)) };
+    let running = admit(&st, &s, &src.book_id, counted).await?;
+    if q.dl.is_some() && running.is_some() && !size_only(range_h) && from_the_start(range_h) {
         st.audit(
             "media.download",
             Some(s.user),
@@ -404,6 +423,17 @@ async fn stream(
                 },
                 RangeReply::Unsatisfiable => return Ok(unsatisfiable(len)),
             };
+            if !src.needs_copy {
+                let (src2, file2) = (src.clone(), file.clone());
+                let same = tokio::task::spawn_blocking(move || {
+                    std::fs::metadata(&file2).is_ok_and(|md| scanned_size_matches(&src2, md.len()))
+                })
+                .await
+                .map_err(ApiError::internal)?;
+                if !same {
+                    return Err(changed_on_disk(&m).await);
+                }
+            }
             let segs = layout.segments_for(start, end).map_err(|_| ApiError::bad("range"))?;
             let first = *segs.start();
             if q.dl == Some(1) {
@@ -411,7 +441,9 @@ async fn stream(
                 m.fill_span(&file, &src.book_id, &layout, *segs.start(), count).await.map_err(ApiError::internal)?;
                 m.read_ahead(file.clone(), src.book_id.clone(), layout, segs.end() + 1, MAX_SEGMENTS_PER_RESPONSE);
             }
-            let generation = (status == StatusCode::PARTIAL_CONTENT).then(|| m.new_seek(s.device));
+            // A download isn't a seek: it must not cancel what the same device is listening to
+            // (2026-11-12 review, L11).
+            let generation = (status == StatusCode::PARTIAL_CONTENT && q.dl.is_none()).then(|| m.new_seek(s.device));
             let book = src.book_id.clone();
             let device = s.device;
             let stream =
@@ -449,6 +481,30 @@ async fn stream(
     }
 }
 
+/// Whether a single-file book is still the size the scan recorded.
+fn scanned_size_matches(src: &Source, len: u64) -> bool {
+    src.sizes.first().copied().flatten().is_none_or(|s| s == len)
+}
+
+/// The refusal for a book whose file changed since the scan, which also asks for a scan.
+async fn changed_on_disk(m: &Media) -> ApiError {
+    let _ = tokio::fs::write(m.data_dir.join("scan-requested"), b"1").await;
+    ApiError::new(
+        StatusCode::CONFLICT,
+        "changed",
+        "This book has changed on disk. It will be back after the next library scan.",
+    )
+}
+
+/// Starts building a book's playable copy, counted like playing it: the build is hours of
+/// ffmpeg work on one lane, so it stays inside the daily limit of different books
+/// (2026-11-12 review, M2).
+async fn start_copy(st: &State, s: &Session, m: &Arc<Media>, src: Source) -> Result<(), ApiError> {
+    let _counted = admit(st, s, &src.book_id, None).await?;
+    m.ensure_copy(src);
+    Ok(())
+}
+
 async fn serve_file(src: &Source, file: &PathBuf, range_h: Option<&str>, m: &Media) -> Result<Response, ApiError> {
     // From the probed container, never the file name. A playable copy is always MP4.
     let ctype = if src.needs_copy {
@@ -466,13 +522,8 @@ async fn serve_file(src: &Source, file: &PathBuf, range_h: Option<&str>, m: &Med
     let len = md.len();
     // The file must still be the one the scan recorded: if it changed or was swapped since,
     // refuse it and ask the scanner to look again.
-    if !src.needs_copy && src.sizes.first().copied().flatten().is_some_and(|s| s != len) {
-        let _ = tokio::fs::write(m.data_dir.join("scan-requested"), b"1").await;
-        return Err(ApiError::new(
-            StatusCode::CONFLICT,
-            "changed",
-            "This book has changed on disk. It will be back after the next library scan.",
-        ));
+    if !src.needs_copy && !scanned_size_matches(src, len) {
+        return Err(changed_on_disk(m).await);
     }
     let mtime =
         md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
@@ -511,7 +562,8 @@ async fn state(
     // rather than failing to play.
     let limited = !st.audio.would_allow(s.user, &src.book_id, now());
     if !ready && !failed {
-        m.ensure_copy(src);
+        // Refused (the daily limit): nothing is built, and `limited` says why.
+        let _ = start_copy(&st, &s, &m, src).await;
     }
     Ok(Json(json!({ "ready": ready, "failed": failed, "limited": limited })))
 }
@@ -551,7 +603,7 @@ async fn save_file(
         if m.copy_failed(&src.book_id) {
             return Ok(unplayable());
         }
-        m.ensure_copy(src);
+        start_copy(&st, &s, &m, src).await?;
         return Ok(preparing());
     }
     let file = m.play_file(&src).ok_or_else(ApiError::not_found)?;
@@ -682,7 +734,12 @@ mod tests {
             assert!(!size_only(r), "{r:?}");
         }
         assert!(from_the_start(None) && from_the_start(Some("bytes=0-499")));
-        assert!(!from_the_start(Some("bytes=500-")) && !from_the_start(Some("bytes=-500")));
+        assert!(!from_the_start(Some("bytes=500-")) && !from_the_start(Some("bytes=01-9")));
+        // However byte 0 is spelt, and whatever can't be told apart from the whole file
+        // (2026-11-12 review, M1).
+        for r in ["bytes=00-", "bytes= 0-", "bytes=-500", "bytes=0-0,5-9", "bytes=x-", "items=5-"] {
+            assert!(from_the_start(Some(r)), "{r}");
+        }
     }
 
     #[test]

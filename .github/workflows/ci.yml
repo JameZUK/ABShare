@@ -31,7 +31,7 @@ jobs:
       - name: ffmpeg and sqlite for the scanner tests
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg sqlite3
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       # The jail needs Landlock ABI 6 (Linux 6.12+); the hosted runners have it (kernel 6.17,
       # ABI 7, checked 2026-10-17). With ABSHARE_REQUIRE_LANDLOCK set, the jail escape tests,
       # the jailed ffmpeg tests and the demo-library integration test fail instead of skipping.
@@ -45,8 +45,8 @@ jobs:
           ABSHARE_REQUIRE_LANDLOCK: "1"
         run: |
           for fd in /proc/$$/fd/*; do n=${fd##*/}; if [ "$n" -gt 2 ] && [ "$n" -lt 255 ]; then eval "exec $n>&-"; fi; done
-          cargo test --workspace
-          cargo test --workspace --release
+          cargo test --workspace --locked
+          cargo test --workspace --locked --release
 
   web:
     runs-on: ubuntu-24.04
@@ -59,6 +59,8 @@ jobs:
         with:
           node-version: 24
       - run: npm ci --ignore-scripts
+      - name: Known vulnerabilities in what ships (high and critical)
+        run: npm audit --omit=dev --audit-level=high
       - name: Type check (strict, warnings fail)
         run: npm run check
       - name: Unit tests and the HTML-injection source scan
@@ -84,7 +86,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Landlock is available
         run: cat /sys/kernel/security/lsm | grep -q landlock
-      - run: cargo build --bin abshare --bin abshare-jail
+      - run: cargo build --locked --bin abshare --bin abshare-jail
       - name: Web app and browser
         working-directory: web/app
         run: |
@@ -118,6 +120,25 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check licenses advisories bans sources
+      # The fuzz targets have a workspace and a lock file of their own (fuzz/Cargo.lock).
+      - name: Advisories for the fuzz targets' dependencies
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          manifest-path: fuzz/Cargo.toml
+          command: check advisories
+          command-arguments: --config deny.toml
+
+  # No private information in the tracked files (the repository is public): addresses, emails
+  # and private host names. A contributor's own list of private strings can't exist here; the
+  # hooks in .githooks check against it before a commit (docs/BUILDING.md).
+  private:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: The check's own tests
+        run: python3 -I tools/check-private.py --self-test
+      - name: Every tracked file
+        run: python3 -I tools/check-private.py tree
 
   fuzz:
     runs-on: ubuntu-24.04
@@ -125,7 +146,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
-          toolchain: nightly
+          # A dated nightly, so a new compiler can't change or break a build unannounced. To
+          # move it: pick a newer date, run this job, and commit the new date if it passes.
+          toolchain: nightly-2026-11-08
       - run: cargo install cargo-fuzz@0.13.2 --locked
       - name: Each fuzz target for 60 seconds
         working-directory: fuzz
@@ -164,7 +187,11 @@ jobs:
             echo "built with a bad archive"; exit 1
           fi
           grep -q "ffmpeg.tar.gz: FAILED" bad.txt || { tail -20 bad.txt; exit 1; }
-      - name: Deploy test (the image behind nginx with TLS)
+      - name: ffmpeg, to build the demo library the image scans and plays
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Landlock is available (the jail in the image needs it)
+        run: cat /sys/kernel/security/lsm | grep -q landlock
+      - name: Deploy test (the image behind nginx with TLS, on the demo library)
         run: deploy/ci/run.sh
       - name: Image scan (high and critical, with fixes available)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -181,6 +208,17 @@ jobs:
           for u in deploy/abshare.service deploy/abshare-scan.service; do
             systemd-analyze security --offline=yes --threshold=15 "$u" > out.txt || { cat out.txt; exit 1; }
             tail -1 out.txt
+          done
+      # Both units write the state directory, so they must be one user (two DynamicUser units
+      # without a shared User= get different ones and take the directory from each other).
+      - name: The systemd units run as the same user
+        run: |
+          for u in deploy/abshare.service deploy/abshare-scan.service; do
+            for want in DynamicUser=yes User=abshare Group=abshare StateDirectory=abshare; do
+              grep -qx "$want" "$u" || { echo "$u: $want is missing"; exit 1; }
+            done
+            systemd-analyze verify "$u" 2>&1 | grep -v "is not executable" > verify.txt || true
+            if [ -s verify.txt ]; then cat verify.txt; exit 1; fi
           done
       - name: The image runs as non-root and its binaries are present
         run: |

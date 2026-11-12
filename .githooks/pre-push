@@ -1,0 +1,8 @@
+#!/bin/sh
+# Refuses a push whose commits hold private information (tools/check-private.py).
+zero=0000000000000000000000000000000000000000
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue
+  if [ "$remote_sha" = "$zero" ]; then range="$local_sha"; else range="$remote_sha..$local_sha"; fi
+  python3 -I "$(git rev-parse --show-toplevel)/tools/check-private.py" range "$range" || exit 1
+done

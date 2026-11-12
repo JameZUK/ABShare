@@ -102,7 +102,22 @@ fn last_mac(conn: &Connection) -> Result<Vec<u8>, String> {
 
 /// Appends one entry. Long free-text fields are cut, so a flood of failed sign-ins can't
 /// grow the log without bound (the row count is bounded by pruning too).
+///
+/// The read of the newest entry and the write of the next happen in one write transaction:
+/// the server and the admin CLI are separate processes, and without it both could chain an
+/// entry to the same predecessor, which breaks verification for good (2026-11-12 review, L5).
 pub fn append(conn: &Connection, key: &[u8; 32], e: &Entry<'_>, now: i64) -> Result<(), String> {
+    // Inside a caller's transaction already: its writes and this entry commit together.
+    if !conn.is_autocommit() {
+        return append_in_transaction(conn, key, e, now);
+    }
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(sql_err)?;
+    let done = append_in_transaction(conn, key, e, now);
+    let end = conn.execute_batch(if done.is_ok() { "COMMIT" } else { "ROLLBACK" }).map_err(sql_err);
+    done.and(end)
+}
+
+fn append_in_transaction(conn: &Connection, key: &[u8; 32], e: &Entry<'_>, now: i64) -> Result<(), String> {
     let detail: String = e.detail.chars().take(500).collect();
     let ip: Option<String> = e.ip.map(|s| s.chars().take(64).collect());
     let e = Entry { detail: &detail, ip: ip.as_deref(), ..e.clone() };
@@ -209,7 +224,10 @@ pub fn verify(conn: &Connection, key: &[u8; 32]) -> Result<usize, i64> {
         .flatten();
     match head {
         Some((hid, t)) if hid == last_id && ct(&t, &tag(key, b"head", hid, &prev)) => Ok(n),
-        Some(_) | None if n == 0 && expect_first == 1 => Ok(0),
+        // A log never written to and never tagged (before the first start-up). With a head
+        // present the arm above decides: a head left behind by an emptied log names rows that
+        // are gone, and used to pass as "empty" (2026-11-12 review, L4).
+        None if n == 0 && expect_first == 1 => Ok(0),
         _ => Err(last_id + 1),
     }
 }
@@ -249,6 +267,41 @@ mod tests {
         c.execute("DELETE FROM audit WHERE id = 6", []).expect("delete");
         assert_eq!(verify(&c, &K), Err(7));
         assert_eq!(verify(&db(), &[4; 32]), Ok(0), "an empty log verifies");
+    }
+
+    // 2026-11-12 review, L4: emptying the table left a head naming rows that were gone, and
+    // the log still verified as "empty".
+    #[test]
+    fn an_emptied_log_is_detected() {
+        let c = db();
+        add(&c, 10, 1000);
+        c.execute("DELETE FROM audit", []).expect("empty");
+        assert!(verify(&c, &K).is_err(), "an emptied log must not verify");
+        // A log that really is empty, with the head written at start-up, still verifies.
+        let c = db();
+        ensure_tags(&c, &K).expect("tags");
+        assert_eq!(verify(&c, &K), Ok(0));
+    }
+
+    // 2026-11-12 review, L5: the server and the admin CLI append from separate processes.
+    #[test]
+    fn two_writers_at_once_never_fork_the_chain() {
+        let path = std::env::temp_dir().join(format!("abshare-audit-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        drop(crate::db::open(&path).expect("db"));
+        let writers: Vec<_> = (0..4)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || add(&crate::db::open(&path).expect("db"), 60, 1000))
+            })
+            .collect();
+        for w in writers {
+            w.join().expect("writer");
+        }
+        assert_eq!(verify(&crate::db::open(&path).expect("db"), &K), Ok(240));
+        for ext in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{ext}", path.display()));
+        }
     }
 
     #[test]

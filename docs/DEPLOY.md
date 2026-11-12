@@ -11,7 +11,8 @@ library scanner (`abshare scan --every 3600`). Put a TLS reverse proxy in front.
   command line and reboot.
 - Docker with Compose, or systemd.
 - About 2 GB of memory; disk for the transcode cache (10 GiB by default, `[cache] max_gib`).
-- Your audiobook folder, **mounted read-only**. ABShare refuses a library it can write to.
+- Your audiobook folder, **mounted read-only**. ABShare refuses a library it can write to:
+  `serve`, `check-config` and `doctor` all check.
 
 ## Docker Compose (recommended)
 
@@ -27,6 +28,7 @@ Edit `abshare.toml`:
 
 - `public_origin`: the address people use, such as `https://books.example.com`;
 - `trusted_proxies`: your reverse proxy's address, as ABShare sees it;
+- `listen`: an IP address and port (not a host name);
 - the `[[library]]` path, matching the volume in `compose.yaml` (`/library`).
 
 Edit `compose.yaml` so the library volume points at your audiobook folder, with `:ro`.
@@ -48,6 +50,23 @@ as above, by calling `/usr/local/bin/abshare` directly.
 The first scan starts on its own; a large library takes a few minutes the first time and
 seconds afterwards. To scan now: Settings → Admin → Library → Scan now.
 
+The server container has a health check: `abshare health` asks the server's own `/healthz`
+and `docker compose ps` shows the result. `docker compose stop` ends both processes promptly:
+the server stops taking connections at once and gives requests in progress up to 8 seconds.
+
+### What the containers can reach
+
+- The **scanner** has no network at all (`network_mode: none`); it needs none.
+- The **server** makes no outbound connections, but the example doesn't stop it from making
+  them: Docker's default network lets a container reach the internet and your LAN. If you
+  want that enforced as well, it is yours to add, and ABShare's tests don't cover it. Two
+  ways:
+  - when the reverse proxy is itself a container, put ABShare and the proxy on a network
+    marked `internal: true` and publish no port from ABShare;
+  - when the proxy runs on the host, a published port needs an ordinary network, so drop
+    new outbound connections from that network in the host firewall (Docker's `DOCKER-USER`
+    chain).
+
 ### The first admin
 
 ```sh
@@ -67,6 +86,11 @@ Examples: [`deploy/nginx.example.conf`](../deploy/nginx.example.conf) and
   `X-Forwarded-Proto: https`. ABShare believes these headers only from addresses in
   `trusted_proxies`, and uses them for lockouts and rate limits.
 - `Host` passed through unchanged. ABShare answers only for the host in `public_origin`.
+- **A proxy on the same machine still goes in `trusted_proxies`** (`["127.0.0.1"]`). With a
+  loopback `listen` and no trusted proxy, ABShare takes loopback connections as they are: it
+  would accept plain HTTP from the proxy, and every client would share the proxy's address for
+  lockouts and rate limits. `serve` and `check-config` print a warning in that case (it is
+  right only for local use without a proxy).
 - **No `Content-Security-Policy` at the proxy.** ABShare sends its own; two policies combine
   and break the app.
 - No response buffering for audio, and long read timeouts.
@@ -78,6 +102,11 @@ Examples: [`deploy/nginx.example.conf`](../deploy/nginx.example.conf) and
 (`systemd-analyze security` scores 1.4 and 0.6). Install the binaries in `/usr/local/bin`, the
 built web app (`web/app/build`) in `/usr/share/abshare/web`, and the configuration in
 `/etc/abshare/abshare.toml` with `data_dir = "/var/lib/abshare"`.
+
+Both units have `DynamicUser=yes` with the same `User=abshare` and `Group=abshare`, so systemd
+gives them one shared user and both own the data directory. Keep those lines identical in the
+two files: with different names (or none) each unit gets its own user, and they take the data
+directory from each other. If a system user called `abshare` already exists, systemd uses it.
 
 ## Upgrading
 

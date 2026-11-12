@@ -256,3 +256,193 @@ test('wiping a user’s data is not blocked by an open connection (review W3)', 
 	await closeUserDb();
 	expect(await sync.local(A)).toBeUndefined();
 });
+
+test('an event recorded while the outbox is being sent goes in a second pass, not at the next trigger (review L24)', async () => {
+	await sync.record(A, 'position', 1_000);
+	fake.session.status = 'signed-in';
+	fake.post.mockImplementationOnce(async () => {
+		await sync.record(B, 'position', 2_000); // recorded mid-flush
+		return { result: 'accepted' };
+	});
+	await sync.flush();
+	expect(fake.post.mock.calls.map((c) => c[0])).toEqual([`v1/progress/${A}`, `v1/progress/${B}`]);
+	expect(await outbox()).toEqual([]);
+});
+
+// The server refuses events stamped more than 5 minutes ahead of its clock (422 `clock`), and
+// stores nothing for them. Listening must never be dropped for a wrong clock (review L23).
+describe('a device whose clock is wrong', () => {
+	const clock = (serverTime?: number) => new ApiError(422, 'clock', 'This device’s clock is too far ahead.', undefined, serverTime);
+	type Body = OutboxItem['body'];
+
+	beforeEach(() => {
+		sync.clock = 'ok';
+	});
+
+	test('a refused time is put right by the server’s clock, and the order of events is kept', async () => {
+		const m = await import('$lib/offline/sync.svelte');
+		// An hour fast: moved back an hour.
+		expect(m.correctedTime(5_000_000, 5_000_100, 1_400_100)).toBe(1_400_000);
+		// Stamped under a bigger error than today's: never later than the server's now.
+		expect(m.correctedTime(9_000_000, 2_000_000, 2_000_000)).toBe(2_000_000);
+		// A clock that is not ahead explains nothing: still capped at the server's now.
+		expect(m.correctedTime(3_000_000, 1_000_000, 2_000_000)).toBe(2_000_000);
+		// Later than the one sent before it for the same book.
+		expect(m.correctedTime(9_000_000, 2_000_000, 2_000_000, 2_000_000)).toBe(2_000_001);
+		expect(m.correctedTime(5_000_000, 5_000_100, 1_400_100, 1_000)).toBe(1_400_000);
+	});
+
+	test('ahead: the event is sent again under the same key with the corrected time, never dropped', async () => {
+		const HOUR = 3_600_000;
+		vi.spyOn(Date, 'now').mockReturnValue(1_800_000_000_000 + HOUR); // this device is an hour fast
+		try {
+			await sync.record(A, 'position', 7_000);
+			fake.session.status = 'signed-in';
+			fake.post.mockImplementationOnce(async () => {
+				throw clock(1_800_000_000_000);
+			});
+			await sync.flush();
+			const sent = fake.post.mock.calls.map((c) => c[1] as Body);
+			expect(sent).toHaveLength(2);
+			expect(sent[1]!.key, 'the same idempotency key').toBe(sent[0]!.key);
+			expect(sent[0]!.event_time_ms).toBe(1_800_000_000_000 + HOUR);
+			expect(sent[1]!.event_time_ms).toBe(1_800_000_000_000);
+			expect(sent[1]!.position_ms).toBe(7_000);
+			expect(await outbox(), 'removed only once the server took it').toEqual([]);
+			expect(sync.clock).toBe('ok');
+		} finally {
+			vi.restoreAllMocks();
+		}
+	});
+
+	test('ahead and refused again, or with no server time to go by: it stays queued and the listener is told', async () => {
+		await sync.record(A, 'position', 7_000);
+		await sync.record(B, 'finished');
+		fake.session.status = 'signed-in';
+		fake.post.mockImplementation(async () => {
+			throw clock(undefined);
+		});
+		await sync.flush();
+		expect(fake.post).toHaveBeenCalledTimes(1);
+		expect((await outbox()).map((i) => i.body.action), 'nothing lost').toEqual(['position', 'finished']);
+		expect(sync.clock).toBe('ahead');
+
+		fake.post.mockReset();
+		fake.post.mockImplementation(async () => {
+			throw clock(Date.now());
+		});
+		await sync.flush();
+		expect(fake.post, 'one corrected attempt, then it waits').toHaveBeenCalledTimes(2);
+		expect((await outbox()).map((i) => i.body.action)).toEqual(['position', 'finished']);
+		expect(sync.clock).toBe('ahead');
+
+		// The clock put right: everything goes, and the notice with it.
+		fake.post.mockReset();
+		fake.post.mockImplementation(async () => ({ result: 'accepted' }));
+		await sync.flush();
+		expect(await outbox()).toEqual([]);
+		expect(sync.clock).toBe('ok');
+	});
+
+	test('a corrected time that was lost on the way is sent the same again', async () => {
+		await sync.record(A, 'position', 7_000);
+		fake.session.status = 'signed-in';
+		const serverNow = Date.now() - 3_600_000;
+		fake.post.mockImplementationOnce(async () => {
+			throw clock(serverNow);
+		});
+		fake.post.mockImplementationOnce(async () => {
+			throw new NetworkError();
+		});
+		await sync.flush();
+		const [kept] = await outbox();
+		expect(kept!.body.event_time_ms, 'the correction is kept').toBeLessThanOrEqual(serverNow);
+		await sync.flush();
+		const sent = fake.post.mock.calls.map((c) => c[1] as Body);
+		expect(sent[2]).toEqual(sent[1]);
+		expect(await outbox()).toEqual([]);
+	});
+
+	test('too old is still refused for good (the server will never take it)', async () => {
+		await sync.record(A, 'position', 7_000);
+		fake.session.status = 'signed-in';
+		fake.post.mockImplementationOnce(async () => {
+			throw new ApiError(422, 'too_old', 'That listening was too long ago to record.');
+		});
+		await sync.flush();
+		expect(await outbox()).toEqual([]);
+		expect(sync.clock).toBe('ok');
+	});
+
+	test('behind: a stale answer stamped in this device’s future tells the listener; an ordinary one doesn’t', async () => {
+		const m = await import('$lib/offline/sync.svelte');
+		expect(m.clockBehind(Date.now() + m.MAX_FUTURE_MS + 1_000, Date.now())).toBe(true);
+		expect(m.clockBehind(Date.now() + 60_000, Date.now())).toBe(false);
+
+		await sync.record(A, 'position', 7_000);
+		fake.session.status = 'signed-in';
+		// Another device listened later: nothing wrong with any clock.
+		fake.post.mockImplementationOnce(async () => ({ result: 'stale', progress: { position_ms: 9_000, finished: false, updated_at: Date.now() + 1_000 } }));
+		await sync.flush();
+		expect(sync.clock).toBe('ok');
+		// The server's progress is stamped a day after this device's now: this clock is behind.
+		fake.session.status = 'offline';
+		await sync.record(A, 'position', 8_000);
+		fake.session.status = 'signed-in';
+		fake.post.mockImplementationOnce(async () => ({ result: 'stale', progress: { position_ms: 9_000, finished: false, updated_at: Date.now() + 86_400_000 } }));
+		await sync.flush();
+		expect(sync.clock).toBe('behind');
+		expect(await outbox(), 'the server has answered for it').toEqual([]);
+	});
+});
+
+test('the server’s clock is read from an error’s Date header', async () => {
+	const { callJson, serverTimeOf } = await import('$lib/api/http');
+	expect(serverTimeOf('Thu, 12 Nov 2026 10:00:00 GMT')).toBe(Date.UTC(2026, 10, 12, 10));
+	expect(serverTimeOf(null)).toBeUndefined();
+	expect(serverTimeOf('soon')).toBeUndefined();
+	vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ error: 'clock', message: 'ahead' }), { status: 422, headers: { date: 'Thu, 12 Nov 2026 10:00:00 GMT' } }));
+	try {
+		const e = await callJson('v1/progress/x', { method: 'PUT' }).catch((x: unknown) => x);
+		expect(e).toBeInstanceOf(ApiError);
+		expect((e as ApiError).serverTime).toBe(Date.UTC(2026, 10, 12, 10));
+	} finally {
+		vi.unstubAllGlobals();
+	}
+});
+
+// A browser that refuses IndexedDB (private modes, blocked site data): listening still works
+// and progress still reaches the server (review L26b).
+describe('with no IndexedDB', () => {
+	beforeEach(async () => {
+		await closeUserDb();
+		vi.spyOn(indexedDB, 'open').mockImplementation(() => {
+			throw new DOMException('The operation is insecure.', 'SecurityError');
+		});
+	});
+	afterEach(async () => {
+		vi.restoreAllMocks();
+		await closeUserDb();
+	});
+
+	test('the last local position is simply unknown: opening a book doesn’t fail', async () => {
+		await expect(sync.local(A)).resolves.toBeUndefined();
+	});
+
+	test('progress is sent straight to the server when it can’t be queued', async () => {
+		fake.session.status = 'signed-in';
+		await sync.record(A, 'position', 4_000);
+		await sync.record(A, 'finished');
+		expect(fake.post.mock.calls.map((c) => [c[0], (c[1] as OutboxItem['body']).action, (c[1] as OutboxItem['body']).position_ms, c[2]])).toEqual([
+			[`v1/progress/${A}`, 'position', 4_000, 'PUT'],
+			[`v1/progress/${A}`, 'finished', undefined, 'PUT'],
+		]);
+		for (const c of fake.post.mock.calls) expect((c[1] as OutboxItem['body']).key).toMatch(/^[A-Za-z0-9_-]{8,64}$/);
+	});
+
+	test('offline with no outbox, recording fails quietly and sends nothing', async () => {
+		fake.session.status = 'offline';
+		await expect(sync.record(A, 'position', 4_000)).resolves.toBeUndefined();
+		expect(fake.post).not.toHaveBeenCalled();
+	});
+});

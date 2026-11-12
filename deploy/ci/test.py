@@ -3,7 +3,11 @@
 Checks, through the proxy: plain HTTP redirects to HTTPS; exactly one Content-Security-Policy
 and HSTS on responses; a wrong Host is refused; the API refuses requests without a token;
 enrolment works and its cookies are HttpOnly, Secure, SameSite=Strict with narrow paths; a
-client can't dodge the sign-in lockout by spoofing X-Forwarded-For. Standard library only.
+client can't dodge the sign-in lockout by spoofing X-Forwarded-For. And, on the invented demo
+library that run.sh had the image scan: the books are there, an original stream answers a
+Range request, a data-saver segment is encoded, and a book of several files gets its playable
+copy. That exercises the image's minimal ffmpeg and the jail under Docker. Standard library
+only.
 
 usage: test.py INVITE_LINK
 """
@@ -32,7 +36,8 @@ def check(cond, what):
 
 
 def request(method, path, body=None, headers=None, host=HOST, tls=True):
-    conn = (http.client.HTTPSConnection("127.0.0.1", 8443, context=CTX) if tls else http.client.HTTPConnection("127.0.0.1", 8080))
+    conn = (http.client.HTTPSConnection("127.0.0.1", 8443, context=CTX, timeout=120) if tls
+            else http.client.HTTPConnection("127.0.0.1", 8080, timeout=120))
     h = {"Host": host, "X-ABShare-Client": "1", "Origin": ORIGIN}
     if body is not None:
         h["Content-Type"] = "application/json"
@@ -50,6 +55,53 @@ def totp(secret):
     mac = hmac.new(key, struct.pack(">Q", int(time.time()) // 30), hashlib.sha1).digest()
     o = mac[-1] & 15
     return "%06d" % ((struct.unpack(">I", mac[o:o + 4])[0] & 0x7FFFFFFF) % 1_000_000)
+
+
+def media(access):
+    """The scanned demo library: listing, an original stream, data saver, a playable copy."""
+    auth = {"Authorization": f"Bearer {access}"}
+    r, b = request("GET", "/v1/books?limit=100", headers=auth)
+    items = json.loads(b).get("items", []) if r.status == 200 else []
+    books = {i.get("title"): i["id"] for i in items if i.get("type") != "show"}
+    check(len(books) >= 8, f"the scan in the image found the demo books (got {len(books)})")
+    for title in ("The Copper Tide", "Far Station"):
+        check(title in books, f"{title} is in the library")
+    if "The Copper Tide" not in books or "Far Station" not in books:
+        return
+
+    # A single AAC file is served as it is, by range.
+    one = books["The Copper Tide"]
+    r, b = request("GET", f"/v1/books/{one}", headers=auth)
+    detail = json.loads(b) if r.status == 200 else {}
+    check(len(detail.get("chapters", [])) == 3 and detail.get("duration_ms", 0) > 25_000,
+          "the image's ffprobe read the chapters and the length")
+    r, b = request("GET", f"/v1/media/{one}", headers={**auth, "Range": "bytes=0-4095"})
+    check(r.status == 206 and len(b) == 4096 and r.getheader("Content-Range", "").startswith("bytes 0-4095/")
+          and r.getheader("Content-Type") == "audio/mp4" and b[4:8] == b"ftyp",
+          f"an original stream answers a Range request (got {r.status}, {len(b)} bytes)")
+
+    # Data saver: the jailed ffmpeg encodes an MP3 segment on demand.
+    r, b = request("GET", f"/v1/media/{one}?q=32", headers={**auth, "Range": "bytes=0-3999"})
+    check(r.status == 206 and len(b) == 4000 and r.getheader("Content-Type") == "audio/mpeg"
+          and b[0] == 0xFF and b[1] & 0xE0 == 0xE0,
+          f"a data-saver segment is encoded and served (got {r.status}, {len(b)} bytes)")
+
+    # Several MP3 parts: the jailed ffmpeg builds one AAC playable copy.
+    many = books["Far Station"]
+    state = {}
+    for _ in range(90):
+        r, b = request("GET", f"/v1/media/{many}/state", headers=auth)
+        state = json.loads(b) if r.status == 200 else {}
+        if state.get("ready") or state.get("failed"):
+            break
+        time.sleep(1)
+    check(state.get("ready") is True, f"a playable copy of a book in several files is built (state {state})")
+    r, b = request("GET", f"/v1/media/{many}", headers={**auth, "Range": "bytes=0-1023"})
+    check(r.status == 206 and r.getheader("Content-Type") == "audio/mp4" and len(b) == 1024,
+          f"the playable copy streams (got {r.status})")
+
+    r, _ = request("GET", f"/v1/media/{one}?q=32")
+    check(r.status == 401, f"audio needs a credential (got {r.status})")
 
 
 def main(invite):
@@ -93,6 +145,8 @@ def main(invite):
     access = json.loads(b)["access_token"]
     r, _ = request("GET", "/v1/books", headers={"Authorization": f"Bearer {access}"})
     check(r.status == 200, "the API answers with a token")
+
+    media(access)
 
     # Spoofed X-Forwarded-For can't spread failures over fake addresses: nginx overwrites it,
     # and ABShare trusts only nginx, so the sixth failure from one client is locked out.

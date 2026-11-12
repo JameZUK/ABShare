@@ -245,6 +245,9 @@ pub const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (rec_id, user_id)
     );
     ALTER TABLE listening ADD COLUMN start_position_ms INTEGER;",
+    // 10: the prune of old progress keys runs on every progress write; without an index on
+    // `at` it read the whole table each time (2026-11-12 review, M4).
+    "CREATE INDEX progress_key_at ON progress_key(at);",
 ];
 
 pub fn sql_err(e: rusqlite::Error) -> String {

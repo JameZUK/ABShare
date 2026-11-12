@@ -42,6 +42,13 @@ The Dockerfile has four stages, each from a base image pinned by digest:
 
 The ffmpeg stage takes about two minutes on 8 cores. The image runs as uid 65534. The comments at the top of the Dockerfile say how to update the digests and the FFmpeg checksum.
 
+**No scanner covers the image's ffmpeg and LAME.** They are built from source and statically linked, so Trivy (which reads package databases and lock files) doesn't see them, and neither does `cargo deny` or `npm audit`. Check them by hand, before each release and whenever FFmpeg announces a fix:
+
+1. Read [ffmpeg.org/security.html](https://ffmpeg.org/security.html) for fixes in the 7.1 branch newer than `FFMPEG_VERSION`, and LAME's news for a release after `LAME_VERSION`.
+2. To move to a new version, change `FFMPEG_VERSION` and `FFMPEG_SHA256` (or `LAME_VERSION` and `LAME_SHA256`) together: the four `ARG` lines at the top of `deploy/Dockerfile`. The comment above the ffmpeg stage there says how to verify a new FFmpeg archive before pinning its checksum.
+3. If the FFmpeg branch changes (7.1 to something newer), also change the version the `image` job expects (`"$t version 7.1."` in `.github/workflows/ci.yml`).
+4. Rebuild and run `deploy/ci/run.sh`.
+
 ## Checks
 
 `tools/check.sh` runs every local gate and stops at the first failure:
@@ -67,11 +74,12 @@ Set `ABSHARE_REQUIRE_LANDLOCK=1` to make the jail and ffmpeg tests fail instead 
 | Job | What |
 |---|---|
 | `test` | Formatting, clippy, and the Rust tests in debug and release builds, with ffmpeg installed. |
-| `web` | `npm ci`, the type check, the tests and the build. |
-| `supply-chain` | `cargo deny check`: licences, advisories, banned crates and sources. |
-| `fuzz` | Every fuzz target for 60 seconds. |
+| `web` | `npm ci`, `npm audit` of what ships (high and critical), the type check, the tests and the build. |
+| `supply-chain` | `cargo deny check`: licences, advisories, banned crates and sources; and advisories for the fuzz targets' own lock file (`fuzz/Cargo.lock`). |
+| `private` | `tools/check-private.py`: its own tests, then every tracked file for addresses, emails and private host names (see Contributing). |
+| `fuzz` | Every fuzz target for 60 seconds, on a dated nightly toolchain. |
 | `e2e` | The browser tests (below), with the reports, any failures' traces and screenshots, and CI's reference screenshots kept as the `e2e-results` artifact for 14 days. |
-| `image` | Builds the image, runs it behind nginx with TLS and checks it from outside (`deploy/ci/run.sh`); scans the image with Trivy for high and critical vulnerabilities; checks that both systemd units score 1.5 or less with `systemd-analyze security`; checks that the image runs as non-root. |
+| `image` | Builds the image; scans the demo library with it (no network), runs it behind nginx with TLS and checks it from outside, including an original stream, a data-saver segment and a playable copy made by the image's ffmpeg in the jail, the container's health check, and a clean stop on SIGTERM (`deploy/ci/run.sh`, which needs ffmpeg on the machine to make the demo library; `ABSHARE_IMAGE` names another image tag to test); scans the image with Trivy for high and critical vulnerabilities; checks that both systemd units score 1.5 or less with `systemd-analyze security` and run as the same user; checks that the image runs as non-root. |
 
 ### Browser tests
 
@@ -152,7 +160,7 @@ target/release/abshare admin invite --config $C --admin --name "Ada Lovelace"
 target/release/abshare serve --config $C
 ```
 
-Open the printed invite link. `http://localhost` is the only plain-HTTP origin ABShare accepts, and it counts as secure for passkeys in most browsers. `abshare doctor --config $C` checks the set-up.
+Open the printed invite link. Plain HTTP is accepted as an origin only for this machine: exactly `http://localhost`, `http://127.0.0.1` or `http://[::1]`, with an optional port. `localhost` counts as secure for passkeys in most browsers. `serve` warns that a loopback `listen` has no trusted proxy; that is expected here. `abshare doctor --config $C` checks the set-up.
 
 ### Developing the web app
 
@@ -172,7 +180,13 @@ The working rules are in [`CLAUDE.md`](../CLAUDE.md) and [`SPEC.md`](../SPEC.md)
 - **Security first.** Every route declares its auth, every body has a strict schema, and every externally reachable change comes with negative tests that prove attacks are refused. Security fixes come with a regression test that fails before the fix.
 - **Tests at every point.** No component, endpoint or parser lands without tests, and every parser of untrusted bytes has a fuzz target. Work isn't done while any test fails or is skipped.
 - **`core` does no I/O.** Pure logic goes in `core`; I/O goes in `server`.
-- **No personal information.** This repository is public. Use placeholders (`books.example.com`, `10.0.0.10`, `/srv/audiobooks`, invented titles). `tools/check-private.py` runs as a pre-commit hook against a gitignored list of private strings; never bypass it.
+- **No personal information.** This repository is public. Use placeholders (`books.example.com`, `10.0.0.10`, `/srv/audiobooks`, invented titles). Turn the hooks on once in each clone:
+
+  ```sh
+  git config core.hooksPath .githooks
+  ```
+
+  They run `tools/check-private.py` on what you stage, on the commit message and on what you push; never bypass them. It always looks for IPv4 addresses outside the placeholder and documentation ranges, email addresses other than example and no-reply ones, and host names ending in `.lan`, `.local`, `.internal` or `.home.arpa`. It also checks against your own list of private strings (real host names, titles, names), one per line in the gitignored `dev/local.private-patterns.txt`: write that list, because without it the hooks warn loudly and only the generic checks run. Entries shorter than 5 characters aren't checked, and the script says which lines they are. CI runs the generic checks over every tracked file (`tools/check-private.py tree`) and the script's own tests (`--self-test`).
 - **Clean room.** Other audiobook servers are references for behaviour only; never copy their code.
 - **New dependencies** need a reason in the pull request: why, the alternatives, maintenance and `unsafe` use.
 - **British English** in docs and the interface. Docs claim only what is built and tested.

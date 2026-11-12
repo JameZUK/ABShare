@@ -181,6 +181,10 @@ pub struct AppState {
     pub hasher: Hasher,
     pub sessions: Sessions,
     pub limiter: Mutex<Limiter>,
+    /// Failed step-ups, counted apart from failed sign-ins. Only someone already signed in
+    /// to an account can add to it, so strangers failing sign-ins for a username can't hold
+    /// its owner out of step-up (2026-11-12 review, M6).
+    pub step_up_limiter: Mutex<Limiter>,
     pub seeds: SeedBox,
     pub audit_key: [u8; 32],
     noise_minute: std::sync::atomic::AtomicI64,
@@ -190,6 +194,9 @@ pub struct AppState {
     pub enrol: Ceremonies<Enrol>,
     pub login: Ceremonies<LoginPending>,
     pub passkey_login: Ceremonies<PasskeyLogin>,
+    /// Passkey step-ups, apart from sign-ins: only signed-in people can start one, so
+    /// anonymous sign-in starts can't crowd them out (2026-11-12 review, M8).
+    pub passkey_step_up: Ceremonies<PasskeyLogin>,
     pub passkey_add: Ceremonies<(i64, webauthn_rs::prelude::PasskeyRegistration)>,
     pub totp_add: Ceremonies<(i64, Vec<u8>)>,
     /// Keyed like the lockout: IPv4 exactly, IPv6 by /64 (one subscriber's allocation).
@@ -262,6 +269,7 @@ impl AppState {
             hasher,
             sessions: Sessions::new(),
             limiter: Mutex::new(Limiter::new()),
+            step_up_limiter: Mutex::new(Limiter::new()),
             seeds: SeedBox::new(&secret.derive(crate::secret::purpose::TOTP_SEED)),
             audit_key,
             noise_minute: std::sync::atomic::AtomicI64::new(0),
@@ -271,6 +279,7 @@ impl AppState {
             enrol: Ceremonies::new(ENROL_TTL),
             login: Ceremonies::new(CHALLENGE_TTL * 2),
             passkey_login: Ceremonies::new(CHALLENGE_TTL),
+            passkey_step_up: Ceremonies::new(CHALLENGE_TTL),
             passkey_add: Ceremonies::new(CHALLENGE_TTL),
             totp_add: Ceremonies::new(ENROL_TTL),
             anon_limit: RateLimit::new(30),
@@ -638,15 +647,99 @@ async fn serve_one(stream: tokio::net::TcpStream, peer: SocketAddr, app: Router)
     if !matches!(tokio::time::timeout(FIRST_BYTE_TIMEOUT, stream.peek(&mut first)).await, Ok(Ok(n)) if n > 0) {
         return;
     }
+    serve_stream(stream, peer, app, IDLE_TIMEOUT).await;
+}
+
+/// Serves one connection until it closes, or until no request has started on it for `idle`.
+/// HTTP/1 has its own header timeout; an HTTP/2 connection has none, so one that sent its
+/// preface and then nothing kept its slot for ever (2026-11-12 review, L8). An idle
+/// connection is closed gracefully: responses still being sent finish first.
+async fn serve_stream<S>(stream: S, peer: SocketAddr, app: Router, idle: Duration)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let last = Arc::new(Mutex::new(tokio::time::Instant::now()));
+    // Held by every request from its arrival to the end of its response body.
+    let busy = Arc::new(());
+    let (seen, working) = (last.clone(), busy.clone());
     let svc = hyper::service::service_fn(move |mut req: hyper::Request<hyper::body::Incoming>| {
+        if let Ok(mut l) = seen.lock() {
+            *l = tokio::time::Instant::now();
+        }
         req.extensions_mut().insert(Peer(peer));
-        let app = app.clone();
-        async move { app.oneshot(req.map(axum::body::Body::new)).await }
+        let (app, held) = (app.clone(), working.clone());
+        async move {
+            let r = app.oneshot(req.map(axum::body::Body::new)).await;
+            r.map(|resp| resp.map(|inner| axum::body::Body::new(Held { inner, _held: held })))
+        }
     });
     let mut b = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new());
     b.http1().timer(hyper_util::rt::TokioTimer::new()).header_read_timeout(HEADER_TIMEOUT).keep_alive(true);
-    let _ = b.serve_connection_with_upgrades(TokioIo::new(stream), svc).await;
+    // A peer that has gone away without closing is noticed by a ping left unanswered.
+    b.http2()
+        .timer(hyper_util::rt::TokioTimer::new())
+        .keep_alive_interval(Some(Duration::from_secs(30)))
+        .keep_alive_timeout(Duration::from_secs(10));
+    let conn = b.serve_connection_with_upgrades(TokioIo::new(stream), svc);
+    tokio::pin!(conn);
+    // Once idle, the connection is asked to close; a peer that doesn't go along is cut off.
+    let mut asked: Option<tokio::time::Instant> = None;
+    loop {
+        let wait = match asked {
+            Some(at) => CLOSE_GRACE.min(idle).saturating_sub(at.elapsed()),
+            None => idle.saturating_sub(last.lock().map_or(idle, |l| l.elapsed())),
+        };
+        tokio::select! {
+            _ = conn.as_mut() => return,
+            () = tokio::time::sleep(wait.max(Duration::from_millis(10))) => {
+                // A response still being sent (a long download) is not idleness.
+                if Arc::strong_count(&busy) > 2 {
+                    if let Ok(mut l) = last.lock() {
+                        *l = tokio::time::Instant::now();
+                    }
+                    asked = None;
+                } else if asked.is_some_and(|at| at.elapsed() >= CLOSE_GRACE.min(idle)) {
+                    return;
+                } else if asked.is_none() && last.lock().map_or(true, |l| l.elapsed() >= idle) {
+                    asked = Some(tokio::time::Instant::now());
+                    conn.as_mut().graceful_shutdown();
+                }
+            }
+        }
+    }
 }
+
+/// A response body that marks its connection busy until it has been sent or abandoned.
+struct Held {
+    inner: axum::body::Body,
+    _held: Arc<()>,
+}
+
+impl hyper::body::Body for Held {
+    type Data = bytes::Bytes;
+    type Error = axum::Error;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<hyper::body::Frame<Self::Data>, Self::Error>>> {
+        std::pin::Pin::new(&mut self.inner).poll_frame(cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+/// How long a connection asked to close may take over it.
+const CLOSE_GRACE: Duration = Duration::from_secs(10);
+
+/// A connection on which no request has started for this long is closed.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Helper for handlers: run a request through the router in tests.
 #[cfg(test)]

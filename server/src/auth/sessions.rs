@@ -35,24 +35,57 @@ struct Pending<T> {
 }
 
 pub struct Ceremonies<T> {
-    map: Mutex<HashMap<[u8; 32], Pending<T>>>,
+    inner: Mutex<Pendings<T>>,
     ttl: i64,
+    max: usize,
+}
+
+struct Pendings<T> {
+    map: HashMap<[u8; 32], Pending<T>>,
+    /// Keys in the order they were stored, with the expiry they were stored under, so the
+    /// oldest is found without reading the whole table.
+    order: std::collections::VecDeque<([u8; 32], i64)>,
+}
+
+impl<T> Pendings<T> {
+    fn insert(&mut self, key: [u8; 32], value: T, expires: i64) {
+        self.map.insert(key, Pending { value, expires });
+        self.order.push_back((key, expires));
+    }
+
+    /// Drops the expired and, while the table is full, the oldest.
+    fn make_room(&mut self, now: i64, max: usize) {
+        while let Some(&(key, expires)) = self.order.front() {
+            let live = self.map.get(&key).is_some_and(|p| p.expires == expires);
+            if live && expires > now && self.map.len() < max {
+                break;
+            }
+            self.order.pop_front();
+            if live {
+                self.map.remove(&key);
+            }
+        }
+    }
 }
 
 impl<T> Ceremonies<T> {
     pub fn new(ttl: i64) -> Self {
-        Self { map: Mutex::new(HashMap::new()), ttl }
+        Self::with_capacity(ttl, MAX_ENTRIES)
     }
 
-    /// Stores `value` and returns the token that redeems it.
+    pub fn with_capacity(ttl: i64, max: usize) -> Self {
+        Self { inner: Mutex::new(Pendings { map: HashMap::new(), order: Default::default() }), ttl, max }
+    }
+
+    /// Stores `value` and returns the token that redeems it. A full table drops its oldest
+    /// entry rather than refusing the new one: refusing let anyone who kept the table full
+    /// stop every sign-in that needs it, whereas now they must fill it faster than people
+    /// finish theirs (2026-11-12 review, M8).
     pub fn start(&self, value: T, now: i64) -> Option<String> {
         let (text, h) = new_token();
-        let mut m = self.map.lock().ok()?;
-        m.retain(|_, p| p.expires > now);
-        if m.len() >= MAX_ENTRIES {
-            return None;
-        }
-        m.insert(h, Pending { value, expires: now + self.ttl });
+        let mut m = self.inner.lock().ok()?;
+        m.make_room(now, self.max);
+        m.insert(h, value, now + self.ttl);
         Some(text)
     }
 
@@ -61,16 +94,22 @@ impl<T> Ceremonies<T> {
         if !abshare_core::auth::codes::is_token(token) {
             return None;
         }
-        let mut m = self.map.lock().ok()?;
-        let p = m.remove(&token_hash(token))?;
+        let mut m = self.inner.lock().ok()?;
+        let p = m.map.remove(&token_hash(token))?;
         (p.expires > now).then_some(p.value)
     }
 
     /// Puts a value back under the same token (for multi-step enrolment).
     pub fn put_back(&self, token: &str, value: T, now: i64) {
-        if let Ok(mut m) = self.map.lock() {
-            m.insert(token_hash(token), Pending { value, expires: now + self.ttl });
+        if let Ok(mut m) = self.inner.lock() {
+            m.make_room(now, self.max);
+            m.insert(token_hash(token), value, now + self.ttl);
         }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.inner.lock().map_or(0, |m| m.map.len())
     }
 }
 
@@ -223,5 +262,39 @@ mod tests {
         assert_eq!(c.take(&t, 1002), None, "single use");
         let t = c.start(43, 1000).expect("start");
         assert_eq!(c.take(&t, 1000 + CHALLENGE_TTL), None, "expired");
+    }
+
+    // 2026-11-12 review, M8: a full table refused every new ceremony, so whoever kept it full
+    // (anonymous passkey sign-in starts) stopped everyone's passkey sign-in and step-up.
+    #[test]
+    fn a_full_ceremony_table_drops_its_oldest_instead_of_refusing() {
+        let c: Ceremonies<i64> = Ceremonies::with_capacity(CHALLENGE_TTL, 3);
+        let first = c.start(1, 1000).expect("first");
+        let second = c.start(2, 1001).expect("second");
+        let third = c.start(3, 1002).expect("third");
+        let fourth = c.start(4, 1003).expect("a full table still takes a new ceremony");
+        assert_eq!(c.len(), 3, "the table stays within its size");
+        assert_eq!(c.take(&first, 1004), None, "the oldest made room");
+        assert_eq!(c.take(&fourth, 1004), Some(4));
+        assert_eq!(c.take(&second, 1004), Some(2));
+        // One put back keeps its new place in the queue: it isn't dropped as if still old.
+        assert_eq!(c.take(&third, 1005), Some(3));
+        c.put_back(&third, 33, 1006);
+        let a = c.start(5, 1007).expect("a");
+        let b = c.start(6, 1008).expect("b");
+        assert_eq!(c.take(&third, 1009), Some(33));
+        let d = c.start(7, 1010).expect("d");
+        let e = c.start(8, 1011).expect("e");
+        assert_eq!(
+            (c.take(&a, 1012), c.take(&b, 1012), c.take(&d, 1012), c.take(&e, 1012)),
+            (None, Some(6), Some(7), Some(8))
+        );
+        // Expired entries go without being asked for, however many pile up.
+        for i in 0..50 {
+            c.start(i, 2000 + i).expect("start");
+        }
+        assert!(c.len() <= 3);
+        c.start(0, 9000).expect("start");
+        assert_eq!(c.len(), 1, "expired ceremonies were swept");
     }
 }

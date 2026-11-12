@@ -4,7 +4,7 @@
 // The app shell offline and quick to start, and downloaded books played from IndexedDB
 // (Phase 0 option B). See $lib/pwa/sw-policy for what is never stored.
 import { build, version } from '$service-worker';
-import { cacheable, offlineBook, strategyFor } from '$lib/pwa/sw-policy';
+import { offlineBook, shellAnswer, strategyFor } from '$lib/pwa/sw-policy';
 import { answerFromPieces, openDb } from '$lib/offline/db';
 
 const sw = self as unknown as ServiceWorkerGlobalScope;
@@ -61,23 +61,8 @@ sw.addEventListener('fetch', (event) => {
 		event.respondWith(fromDevice(event.request, o.user, o.book));
 		return;
 	}
+	// The rules (stored copy on failure or a 5xx; never another build's page) are in sw-policy.
 	event.respondWith(
-		(async () => {
-			const cache = await caches.open(CACHE);
-			if (strategy === 'cache-first') {
-				const hit = await cache.match(event.request);
-				if (hit) return hit;
-			}
-			try {
-				const fresh = await fetch(event.request);
-				if (cacheable(fresh)) await cache.put(event.request, fresh.clone());
-				return fresh;
-			} catch (e) {
-				// Offline: the stored copy (for a page load, the app shell).
-				const stored = (await cache.match(event.request)) ?? (event.request.mode === 'navigate' ? await cache.match(base.href) : undefined);
-				if (stored) return stored;
-				throw e;
-			}
-		})(),
+		caches.open(CACHE).then((cache) => shellAnswer({ request: event.request, strategy, navigate: event.request.mode === 'navigate', cache, fetch: (r) => fetch(r), shell: base.href })),
 	);
 });

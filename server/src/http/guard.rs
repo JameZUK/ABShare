@@ -44,17 +44,24 @@ pub fn client_ip(peer: IpAddr, headers: &HeaderMap, trusted: &[IpAddr]) -> IpAdd
     if !trusted.contains(&peer) {
         return peer;
     }
-    let mut hops: Vec<IpAddr> = Vec::new();
+    // Read from the right, where the trusted proxies wrote, and stop at the first address
+    // that isn't one of them. What lies further left came from the client and is never
+    // looked at: an unreadable entry there used to make the proxy itself the client, which
+    // gave anyone a second identity for rate limits and lockouts (2026-11-12 review, L3).
+    let mut parts: Vec<&str> = Vec::new();
     for v in headers.get_all("x-forwarded-for") {
         let Ok(s) = v.to_str() else { return peer };
-        for part in s.split(',') {
-            match part.trim().parse::<IpAddr>() {
-                Ok(ip) => hops.push(canonical(ip)),
-                Err(_) => return peer,
-            }
+        parts.extend(s.split(','));
+    }
+    for part in parts.into_iter().rev() {
+        match part.trim().parse::<IpAddr>().map(canonical) {
+            Ok(ip) if trusted.contains(&ip) => {}
+            Ok(ip) => return ip,
+            // Unreadable among the proxies' own entries: never trusted blindly.
+            Err(_) => return peer,
         }
     }
-    hops.into_iter().rev().find(|ip| !trusted.contains(ip)).unwrap_or(peer)
+    peer
 }
 
 /// Whether the request reached the proxy over TLS: only a trusted proxy's word counts;
@@ -196,8 +203,14 @@ mod tests {
         assert_eq!(client_ip(ip("10.0.0.10"), &xff(&["1.2.3.4, 203.0.113.7"]), &t), ip("203.0.113.7"));
         assert_eq!(client_ip(ip("10.0.0.10"), &xff(&["203.0.113.7, 10.0.0.11"]), &t), ip("203.0.113.7"));
         assert_eq!(client_ip(ip("10.0.0.10"), &xff(&["1.2.3.4", "203.0.113.8"]), &t), ip("203.0.113.8"));
-        // Garbage makes the proxy itself the client (never trusted blindly).
+        // Garbage where the proxies write makes the proxy itself the client (never trusted
+        // blindly).
         assert_eq!(client_ip(ip("10.0.0.10"), &xff(&["203.0.113.7, not-an-ip"]), &t), ip("10.0.0.10"));
+        assert_eq!(client_ip(ip("10.0.0.10"), &xff(&["203.0.113.7, x, 10.0.0.11"]), &t), ip("10.0.0.10"));
+        // Garbage the client sent, left of its real address, changes nothing (2026-11-12
+        // review, L3: it used to make the proxy the client).
+        assert_eq!(client_ip(ip("10.0.0.10"), &xff(&["x, 203.0.113.7"]), &t), ip("203.0.113.7"));
+        assert_eq!(client_ip(ip("10.0.0.10"), &xff(&["x", "y, 203.0.113.7, 10.0.0.11"]), &t), ip("203.0.113.7"));
         assert_eq!(client_ip(ip("10.0.0.10"), &HeaderMap::new(), &t), ip("10.0.0.10"));
     }
 

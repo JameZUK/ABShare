@@ -7,7 +7,8 @@
 //! 2. `clone3` fails with ENOSYS, so the C library falls back to `clone`, whose flags a
 //!    filter can see;
 //! 3. the system calls a media decoder never needs and an attacker would want are refused
-//!    with EPERM: among them every socket, and every new process (threads only).
+//!    with EPERM: among them every socket, every new process (threads only), System V IPC
+//!    and POSIX message queues.
 //!
 //! This is a deny-list. An allow-list depends on the exact ffmpeg build, so it comes when
 //! ABShare's own minimal ffmpeg is fixed (Phase 1); Landlock already confines files,
@@ -23,6 +24,13 @@ use std::collections::BTreeMap;
 const ARCH: TargetArch = TargetArch::x86_64;
 #[cfg(target_arch = "aarch64")]
 const ARCH: TargetArch = TargetArch::aarch64;
+
+/// `kexec_file_load`: the `libc` crate has no constant for it on aarch64 with musl, where
+/// it is number 294 as on every architecture that uses the generic system-call table.
+#[cfg(not(all(target_arch = "aarch64", target_env = "musl")))]
+const SYS_KEXEC_FILE_LOAD: i64 = libc::SYS_kexec_file_load;
+#[cfg(all(target_arch = "aarch64", target_env = "musl"))]
+const SYS_KEXEC_FILE_LOAD: i64 = 294;
 
 /// Refused outright.
 const DENIED: &[i64] = &[
@@ -42,7 +50,7 @@ const DENIED: &[i64] = &[
     libc::SYS_add_key,
     libc::SYS_request_key,
     libc::SYS_kexec_load,
-    libc::SYS_kexec_file_load,
+    SYS_KEXEC_FILE_LOAD,
     libc::SYS_init_module,
     libc::SYS_finit_module,
     libc::SYS_delete_module,
@@ -75,8 +83,32 @@ const DENIED: &[i64] = &[
     libc::SYS_socket,
     libc::SYS_socketpair,
     libc::SYS_connect,
-    // No new processes: a child could outlive the wall-clock kill (review J6).
+    // No System V IPC and no POSIX message queues: ffmpeg decodes files and never needs
+    // them, and their objects outlive the process and are shared across the IPC namespace.
+    libc::SYS_shmget,
+    libc::SYS_shmat,
+    libc::SYS_shmctl,
+    libc::SYS_shmdt,
+    libc::SYS_msgget,
+    libc::SYS_msgsnd,
+    libc::SYS_msgrcv,
+    libc::SYS_msgctl,
+    libc::SYS_semget,
+    libc::SYS_semop,
+    libc::SYS_semctl,
+    libc::SYS_semtimedop,
+    libc::SYS_mq_open,
+    libc::SYS_mq_unlink,
+    libc::SYS_mq_timedsend,
+    libc::SYS_mq_timedreceive,
+    libc::SYS_mq_notify,
+    libc::SYS_mq_getsetattr,
+    // No new processes: a child could outlive the wall-clock kill (review J6). Only x86-64
+    // has these two system calls; elsewhere a fork is a `clone` without CLONE_THREAD, which
+    // the rule in `compile` refuses.
+    #[cfg(target_arch = "x86_64")]
     libc::SYS_fork,
+    #[cfg(target_arch = "x86_64")]
     libc::SYS_vfork,
 ];
 
@@ -164,5 +196,18 @@ mod tests {
     #[test]
     fn the_filters_compile_for_this_architecture() {
         assert!(super::compile().is_ok());
+    }
+
+    #[test]
+    fn the_deny_list_has_no_duplicates_and_covers_ipc() {
+        let mut seen = std::collections::BTreeSet::new();
+        for nr in super::DENIED {
+            assert!(seen.insert(*nr), "system call {nr} is listed twice");
+        }
+        for nr in [libc::SYS_shmget, libc::SYS_msgget, libc::SYS_semget, libc::SYS_mq_open] {
+            assert!(super::DENIED.contains(&nr), "system call {nr} is not refused");
+        }
+        // `clone` has its own argument rules, so it must not also be refused outright.
+        assert!(!super::DENIED.contains(&libc::SYS_clone));
     }
 }

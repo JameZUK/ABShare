@@ -26,6 +26,8 @@ Two targets were added after the Phase 1 campaign, in the Phase 6 review: `metad
 
 `history` (listening-history session rules: a session never credits more time than it spans) was added on 2026-10-17 with listening history. It runs in CI with the others; no one-hour campaign has been recorded for it yet.
 
+`cover_render` (cover images: decoding and resizing in the scanner), `chapters_for_parts` (chapters built from part names) and `fold` (text folding for matching) were added on 2026-11-12 after the full code review, which also widened `metadata` (the sidecar reader, ISBNs and more tag names), `assemble` (arbitrary file and folder names) and `html_text` (no invisible character survives). Each was run for 20 seconds on a stable toolchain with coverage but no address sanitiser; no one-hour campaign has been recorded for them yet.
+
 The `metadata` target uses a dictionary (`fuzz/dicts/metadata.dict`) of characters whose lower-case form changes length, the class of input behind review findings C1 and C2.
 
 ## Running a campaign
@@ -34,4 +36,4 @@ The `metadata` target uses a dictionary (`fuzz/dicts/metadata.dict`) of characte
 cargo +nightly fuzz run <target> -- -max_total_time=3600
 ```
 
-CI runs all 12 targets for 60 s on each push (D21).
+CI runs all 15 targets for 60 s on each push (D21).

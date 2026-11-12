@@ -14,12 +14,15 @@ pub const MAX_DESCRIPTION: usize = 20_000;
 /// Input longer than this is cut before any work is done on it.
 const MAX_INPUT: usize = 256 * 1024;
 
-fn is_invisible(c: char) -> bool {
+/// Whether `c` is an invisible, bidi-control or other format character that no cleaned
+/// text may contain. Public so the fuzz targets can assert that none survives.
+pub fn is_invisible(c: char) -> bool {
     matches!(c,
         '\u{200B}'..='\u{200F}'   // zero-width space/joiners, LRM, RLM
         | '\u{202A}'..='\u{202E}' // bidi embeddings and overrides
         | '\u{2060}'..='\u{2064}' // word joiner, invisible operators
         | '\u{2066}'..='\u{2069}' // bidi isolates
+        | '\u{206A}'..='\u{206F}' // deprecated format characters (symmetric swapping, digit shapes)
         | '\u{FEFF}'              // BOM / zero-width no-break space
         | '\u{00AD}'              // soft hyphen
         | '\u{034F}'              // combining grapheme joiner
@@ -166,8 +169,46 @@ pub fn scrub_free_text(s: &str) -> String {
     kept.join(" ")
 }
 
+/// Punctuation that may surround a word without being part of a path or an address.
+fn is_edge_punctuation(c: char) -> bool {
+    matches!(
+        c,
+        '(' | ')'
+            | '['
+            | ']'
+            | '{'
+            | '}'
+            | '<'
+            | '>'
+            | ','
+            | '.'
+            | ';'
+            | '"'
+            | '\''
+            | '!'
+            | '?'
+            | '*'
+            | '‘'
+            | '’'
+            | '“'
+            | '”'
+    )
+}
+
 fn looks_internal(word: &str) -> bool {
-    let w = word.trim_matches(|c: char| matches!(c, '(' | ')' | '[' | ']' | ',' | '.' | ';' | ':' | '"' | '\''));
+    // `key=value` (`path=/srv/x`, `host=10.0.0.10`): each side is judged on its own. Not
+    // when a URL comes before the `=`, whose query string is part of it.
+    match word.split_once('=') {
+        Some((key, _)) if !key.contains("://") => word.split('=').any(piece_looks_internal),
+        _ => piece_looks_internal(word),
+    }
+}
+
+fn piece_looks_internal(piece: &str) -> bool {
+    // A colon is punctuation at the edge of a word but part of an IPv6 address (`fd00::`),
+    // so the address check below sees the word with its colons.
+    let with_colons = piece.trim_matches(is_edge_punctuation);
+    let w = with_colons.trim_matches(|c: char| c == ':' || is_edge_punctuation(c));
     if w.is_empty() {
         return false;
     }
@@ -186,13 +227,36 @@ fn looks_internal(word: &str) -> bool {
     {
         return true;
     }
-    // Private, loopback or link-local IPv4, alone or inside a URL.
-    let host = lower.split("://").last().unwrap_or(&lower);
-    let host = host.split(['/', ':']).next().unwrap_or(host);
+    // A private, loopback or link-local address or a local host name: alone, with a port,
+    // after `user@`, or inside a URL.
+    let lower = with_colons.to_ascii_lowercase();
+    let authority = lower.split("://").last().unwrap_or(&lower);
+    let authority = authority.split(['/', '?', '#']).next().unwrap_or(authority);
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+    if is_internal_v6(host_port) {
+        return true;
+    }
+    let host = host_port.split(':').next().unwrap_or(host_port);
     if let Some(ip) = parse_ipv4(host) {
         return is_internal_v4(ip);
     }
     host.ends_with(".lan") || host.ends_with(".local") || host.ends_with(".home.arpa") || host.ends_with(".internal")
+}
+
+/// Loopback, unique-local (fc00::/7) or link-local (fe80::/10) IPv6, or an internal IPv4
+/// address mapped into IPv6: bare (`fd00::1`), with a zone (`fe80::1%eth0`) or in brackets
+/// with a port (`[fd00::1]:8080`).
+fn is_internal_v6(host_port: &str) -> bool {
+    let inner = host_port.trim_start_matches('[');
+    let inner = inner.split(']').next().unwrap_or(inner);
+    let addr = inner.split('%').next().unwrap_or(inner);
+    // Parsing text into an address is pure: nothing is resolved or contacted.
+    let Ok(ip) = addr.parse::<std::net::Ipv6Addr>() else { return false };
+    let first = ip.segments()[0];
+    ip.is_loopback()
+        || first & 0xfe00 == 0xfc00
+        || first & 0xffc0 == 0xfe80
+        || ip.to_ipv4_mapped().is_some_and(|v4| is_internal_v4(v4.octets()))
 }
 
 fn parse_ipv4(s: &str) -> Option<[u8; 4]> {
@@ -368,6 +432,20 @@ mod tests {
         assert_eq!(clean_line("café naïve", 100), "café naïve", "ordinary accents stay");
     }
 
+    /// Review L19: U+206A..U+206F (deprecated format characters) used to survive.
+    #[test]
+    fn deprecated_format_characters_are_removed() {
+        for c in '\u{206A}'..='\u{206F}' {
+            assert!(is_invisible(c), "{:X}", c as u32);
+            assert_eq!(clean_line(&format!("A{c}B"), 100), "AB", "{:X}", c as u32);
+            assert_eq!(fold(&format!("A{c}B")), "ab", "{:X}", c as u32);
+        }
+        // The whole General Punctuation format range is covered, with no gap.
+        for c in ('\u{200B}'..='\u{200F}').chain('\u{202A}'..='\u{202E}').chain('\u{2060}'..='\u{206F}') {
+            assert_eq!(clean_line(&format!("A{c}B"), 100), "AB", "{:X}", c as u32);
+        }
+    }
+
     #[test]
     fn lines_are_normalised_and_collapsed() {
         assert_eq!(clean_line("  The\tLong\n  Way  ", 100), "The Long Way");
@@ -407,6 +485,82 @@ mod tests {
         assert_eq!(scrub_free_text(s), "Ripped from by and via or see https://example.com/book");
         assert_eq!(scrub_free_text("Visit nas.lan or printer.local today"), "Visit or today");
         assert_eq!(scrub_free_text("A 1/2 price and/or offer at 8.8.8.8"), "A 1/2 price and/or offer at 8.8.8.8");
+    }
+
+    /// Review L20: forms the scrub used to miss.
+    #[test]
+    fn addresses_behind_punctuation_userinfo_and_keys_are_scrubbed() {
+        for hidden in [
+            "http://user@10.0.0.10/",
+            "http://user:secret@10.0.0.10:8080/feed?x=1",
+            "user@10.0.0.4",
+            "10.0.0.10!",
+            "10.0.0.10?",
+            "<10.0.0.10>",
+            "“10.0.0.10”",
+            "{/srv/audiobooks/x}",
+            "path=/srv/audiobooks/x",
+            "host=10.0.0.10",
+            "dir=C:\\Books",
+            "src=file:///srv/x",
+            "fd00::1",
+            "fd12:3456:789a::1",
+            "fc00::",
+            "fe80::1",
+            "fe80::1%eth0",
+            "febf::1",
+            "[fd00::1]",
+            "[fd00::1]:8080",
+            "http://[fd00::1]:8080/feed",
+            "http://user@[fe80::1%25eth0]/",
+            "::1",
+            "::ffff:10.0.0.10",
+            "(FD00::1).",
+            "addr=fe80::1",
+        ] {
+            assert_eq!(scrub_free_text(&format!("See {hidden} now")), "See now", "{hidden}");
+        }
+    }
+
+    #[test]
+    fn public_addresses_and_ordinary_words_are_kept() {
+        for kept in [
+            "2001:db8::1",
+            "[2001:db8::1]:443",
+            "::ffff:8.8.8.8",
+            "fec0::1",
+            "ff02::1",
+            "8.8.8.8!",
+            "http://user@example.com/",
+            "https://example.com/watch?v=abc",
+            "https://example.com/?next=/a/b",
+            "me@example.com",
+            "x=1",
+            "a=b=c",
+            "12:30",
+            "Chapter::One",
+            "wow!",
+            "=",
+            "==",
+            "[]",
+            "::",
+            ":",
+            "é=ü",
+        ] {
+            assert_eq!(scrub_free_text(&format!("See {kept} now")), format!("See {kept} now"), "{kept}");
+        }
+    }
+
+    #[test]
+    fn scrubbing_long_and_odd_words_is_quick_and_never_panics() {
+        // One very long word of each awkward shape: linear time, no panic.
+        for unit in ["=", ":", "[", "]", "@", "/", "://", "%", "é", "10.", "fd00:", "a=/b/", "\u{202E}"] {
+            let word = unit.repeat(200_000 / unit.len());
+            let started = std::time::Instant::now();
+            let _ = scrub_free_text(&word);
+            let _ = scrub_free_text(&format!("x {word} y {word}"));
+            assert!(started.elapsed() < std::time::Duration::from_secs(5), "{unit:?} took {:?}", started.elapsed());
+        }
     }
 
     #[test]

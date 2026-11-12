@@ -192,13 +192,13 @@ impl Catalogue {
         }
         for b in books {
             // The audio this book is made from, before this scan: parts and length.
-            let before: Option<(i64, i64)> = tx
-                .query_row("SELECT duration_ms, library_id FROM book WHERE id = ?1", params![b.id], |r| {
-                    Ok((r.get(0)?, r.get(1)?))
+            let before: Option<(i64, i64, i64)> = tx
+                .query_row("SELECT duration_ms, library_id, updated_at FROM book WHERE id = ?1", params![b.id], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
                 })
                 .optional()
                 .map_err(sql_err)?;
-            if let Some((dur, was_lib)) = before {
+            if let Some((dur, was_lib, written)) = before {
                 let parts: Vec<String> = {
                     let mut st = tx
                         .prepare("SELECT rel_path FROM book_part WHERE book_id = ?1 ORDER BY ord")
@@ -208,7 +208,21 @@ impl Catalogue {
                         .collect::<Result<_, _>>()
                         .map_err(sql_err)?
                 };
-                if dur != to_i64(b.duration_ms) || was_lib != lib || parts != b.parts {
+                // A part probed again since the book was last written was replaced on disk,
+                // even where its name and length stayed the same (2026-11-12 review, L15).
+                let probed: Option<i64> = tx
+                    .query_row(
+                        "SELECT MAX(f.probed_at) FROM book_part bp
+                         JOIN file f ON f.library_id = ?2 AND f.rel_path = bp.rel_path WHERE bp.book_id = ?1",
+                        params![b.id, lib],
+                        |r| r.get(0),
+                    )
+                    .map_err(sql_err)?;
+                if dur != to_i64(b.duration_ms)
+                    || was_lib != lib
+                    || parts != b.parts
+                    || probed.is_some_and(|t| t > written)
+                {
                     changed.push(b.id.clone());
                 }
             }
@@ -316,6 +330,24 @@ mod tests {
 
     /// Review M2: a book's caches are invalidated when its audio changes, and an ID held in
     /// one library is visible to the scan of another (so an ASIN can't take it over).
+    // 2026-11-12 review, L15: a file replaced under the same name with the same length kept
+    // the copy and segments made from the old one.
+    #[test]
+    fn a_part_replaced_in_place_makes_the_books_audio_changed() {
+        let mut c = Catalogue::open(Path::new(":memory:")).expect("open");
+        let a = c.library_id("A", "/srv/a").expect("lib");
+        c.upsert_file(a, "F/a.m4b", 100, 1, &rec(), 10).expect("file");
+        c.replace_library(a, &[book("aaa")], &[], &[], 10).expect("first");
+        let (_, _, changed) = c.replace_library(a, &[book("aaa")], &[], &[], 20).expect("untouched");
+        assert!(changed.is_empty(), "an unchanged file keeps its caches");
+        // Replaced on disk: the scan probes it again, then writes the book as before.
+        c.upsert_file(a, "F/a.m4b", 100, 2, &rec(), 30).expect("file");
+        let (_, _, changed) = c.replace_library(a, &[book("aaa")], &[], &[], 30).expect("replaced");
+        assert_eq!(changed, ["aaa"]);
+        let (_, _, changed) = c.replace_library(a, &[book("aaa")], &[], &[], 40).expect("settled");
+        assert!(changed.is_empty(), "reported once, not on every later scan");
+    }
+
     #[test]
     fn changed_audio_is_reported_and_ids_elsewhere_are_known() {
         let mut c = Catalogue::open(Path::new(":memory:")).expect("open");

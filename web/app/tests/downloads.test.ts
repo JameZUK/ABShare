@@ -11,7 +11,8 @@ vi.mock('$lib/api/session.svelte', () => ({ session: fake.session, api: vi.fn(),
 
 const { downloads } = await import('$lib/offline/downloads.svelte');
 const { closeUserDb } = await import('$lib/offline/userdb');
-const { dropDb, PIECE } = await import('$lib/offline/db');
+const { all, dropDb, openDb, PIECE } = await import('$lib/offline/db');
+import type { Download } from '$lib/offline/db';
 
 const ID = 'cccccccccccccccccccccccccc';
 const book = { id: ID, title: 'A Book', cover: null, duration_ms: 1000, chapters: [], media: { original: `media/${ID}`, preparing: false } } as unknown as BookDetail;
@@ -145,4 +146,101 @@ test('too many at once (another device busy) waits and carries on by itself', as
 	for (let i = 0; i < 60 && downloads.byId(ID)?.state !== 'complete'; i++) await new Promise((r) => setTimeout(r, 50));
 	expect(downloads.byId(ID)?.state).toBe('complete');
 	expect(downloads.byId(ID)?.error).toBeUndefined();
+});
+
+// Removing a download while one of its pieces is on its way (review M10).
+describe('removing a download mid-piece', () => {
+	/** The fake server, with the piece starting at `holdAt` held until `release()`. Like the
+	 *  real fetch, a held request rejects if its signal aborts. */
+	function held(size: number, holdAt: number) {
+		const { f } = server(size);
+		const answer = f.getMockImplementation()!;
+		let release: () => void = () => {};
+		let waiting: () => void = () => {};
+		const reached = new Promise<void>((r) => (waiting = r));
+		let once = false;
+		const signals: (AbortSignal | undefined)[] = [];
+		f.mockImplementation(async (url: string, init?: RequestInit) => {
+			const range = String((init?.headers as Record<string, string> | undefined)?.Range);
+			if (!once && range.startsWith(`bytes=${holdAt}-`)) {
+				once = true;
+				signals.push(init?.signal ?? undefined);
+				waiting();
+				await new Promise<void>((ok, fail) => {
+					release = ok;
+					init?.signal?.addEventListener('abort', () => fail(new DOMException('Aborted', 'AbortError')));
+				});
+			}
+			return answer(url, init);
+		});
+		return { f, reached, release: () => release(), signals };
+	}
+
+	/** What is stored: the download's row, and the offsets of the pieces really there. */
+	async function stored() {
+		const db = await openDb('ada');
+		try {
+			const rows = await all<Download>(db, 'books');
+			const keys = (await new Promise<IDBValidKey[]>((ok, fail) => {
+				const r = db.transaction('pieces').objectStore('pieces').getAllKeys();
+				r.onsuccess = () => ok(r.result);
+				r.onerror = () => fail(r.error);
+			})) as [string, number][];
+			return { row: rows.find((d) => d.id === ID), pieces: keys.filter((k) => k[0] === ID).map((k) => k[1]) };
+		} finally {
+			db.close();
+		}
+	}
+	const quiet = () => new Promise((r) => setTimeout(r, 50));
+
+	test('the piece in flight is aborted and nothing is written back', async () => {
+		const h = held(PIECE * 3, PIECE);
+		await downloads.add(book, 'original');
+		await h.reached;
+		await downloads.remove(ID);
+		expect(h.signals[0]?.aborted, 'the request is aborted').toBe(true);
+		h.release();
+		await settle();
+		await quiet();
+		expect(downloads.byId(ID)).toBeUndefined();
+		expect(await stored(), 'no row pointing at deleted pieces, and no stray pieces').toEqual({ row: undefined, pieces: [] });
+	});
+
+	test('added again at once, it starts afresh and every piece it lists is stored', async () => {
+		const h = held(PIECE * 3, PIECE);
+		await downloads.add(book, 'original');
+		await h.reached;
+		await downloads.remove(ID);
+		await downloads.add(book, 'original');
+		h.release();
+		await settle();
+		await quiet();
+		await settle();
+		const { row, pieces } = await stored();
+		expect(row?.state).toBe('complete');
+		expect(row?.pieces).toEqual([0, PIECE, PIECE * 2]);
+		expect(pieces.sort((a, b) => a - b), 'the pieces the row points at exist').toEqual([0, PIECE, PIECE * 2]);
+	});
+});
+
+test('what the device holds of a book: nothing, a part, or all of it (review M9)', async () => {
+	expect(downloads.copy(ID)).toBeNull();
+	let status = 206;
+	const { f } = server(PIECE + 10, { status: () => status });
+	const answer = f.getMockImplementation()!;
+	let n = 0;
+	f.mockImplementation(async (url: string, init?: RequestInit) => {
+		if (!url.includes('/covers/') && ++n === 2) status = 409; // the second piece is refused for now
+		return answer(url, init);
+	});
+	await downloads.add(book, 'original');
+	await settle();
+	expect(downloads.byId(ID)?.state).toBe('paused');
+	expect(downloads.copy(ID)).toBe('partial');
+	expect(downloads.playable(ID)).toBe(true);
+	status = 206;
+	n = 10;
+	await downloads.resume(ID);
+	await settle();
+	expect(downloads.copy(ID)).toBe('complete');
 });

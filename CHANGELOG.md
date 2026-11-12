@@ -2,6 +2,50 @@
 
 What changed and when, newest first. Each entry says how it is tested. The design and the reasons behind it are in [`SPEC.md`](SPEC.md); what differs from the design is in SPEC §16.
 
+## 0.15.0 (2026-11-12)
+
+Fixes from a full code review for security, stability and reliability (SPEC D39). The review found no way in without signing in, no way to another person's data, no jail escape and no script injection. It found 2 high, 17 medium and 32 low weaknesses.
+
+### Security
+- **Abandoned data-saver encodes no longer leave files behind.** An encode whose listener disconnected or seeked away left its job directory until the next restart, so a signed-in listener could fill the data disk. Every job directory is now removed however its job ends.
+- **Signing out always reaches the server.** A sign-out made while the server was unreachable left the sign-in cookie, and the app signed back in later. The app now keeps the sign-out pending, sends it again before anything renews the session, and signs out other tabs at once.
+- **ffmpeg work is always counted.** Building a playable copy, and data-saver audio down to the first byte, now fall under the daily limit of different books.
+- **Downloads are audited by where they start.** A range spelt `bytes=00-` returned the whole file without a `media.download` or `media.save` entry.
+- **Strangers can't hold an owner out of step-up.** Step-up has its own failure limiter and passkey step-up its own table, which only signed-in people can touch. A full table of pending sign-ins drops its oldest entry and no longer refuses new ones. The lockout table is ten times larger, makes room for a device already signed in, and an address's lock length starts again after a quiet day.
+- **The audit log** is appended in one write transaction, so the server and the admin CLI can't fork it, and an emptied log no longer verifies. A spent sign-in token replaced again is recorded (`refresh.reissued`).
+- **Forwarded addresses:** an unreadable `X-Forwarded-For` entry sent by the client no longer makes the proxy the client.
+- **The jail** also refuses System V IPC and POSIX message queues. A jailed program that floods its error output can no longer stall until the time limit.
+- **The scanner** opens directories through a descriptor of the library root, so a directory swapped for a symlink is never followed, and it bounds what it keeps in memory. Covers are limited to 6,000 pixels a side and 16 megapixels, checked before decoding.
+- **Text cleaning** removes six more invisible characters, and the address scrub catches more forms.
+- **`serve` refuses a library it could write to**, as the docs said it did. The systemd unit now has the `IPAddressDeny=any` the design names.
+- **The private-data check** runs generic checks without its patterns file, scans the whole tree in CI, and its hooks are tracked (`git config core.hooksPath .githooks`).
+
+### Fixed
+- **Stopping the server.** `serve` and `scan` stop on SIGTERM; the server waits up to 8 seconds for requests in progress. A stop used to wait out Docker's 10 seconds and be killed.
+- **Idle connections** are closed after 5 minutes without a new request, HTTP/2 included.
+- **A part-downloaded book** streams when there is a connection, and is no longer marked finished where the download stops. Removing a download while a piece was arriving no longer brings it back.
+- **Playback errors** stop after three tries; they used to retry without end.
+- **The app opens from its stored copy** when the proxy answers with a server error.
+- **A wrong device clock** no longer loses progress: the time is corrected from the server's, or the listener is told.
+- **The playback log** is cleared on every sign-out.
+- **Enrolment** survives a busy server or a second tap, and a name taken meanwhile is reported as taken.
+- **A file replaced in place** with the same length no longer keeps the audio cached from the old one.
+- **Progress saves** no longer read a whole table each time (schema 10 adds an index).
+- Downloads no longer cancel the same device's listening; a read-ahead no longer holds up the listener's own request.
+
+### Changed
+- **`listen` must be an address and port** (`127.0.0.1:8743`); a name such as `localhost:8743` is refused. `check-config` now checks `listen` and `trusted_proxies`, and warns when a loopback `listen` has no trusted proxy.
+- **`abshare health`** asks the running server for `/healthz`; the example compose file uses it as the health check, and its scanner has no network.
+- CI: `npm audit`, advisories for the fuzz lockfile, a pinned nightly, `--locked` builds, and an image test that scans the demo library and plays from it.
+
+### Still open
+- Recovery codes are issued to passkey-only accounts but can't be used by them.
+- The cover decode is fuzzed and limited but not jailed.
+- Some controls still have no test that fails when the control is removed; they are listed in the review notes.
+
+### Tests
+398 Rust tests, 145 web unit tests and 37 browser tests pass. Each fix has a regression test. Most were run against the old code and seen to fail; the rest test code that is new (the lockout table's room-making, the ceremony table, the progress page cursor, the idle-connection close, the configuration checks). Three new fuzz targets (15 in all).
+
 ## 0.14.1 (2026-11-04)
 
 The start-up diagnostics page is gone, playback reports need sign-in, and CI caches the ffmpeg source.

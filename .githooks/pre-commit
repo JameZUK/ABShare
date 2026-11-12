@@ -1,0 +1,4 @@
+#!/bin/sh
+# Refuses a commit whose staged changes hold private information (tools/check-private.py).
+# Turn the hooks on once per clone: git config core.hooksPath .githooks
+exec python3 -I "$(git rev-parse --show-toplevel)/tools/check-private.py" staged

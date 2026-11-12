@@ -1,6 +1,22 @@
 // Pure player rules: chapters, auto-rewind, the sleep fade, quality choice and resume.
 import { chapterAt, nextTarget, previousTarget, span } from '$lib/player/chapters';
-import { afterBrowserPlay, ASKED_MS, autoRewindMs, chooseQuality, clampStart, fadeVolume, pauseCause, streamUrl } from '$lib/player/rules';
+import {
+	afterBrowserPlay,
+	ASKED_MS,
+	autoRewindMs,
+	chooseQuality,
+	clampStart,
+	endedAtEnd,
+	fadeVolume,
+	finishMargin,
+	MAX_ERROR_RETRIES,
+	pauseCause,
+	RETRY_RESET_AFTER_MS,
+	retriesAfterPlaying,
+	sleepDelta,
+	streamUrl,
+	useDeviceCopy,
+} from '$lib/player/rules';
 import type { Chapter } from '$lib/api/types';
 
 vi.mock('$lib/api/session.svelte', () => ({ session: { status: 'signed-out', user: null }, api: vi.fn() }));
@@ -107,4 +123,42 @@ test('after a call the book carries on, waits or stays paused, as chosen; the li
 	expect(b(true, 'pause', true, 0), 'paused by the listener during the call').toEqual({ kind: 'stay' });
 	expect(b(false, 'pause', true, 0), 'a restart after the listener’s own pause').toEqual({ kind: 'stay' });
 	expect(b(false, 'play', false, 0), 'nothing to undo').toEqual({ kind: 'go' });
+});
+
+test('a part-downloaded copy is played only with no connection; a complete one always (review M9)', () => {
+	for (const status of ['signed-in', 'offline', 'connecting']) expect(useDeviceCopy('complete', status)).toBe(true);
+	expect(useDeviceCopy('partial', 'offline')).toBe(true);
+	expect(useDeviceCopy('partial', 'signed-in'), 'the stream has the whole book').toBe(false);
+	expect(useDeviceCopy('partial', 'connecting'), 'the answer is on its way').toBe(false);
+	for (const status of ['signed-in', 'offline', 'connecting', 'signed-out']) expect(useDeviceCopy(null, status)).toBe(false);
+});
+
+test('the audio ending finishes the book only at the book’s end (review M9)', () => {
+	const HOUR = 3_600_000;
+	expect(endedAtEnd(HOUR, HOUR)).toBe(true);
+	expect(endedAtEnd(HOUR - finishMargin(HOUR), HOUR)).toBe(true);
+	expect(endedAtEnd(HOUR - finishMargin(HOUR) - 1, HOUR)).toBe(false);
+	expect(endedAtEnd(600_000, HOUR), 'the end of a part-downloaded copy').toBe(false);
+	expect(endedAtEnd(0, HOUR)).toBe(false);
+	expect(endedAtEnd(NaN, HOUR)).toBe(false);
+	// A short item: its last 2%.
+	expect(endedAtEnd(176_400, 180_000)).toBe(true);
+	expect(endedAtEnd(170_000, 180_000)).toBe(false);
+	// Length unknown: nothing to compare with.
+	expect(endedAtEnd(5_000, 0)).toBe(true);
+	expect(endedAtEnd(5_000, NaN)).toBe(true);
+});
+
+test('error retries start again only after real playing (review M11)', () => {
+	expect(MAX_ERROR_RETRIES).toBe(3);
+	expect(retriesAfterPlaying(3, 0)).toBe(3);
+	expect(retriesAfterPlaying(2, RETRY_RESET_AFTER_MS - 1)).toBe(2);
+	expect(retriesAfterPlaying(3, RETRY_RESET_AFTER_MS)).toBe(0);
+});
+
+test('the sleep timer counts only time since a tick while playing (review L26c)', () => {
+	expect(sleepDelta(1_000, 1_250, false)).toBe(250);
+	expect(sleepDelta(0, 9_000_000, false), 'the first tick after a pause').toBe(0);
+	expect(sleepDelta(1_000, 9_000_000, true), 'paused').toBe(0);
+	expect(sleepDelta(2_000, 1_000, false)).toBe(0);
 });

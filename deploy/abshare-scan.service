@@ -6,7 +6,10 @@ After=abshare.service
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/abshare scan --config /etc/abshare/abshare.toml --every 3600
+# The same user as abshare.service (see the note there): both own the state directory.
 DynamicUser=yes
+User=abshare
+Group=abshare
 StateDirectory=abshare
 StateDirectoryMode=0700
 Restart=on-failure

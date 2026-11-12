@@ -440,6 +440,13 @@ pub enum RefreshOutcome {
         device: i64,
         user: i64,
     },
+    /// A token already spent was replaced again, within the grace for a lost response or two
+    /// tabs racing. Handled like `Rotated`, and audited: it is also what a copy of an old
+    /// token gets while the owner's app is closed (2026-11-12 review, L2).
+    Reissued {
+        device: i64,
+        user: i64,
+    },
     Unknown,
     /// Session past its lifetime (idle or absolute): sign in again; downloads stay.
     Ended,
@@ -505,7 +512,8 @@ pub fn rotate_refresh(
         .map_err(sql_err)?;
         Ok(RefreshOutcome::Reused { device, user })
     };
-    if used_at.is_some() {
+    let spent = used_at.is_some();
+    if spent {
         // A spent token presented again. Fine while none of its replacements has been used
         // (the response was lost, or two tabs raced): issue another replacement, a bounded
         // number of times. Once a replacement has been used, this is a copy: theft.
@@ -540,7 +548,7 @@ pub fn rotate_refresh(
     // only tokens past their lifetime (which no longer work anyway) are removed.
     tx.execute("DELETE FROM refresh WHERE device_id = ?1 AND issued_at < ?2", params![device, now - REFRESH_LIFETIME])
         .map_err(sql_err)?;
-    Ok(RefreshOutcome::Rotated { device, user })
+    Ok(if spent { RefreshOutcome::Reissued { device, user } } else { RefreshOutcome::Rotated { device, user } })
 }
 
 /// Whether a refresh token belongs to a live device of `username` (any token of the chain,
@@ -614,7 +622,7 @@ mod tests {
         issue_refresh(&c, d, &[1; 32], None, 1000).expect("issue");
         assert_eq!(rotate(&mut c, [1; 32], [2; 32], 1010), RefreshOutcome::Rotated { device: d, user: u });
         // Grace: the same old token again within 60 s (lost response) gets a sibling.
-        assert_eq!(rotate(&mut c, [1; 32], [3; 32], 1020), RefreshOutcome::Rotated { device: d, user: u });
+        assert_eq!(rotate(&mut c, [1; 32], [3; 32], 1020), RefreshOutcome::Reissued { device: d, user: u });
         // A replacement is used...
         assert_eq!(rotate(&mut c, [2; 32], [4; 32], 1030), RefreshOutcome::Rotated { device: d, user: u });
         // ...so the old token presented again is theft: the device is revoked for everyone.
@@ -633,7 +641,7 @@ mod tests {
         issue_refresh(&c, d, &[1; 32], None, 1000).expect("issue");
         assert_eq!(rotate(&mut c, [1; 32], [2; 32], 1000), RefreshOutcome::Rotated { device: d, user: u });
         // The response with [2] never arrived; the app retries with [1] an hour later.
-        assert_eq!(rotate(&mut c, [1; 32], [3; 32], 4600), RefreshOutcome::Rotated { device: d, user: u });
+        assert_eq!(rotate(&mut c, [1; 32], [3; 32], 4600), RefreshOutcome::Reissued { device: d, user: u });
         assert!(device_active(&c, d).expect("active"));
         // And it goes on normally from the new token.
         assert_eq!(rotate(&mut c, [3; 32], [4; 32], 4700), RefreshOutcome::Rotated { device: d, user: u });
@@ -675,7 +683,7 @@ mod tests {
         let d = device(&mut c, u, 1000);
         issue_refresh(&c, d, &[1; 32], None, 1000).expect("issue");
         rotate(&mut c, [1; 32], [2; 32], 1000);
-        assert_eq!(rotate(&mut c, [1; 32], [3; 32], 1000 + 3600), RefreshOutcome::Rotated { device: d, user: u });
+        assert_eq!(rotate(&mut c, [1; 32], [3; 32], 1000 + 3600), RefreshOutcome::Reissued { device: d, user: u });
         assert_eq!(rotate(&mut c, [3; 32], [4; 32], 1000 + 3700), RefreshOutcome::Rotated { device: d, user: u });
         assert_eq!(rotate(&mut c, [1; 32], [5; 32], 1000 + 3800), RefreshOutcome::Reused { device: d, user: u });
     }

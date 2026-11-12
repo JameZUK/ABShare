@@ -2,10 +2,12 @@
 // playback misbehaves on someone's phone (it stops in the background, or doesn't pause for a
 // call), they can send what happened to the admins: Settings → About → Send a playback report.
 // It holds times, positions in the book and what the player saw; never which book. It goes
-// nowhere unless the listener sends it, and it is cleared at sign-out.
+// nowhere unless the listener sends it. It belongs to one person: it is cleared at sign-out,
+// and when someone else signs in (`claimLog`), so nobody can send another person's log.
 import { post } from '$lib/api/session.svelte';
 
 const KEY = 'abshare.playbackLog';
+const OWNER = 'abshare.playbackLogOwner';
 /** Lines kept: a report is at most 40 lines (POST /v1/diag), two of them headings. */
 export const KEEP = 38;
 
@@ -48,10 +50,29 @@ export function playbackLog(): string[] {
 	return [...load()];
 }
 
+/** Makes the log `user`'s, who has just signed in (or is opening the app again). Lines
+ *  written for anyone else, or for nobody known, are dropped first. */
+export function claimLog(user: string) {
+	let owner: string | null = null;
+	try {
+		owner = localStorage.getItem(OWNER);
+	} catch {
+		/* treated as someone else's */
+	}
+	if (owner === user) return;
+	forgetLog();
+	try {
+		localStorage.setItem(OWNER, user);
+	} catch {
+		/* not essential: the log is then cleared at every start */
+	}
+}
+
 export function forgetLog() {
 	lines = [];
 	try {
 		localStorage.removeItem(KEY);
+		localStorage.removeItem(OWNER);
 	} catch {
 		/* not essential */
 	}

@@ -1,5 +1,6 @@
-//! Book assembly over arbitrary folder layouts: every file ends up in exactly one book or in
-//! the ignored list, never both and never lost.
+//! Book assembly over arbitrary folder layouts, with arbitrary folder and file names mixed
+//! in among likely ones: every file ends up in exactly one book or in the ignored list, never
+//! both and never lost.
 #![no_main]
 use abshare_core::assemble::assemble;
 use abshare_core::model::{Codec, Container, ProbedFile, Tags};
@@ -9,6 +10,10 @@ use libfuzzer_sys::fuzz_target;
 struct F {
     dir: u8,
     name: u8,
+    /// An arbitrary folder path (may hold `/`, be empty, or be anything at all).
+    any_dir: Option<String>,
+    /// An arbitrary file name.
+    any_name: Option<String>,
     ms: u32,
     asin: u8,
     album: u8,
@@ -25,8 +30,12 @@ fuzz_target!(|fs: Vec<F>| {
         .take(64)
         .enumerate()
         .map(|(i, f)| {
-            let dir = DIRS[f.dir as usize % DIRS.len()];
-            let name = if f.name % 3 == 0 { format!("{i}.m4b-1754152438.952120-AbCd.m4b") } else { format!("{i}.mp3") };
+            let dir = f.any_dir.as_deref().unwrap_or(DIRS[f.dir as usize % DIRS.len()]);
+            let name = match (&f.any_name, f.name % 3) {
+                (Some(n), _) => n.clone(),
+                (None, 0) => format!("{i}.m4b-1754152438.952120-AbCd.m4b"),
+                (None, _) => format!("{i}.mp3"),
+            };
             let rel = if dir.is_empty() { name } else { format!("{dir}/{name}") };
             let tags = Tags::new([
                 ("audible_asin".to_owned(), ["", "B0AAAAAAA1", "B0BBBBBBB2"][f.asin as usize % 3].to_owned()),
@@ -50,7 +59,8 @@ fuzz_target!(|fs: Vec<F>| {
         })
         .collect();
     let a = assemble(&files);
-    let mut seen: Vec<usize> = a.books.iter().flat_map(|b| b.parts.clone()).chain(a.ignored.iter().map(|i| i.file)).collect();
+    let mut seen: Vec<usize> =
+        a.books.iter().flat_map(|b| b.parts.clone()).chain(a.ignored.iter().map(|i| i.file)).collect();
     seen.sort_unstable();
     let n = seen.len();
     seen.dedup();

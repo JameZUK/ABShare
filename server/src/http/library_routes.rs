@@ -521,21 +521,50 @@ struct Since {
     since: Option<i64>,
 }
 
+/// Rows in one answer of `GET /v1/progress`.
+const PROGRESS_PAGE: usize = 500;
+
+/// Cuts `rows` (ordered by time, one more than a page asked for) to a page and returns the
+/// cursor for the next call. The cursor means "everything up to this second has been sent",
+/// so a page never ends part-way through a second: the rows of a second cut by the page
+/// limit are left whole for the next call (2026-11-12 review, L12: they used to be skipped).
+fn page_cursor<T>(rows: &mut Vec<T>, since: i64, at: impl Fn(&T) -> i64) -> i64 {
+    if rows.len() <= PROGRESS_PAGE {
+        return rows.last().map_or(since, &at);
+    }
+    let cut = at(&rows[PROGRESS_PAGE]);
+    let whole = rows.iter().position(|r| at(r) == cut).unwrap_or(PROGRESS_PAGE);
+    if whole == 0 {
+        // More than a page in one second: send what fits and move on, rather than never
+        // getting past it.
+        rows.truncate(PROGRESS_PAGE);
+        return cut;
+    }
+    rows.truncate(whole);
+    rows.last().map_or(since, &at)
+}
+
 async fn progress_since(S(st): S<State>, Authed(s): Authed, Query(q): Query<Since>) -> Result<Json<Value>, ApiError> {
     let (cat, ok) = view(&st, &s).await?;
     let uid = s.user;
     let since = q.since.unwrap_or(0);
-    let rows: Vec<(String, i64, bool, i64, i64)> = st
+    // The cursor never passes the current second: more rows may still arrive in it, and a
+    // cursor already past it would never return them. Its rows are sent again next time
+    // instead (2026-11-12 review, L12).
+    let before = now();
+    let mut rows: Vec<(String, i64, bool, i64, i64)> = st
         .db
         .run(move |c| {
             let mut stmt = c
-                .prepare("SELECT book_id, position_ms, finished, updated_at, received_at FROM progress WHERE user_id = ?1 AND received_at > ?2 ORDER BY received_at LIMIT 500")
+                .prepare("SELECT book_id, position_ms, finished, updated_at, received_at FROM progress WHERE user_id = ?1 AND received_at > ?2 ORDER BY received_at, book_id LIMIT ?3")
                 .map_err(crate::db::sql_err)?;
-            let r = stmt.query_map(params![uid, since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).map_err(crate::db::sql_err)?;
+            let r = stmt
+                .query_map(params![uid, since, PROGRESS_PAGE as i64 + 1], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+                .map_err(crate::db::sql_err)?;
             r.collect::<Result<_, _>>().map_err(crate::db::sql_err)
         })
         .await?;
-    let cursor = rows.last().map_or(since, |r| r.4);
+    let cursor = page_cursor(&mut rows, since, |r| r.4).min(before - 1).max(since);
     let items: Vec<Value> = rows
         .into_iter()
         .filter(|r| find(&cat, &ok, &r.0).is_ok())
@@ -653,4 +682,33 @@ async fn delete_bookmark(S(st): S<State>, Authed(s): Authed, Path(id): Path<i64>
         })
         .await?;
     if n == 1 { Ok(StatusCode::NO_CONTENT) } else { Err(ApiError::not_found()) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 2026-11-12 review, L12.
+    #[test]
+    fn a_page_of_progress_never_ends_part_way_through_a_second() {
+        // Under a page: everything, and the cursor is the last row's second.
+        let mut rows: Vec<i64> = vec![5, 5, 7];
+        assert_eq!(page_cursor(&mut rows, 0, |&t| t), 7);
+        assert_eq!(rows.len(), 3);
+        let mut none: Vec<i64> = vec![];
+        assert_eq!(page_cursor(&mut none, 42, |&t| t), 42);
+        // One over a page, and the limit cuts second 9 in two: second 9 waits whole.
+        let mut rows: Vec<i64> = (0..PROGRESS_PAGE as i64 - 2).map(|_| 8).chain([9, 9, 9]).collect();
+        assert_eq!(page_cursor(&mut rows, 0, |&t| t), 8);
+        assert_eq!(rows.len(), PROGRESS_PAGE - 2);
+        assert!(rows.iter().all(|&t| t == 8));
+        // The limit falls between two seconds: the full page goes.
+        let mut rows: Vec<i64> = (0..PROGRESS_PAGE as i64).map(|_| 8).chain([9]).collect();
+        assert_eq!(page_cursor(&mut rows, 0, |&t| t), 8);
+        assert_eq!(rows.len(), PROGRESS_PAGE);
+        // More than a page in one second: progress is still made.
+        let mut rows: Vec<i64> = vec![8; PROGRESS_PAGE + 1];
+        assert_eq!(page_cursor(&mut rows, 0, |&t| t), 8);
+        assert_eq!(rows.len(), PROGRESS_PAGE);
+    }
 }

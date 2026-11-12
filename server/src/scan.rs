@@ -33,6 +33,11 @@ pub struct Report {
     pub problems: Vec<(String, &'static str, String)>,
 }
 
+/// The one problem row that stands for every skipped entry the walk didn't list by name.
+fn skipped_remainder(more: usize) -> (String, &'static str, String) {
+    ("(others)".to_owned(), "skipped", format!("{more} more entries were skipped and are not listed"))
+}
+
 fn now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
@@ -52,6 +57,10 @@ pub async fn scan_library(
     rep.files = w.audio.len();
     for (p, why) in &w.skipped {
         rep.problems.push((p.clone(), "skipped", (*why).to_owned()));
+    }
+    if w.skipped_more > 0 {
+        // The walk lists a bounded number of skipped entries and counts the rest.
+        rep.problems.push(skipped_remainder(w.skipped_more));
     }
 
     // Probe what is new or changed.
@@ -381,5 +390,17 @@ pub fn print(rep: &Report, show_problems: bool) {
         let mut kinds: Vec<_> = by.into_iter().collect();
         kinds.sort();
         println!("  totals: {kinds:?}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Review L18: skipped entries beyond the walk's limit become one row, of the kind the
+    /// admin page files under information rather than "needs attention".
+    #[test]
+    fn the_skipped_remainder_is_one_row_with_the_count() {
+        let (path, kind, detail) = super::skipped_remainder(41);
+        assert_eq!((path.as_str(), kind), ("(others)", "skipped"));
+        assert_eq!(detail, "41 more entries were skipped and are not listed");
     }
 }

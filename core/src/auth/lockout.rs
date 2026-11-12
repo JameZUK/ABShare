@@ -17,7 +17,10 @@ pub const MAX_FAILURES: usize = 5;
 pub const FIRST_LOCK: i64 = 15 * 60;
 pub const MAX_LOCK: i64 = 24 * 3600;
 pub const SHARED_PER_MINUTE: usize = 2;
-pub const MAX_ENTRIES: usize = 10_000;
+/// Addresses and usernames tracked. Large enough that filling it with live entries takes
+/// tens of thousands of networks failing at once (it was 10,000, which about 1,700 could
+/// fill: 2026-11-12 review, M7); each entry is a few dozen bytes.
+pub const MAX_ENTRIES: usize = 100_000;
 
 /// An address as throttled: IPv4 exactly, IPv6 by /64.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -73,6 +76,9 @@ struct UserState {
 pub struct Limiter {
     addrs: HashMap<AddrKey, AddrState>,
     users: HashMap<String, UserState>,
+    /// When the table was last swept for room: a full table is swept once a second, not on
+    /// every attempt, so keeping it full can't also be made to cost a pass over it each time.
+    swept: Option<i64>,
 }
 
 impl Limiter {
@@ -96,11 +102,17 @@ impl Limiter {
         let addr = AddrKey::from(ip);
         // Usernames are at most 32 characters; a longer key is never a real account.
         let user: String = user.to_ascii_lowercase().chars().take(64).collect();
-        if !self.make_room(addr, &user, now) {
+        if !self.make_room(addr, &user, now, known) {
             return Err(Refusal::Busy);
         }
         let a = self.addrs.entry(addr).or_default();
         a.last_seen = now;
+        // A day without a lock in force and the address starts again from the first, short
+        // lock: an address many people share (a mobile network, an office) doesn't keep
+        // 24-hour locks for ever because of old abuse from it.
+        if a.locks > 0 && a.locked_until + MAX_LOCK <= now {
+            a.locks = 0;
+        }
         while a.failures.front().is_some_and(|&t| t <= now - WINDOW) {
             a.failures.pop_front();
         }
@@ -169,15 +181,37 @@ impl Limiter {
     /// entry holding a lock or recent failures is never dropped (dropping it would hand out
     /// fresh attempts, review A2). If the table is full of those, a new address or username
     /// is refused instead: fail closed. Returns whether this attempt may go ahead.
-    fn make_room(&mut self, addr: AddrKey, user: &str, now: i64) -> bool {
-        let new_entries = usize::from(!self.addrs.contains_key(&addr)) + usize::from(!self.users.contains_key(user));
-        if self.addrs.len() + self.users.len() + new_entries <= MAX_ENTRIES {
+    ///
+    /// A device that already holds a sign-in for the account is the exception: for it, the
+    /// entries seen longest ago that hold no lock give way. Only the account's own devices
+    /// can cause that, so a table kept full from outside doesn't keep them out, and what an
+    /// evicted address gains is its five tries back.
+    fn make_room(&mut self, addr: AddrKey, user: &str, now: i64, known: bool) -> bool {
+        self.make_room_within(addr, user, now, known, MAX_ENTRIES)
+    }
+
+    fn make_room_within(&mut self, addr: AddrKey, user: &str, now: i64, known: bool, max: usize) -> bool {
+        let need = |me: &Self| {
+            let new = usize::from(!me.addrs.contains_key(&addr)) + usize::from(!me.users.contains_key(user));
+            (me.addrs.len() + me.users.len() + new).saturating_sub(max)
+        };
+        if need(self) == 0 {
             return true;
         }
-        self.addrs.retain(|_, a| Self::addr_active(a, now));
-        self.users.retain(|_, u| Self::user_active(u, now));
-        let new_entries = usize::from(!self.addrs.contains_key(&addr)) + usize::from(!self.users.contains_key(user));
-        self.addrs.len() + self.users.len() + new_entries <= MAX_ENTRIES
+        if self.swept != Some(now) {
+            self.swept = Some(now);
+            self.addrs.retain(|_, a| Self::addr_active(a, now));
+            self.users.retain(|_, u| Self::user_active(u, now));
+        }
+        if need(self) == 0 || !known {
+            return need(self) == 0;
+        }
+        for _ in 0..need(self) {
+            let oldest = self.addrs.iter().filter(|(_, a)| a.locked_until <= now).min_by_key(|(_, a)| a.last_seen);
+            let Some((&k, _)) = oldest else { break };
+            self.addrs.remove(&k);
+        }
+        need(self) == 0
     }
 }
 
@@ -339,10 +373,69 @@ mod tests {
     #[test]
     fn memory_is_bounded() {
         let mut l = Limiter::new();
-        for i in 0..30_000u32 {
+        for i in 0..(MAX_ENTRIES as u32) {
             let a = IpAddr::from(std::net::Ipv4Addr::from(0x0a00_0000 + i));
-            let _ = l.begin(a, &format!("u{i}"), i64::from(i));
+            let _ = l.begin(a, &format!("u{i}"), i64::from(i / 1000));
         }
         assert!(l.tracked() <= MAX_ENTRIES);
+    }
+
+    fn fill(l: &mut Limiter, now: i64, max: usize) {
+        // Live entries only: each address has just failed for its own username.
+        let mut i = 0u32;
+        while l.tracked() + 2 <= max {
+            let a = IpAddr::V4(std::net::Ipv4Addr::from(0x0a00_0000 + i));
+            assert!(l.begin(a, &format!("user{i}"), now).is_ok());
+            i += 1;
+        }
+    }
+
+    /// 2026-11-12 review, M7: a table kept full of live entries refused every new address,
+    /// the account's own devices included.
+    #[test]
+    fn a_full_table_refuses_strangers_but_not_a_device_already_signed_in() {
+        let mut l = Limiter::new();
+        fill(&mut l, 1000, 40);
+        let owner = ip("198.51.100.7");
+        let k = AddrKey::from(owner);
+        assert!(!l.make_room_within(k, "ann", 1001, false, 40), "a stranger: fail closed, nothing forgotten");
+        assert_eq!(l.tracked(), 40);
+        assert!(l.make_room_within(k, "ann", 1001, true, 40), "the owner's device gets room");
+        assert_eq!(l.tracked(), 38, "only as many entries as it needs gave way");
+    }
+
+    #[test]
+    fn room_for_a_known_device_never_costs_a_lock() {
+        let mut l = Limiter::new();
+        let locked = ip("203.0.113.9");
+        for i in 0..6 {
+            let _ = l.begin(locked, "zed", 1000 + i);
+        }
+        assert!(matches!(l.begin(locked, "zed", 1010), Err(Refusal::AddressLocked { .. })));
+        fill(&mut l, 1011, 40);
+        for n in 0..30u8 {
+            let owner = AddrKey::from(ip(&format!("198.51.100.{n}")));
+            let _ = l.make_room_within(owner, &format!("owner{n}"), 1012, true, 40);
+        }
+        assert!(matches!(l.begin(locked, "zed", 1013), Err(Refusal::AddressLocked { .. })), "the lock was forgotten");
+    }
+
+    #[test]
+    fn an_address_starts_again_from_the_short_lock_after_a_quiet_day() {
+        let mut l = Limiter::new();
+        let a = ip("203.0.113.50");
+        let lock_at = |l: &mut Limiter, t0: i64| {
+            for i in 0..5 {
+                let _ = l.begin(a, "ann", t0 + i);
+            }
+            match l.begin(a, "ann", t0 + 5) {
+                Err(Refusal::AddressLocked { until }) => until - (t0 + 4),
+                other => panic!("expected a lock, got {other:?}"),
+            }
+        };
+        assert_eq!(lock_at(&mut l, 1000), FIRST_LOCK);
+        assert_eq!(lock_at(&mut l, 1000 + 2 * FIRST_LOCK), 2 * FIRST_LOCK, "repeat abuse doubles the lock");
+        let later = 1000 + 5 * FIRST_LOCK + MAX_LOCK;
+        assert_eq!(lock_at(&mut l, later), FIRST_LOCK, "a quiet day later it is the first lock again");
     }
 }

@@ -3701,3 +3701,185 @@ async fn downloads_and_saved_files_are_audited_once_each() {
     let c = m.t.st.db.0.lock().expect("db");
     assert!(crate::auth::audit::verify(&c, &m.t.st.audit_key).is_ok());
 }
+
+// 2026-11-12 review, M1: the audit looked for the spelling `bytes=0-`, so other ways of asking
+// for the file from its first byte were served without a `media.download` or `media.save` entry.
+#[tokio::test]
+async fn a_download_from_the_first_byte_is_audited_however_the_range_is_spelt() {
+    let m = setup_media();
+    let (access, _) = listener(&m).await;
+    let auth = format!("Bearer {access}");
+    {
+        let c = m.t.st.db.0.lock().expect("db");
+        c.execute("UPDATE user SET can_save = 1 WHERE username = 'joe'", []).expect("perm");
+    }
+    for (n, range) in ["bytes=00-", "bytes= 0-", "bytes=-1000", "bytes=0-,5-9", "nonsense"].into_iter().enumerate() {
+        let h = [("authorization", auth.as_str()), ("range", range)];
+        let r = send(&m.t, "GET", &format!("/v1/media/{BOOK}?dl=1"), None, &h).await;
+        assert!(r.status().is_success(), "{range}: {}", r.status());
+        assert_eq!(body_of(r).await.len(), 1000, "{range} is the whole book");
+        assert_eq!(audit_details(&m.t, "media.download").len(), n + 1, "{range} wasn't audited");
+        let r = send(&m.t, "GET", &format!("/v1/media/{BOOK}/file"), None, &h).await;
+        assert!(r.status().is_success(), "{range}: {}", r.status());
+        assert_eq!(audit_details(&m.t, "media.save").len(), n + 1, "{range} wasn't audited");
+    }
+    // A later piece still isn't a new download.
+    let h = [("authorization", auth.as_str()), ("range", "bytes=01-")];
+    assert_eq!(
+        send(&m.t, "GET", &format!("/v1/media/{BOOK}?dl=1"), None, &h).await.status(),
+        StatusCode::PARTIAL_CONTENT
+    );
+    assert_eq!(audit_details(&m.t, "media.download").len(), 5);
+}
+
+// 2026-11-12 review, M2: building a playable copy and data-saver encoding were reachable
+// without being counted, so one account could queue ffmpeg work for every book.
+#[tokio::test]
+async fn ffmpeg_work_is_not_started_for_someone_past_the_daily_limit() {
+    let m = setup_media();
+    let (access, _) = listener(&m).await;
+    let auth = format!("Bearer {access}");
+    let joe = user_id(&m.t, "joe");
+    for i in 0..super::media_routes::BOOKS_PER_DAY {
+        drop(m.t.st.audio.admit(joe, &format!("{i:026}"), super::now()).expect("under the limit"));
+    }
+    let engine = m.t.st.media.clone().expect("media");
+    let started = || {
+        let j = engine.jobs_status();
+        j.building.len() + j.failed.len()
+    };
+    // Asking whether a multi-part book is ready doesn't build its copy; nor does playing or
+    // saving it.
+    let (status, v) = get_json(&m.t, &format!("/v1/media/{MULTI_BOOK}/state"), &access).await;
+    assert_eq!((status, &v["ready"], &v["limited"]), (StatusCode::OK, &json!(false), &json!(true)));
+    for uri in [format!("/v1/media/{MULTI_BOOK}"), format!("/v1/media/{MULTI_BOOK}?q=48&dl=1")] {
+        let r = send(&m.t, "GET", &uri, None, &[("authorization", &auth)]).await;
+        assert_eq!(r.status(), StatusCode::TOO_MANY_REQUESTS, "{uri}");
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(started(), 0, "a copy build was started past the limit");
+    // In data saver even the first byte needs an encode, so it is counted too.
+    let h = [("authorization", auth.as_str()), ("range", "bytes=0-0")];
+    let r = send(&m.t, "GET", &format!("/v1/media/{BOOK}?q=48&dl=1"), None, &h).await;
+    assert_eq!(r.status(), StatusCode::TOO_MANY_REQUESTS);
+    // The original's first byte (a download learning its size) still isn't.
+    let r = send(&m.t, "GET", &format!("/v1/media/{BOOK}?dl=1"), None, &h).await;
+    assert_eq!(r.status(), StatusCode::PARTIAL_CONTENT);
+    // Someone under the limit does get the copy started, and is counted for it.
+    let (_, amy, _, _) = enrol(&m.t, "amy").await;
+    let (_, v) = get_json(&m.t, &format!("/v1/media/{MULTI_BOOK}/state"), &amy).await;
+    assert_eq!(v["limited"], false);
+    let mut began = false;
+    for _ in 0..50 {
+        began |= started() > 0;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(began, "the copy build never started for someone allowed it");
+}
+
+// 2026-11-12 review, M6: step-up shared the sign-in limiter, so strangers failing sign-ins for
+// a username could hold its signed-in owner out of step-up (and so out of changing a password,
+// removing a device, or any admin write).
+#[tokio::test]
+async fn strangers_failing_sign_ins_cannot_hold_the_owner_out_of_step_up() {
+    let t = setup();
+    let (seed, access, _, _) = enrol(&t, "olga").await;
+    for i in 0..12u8 {
+        let mut r = req("POST", "/v1/auth/login/password", Some(json!({})))
+            .header("x-forwarded-proto", "https")
+            .header("x-forwarded-for", format!("2001:db8:{i}::1"))
+            .body(Body::from(
+                json!({"username": "olga", "password": "guess guess guess", "device_name": "x"}).to_string(),
+            ))
+            .expect("req");
+        r.extensions_mut().insert(Peer(SocketAddr::from(([10, 0, 0, 10], 4000))));
+        let _ = call(&t.app, r).await;
+    }
+    step_up(&t, "olga", &seed, &access).await;
+    // Step-up still limits its own failures: five wrong tries, then refused even when right.
+    let auth = format!("Bearer {access}");
+    let try_with = |pw: &'static str, c: String| {
+        let (t, auth) = (&t, auth.clone());
+        async move {
+            let body = json!({"password": pw, "code": c});
+            send(t, "POST", "/v1/auth/step-up/totp", Some(body), &[("authorization", &auth)]).await.status()
+        }
+    };
+    for _ in 0..5 {
+        assert_eq!(try_with("wrong wrong wrong", "000000".into()).await, StatusCode::UNAUTHORIZED);
+    }
+    reset_totp_step(&t, "olga");
+    assert_eq!(try_with("correct horse battery", code(&seed, 0)).await, StatusCode::TOO_MANY_REQUESTS);
+}
+
+// 2026-11-12 review, L2: a spent refresh token replaced again (a lost response, or a copy of
+// an old token) left no trace.
+#[tokio::test]
+async fn replacing_a_spent_refresh_token_again_is_audited() {
+    let t = setup();
+    let (_, _, refresh, _) = enrol(&t, "gus").await;
+    let cookie = format!("abshare_refresh={refresh}");
+    let r = send(&t, "POST", "/v1/auth/refresh", None, &[("cookie", &cookie)]).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert!(audit_details(&t, "refresh.reissued").is_empty(), "an ordinary renewal isn't one");
+    let r = send(&t, "POST", "/v1/auth/refresh", None, &[("cookie", &cookie)]).await;
+    assert_eq!(r.status(), StatusCode::OK, "the grace for a lost response still works");
+    assert_eq!(audit_details(&t, "refresh.reissued").len(), 1);
+}
+
+// 2026-11-12 review, L6: a name taken between starting and finishing enrolment gave a 500,
+// and the enrolment was lost.
+#[tokio::test]
+async fn a_username_taken_while_enrolling_is_reported_and_the_invite_still_works() {
+    let t = setup();
+    let start = |tok: String, name: &'static str| {
+        let t = &t;
+        async move {
+            let r = send(t, "POST", "/v1/auth/enrol/start", Some(json!({"token": tok, "username": name})), &[]).await;
+            assert_eq!(r.status(), StatusCode::OK);
+            let enrol = json_of(r).await["enrol"].as_str().expect("enrol").to_owned();
+            let body = json!({"enrol": enrol, "password": "correct horse battery"});
+            let r = send(t, "POST", "/v1/auth/enrol/password", Some(body), &[]).await;
+            let seed = b32_decode(json_of(r).await["secret"].as_str().expect("secret"));
+            let body = json!({"enrol": enrol, "code": code(&seed, 0)});
+            assert_eq!(send(t, "POST", "/v1/auth/enrol/totp", Some(body), &[]).await.status(), StatusCode::OK);
+            enrol
+        }
+    };
+    let finish = |enrol: String| {
+        let t = &t;
+        async move {
+            send(t, "POST", "/v1/auth/enrol/finish", Some(json!({"enrol": enrol, "device_name": "Laptop"})), &[]).await
+        }
+    };
+    let slow_invite = invite(&t, Role::Listener);
+    let slow = start(slow_invite.clone(), "nina").await;
+    let quick = start(invite(&t, Role::Listener), "nina").await;
+    assert_eq!(finish(quick).await.status(), StatusCode::OK);
+    let r = finish(slow).await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    assert_eq!(json_of(r).await["error"], "username_taken");
+    // The invite wasn't spent: the same person enrols under another name.
+    let again = start(slow_invite, "nina2").await;
+    assert_eq!(finish(again).await.status(), StatusCode::OK);
+}
+
+// 2026-11-12 review, L8: an HTTP/2 connection that sent its preface and then nothing kept its
+// place among the connections for ever.
+#[tokio::test]
+async fn an_idle_http2_connection_is_closed() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let t = setup();
+    let (mut client, server) = tokio::io::duplex(64 * 1024);
+    let peer = SocketAddr::from(([198, 51, 100, 9], 5555));
+    let served = tokio::spawn(super::serve_stream(server, peer, t.app.clone(), std::time::Duration::from_millis(300)));
+    // The client preface and an empty SETTINGS frame, then silence.
+    client.write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\x00\x00\x00\x04\x00\x00\x00\x00\x00").await.expect("preface");
+    let closed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let mut buf = [0u8; 1024];
+        while client.read(&mut buf).await.is_ok_and(|n| n > 0) {}
+    })
+    .await;
+    assert!(closed.is_ok(), "the idle connection was left open");
+    assert!(tokio::time::timeout(std::time::Duration::from_secs(5), served).await.is_ok(), "its task never ended");
+}

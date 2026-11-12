@@ -26,6 +26,9 @@ pub struct Output {
     pub stderr: String,
 }
 
+/// How much of the program's standard error is kept; the rest is read and thrown away.
+const STDERR_CAP: u64 = 64 * 1024;
+
 /// Runs `program` jailed with read access to `read` and write access to `write`.
 pub async fn run_jailed(
     ff: &Ffmpeg,
@@ -57,22 +60,42 @@ pub async fn run_jailed(
     let mut out = child.stdout.take().ok_or("no stdout")?;
     let mut err = child.stderr.take().ok_or("no stderr")?;
     let cap = limits.stdout_cap;
-    let work = async move {
+    // Neither pipe is ever left unread while the program runs: a program blocked writing to
+    // a full pipe can't exit, and would hold its lane until the wall-clock limit (review M3).
+    // Standard error past its cap is read and discarded. Standard output past its cap is an
+    // error, so reading stops there and the program is killed below.
+    let read_out = async {
         let mut so = Vec::new();
+        (&mut out).take(cap as u64 + 1).read_to_end(&mut so).await.map_err(|e| e.to_string())?;
+        if so.len() > cap {
+            return Err(format!("{} produced more than {cap} bytes", program.display()));
+        }
+        Ok(so)
+    };
+    let read_err = async {
         let mut se = Vec::new();
-        let mut out_lim = (&mut out).take(cap as u64 + 1);
-        let mut err_lim = (&mut err).take(64 * 1024);
-        let (r1, r2) = tokio::join!(out_lim.read_to_end(&mut so), err_lim.read_to_end(&mut se));
-        r1.map_err(|e| e.to_string())?;
-        r2.map_err(|e| e.to_string())?;
+        (&mut err).take(STDERR_CAP).read_to_end(&mut se).await.map_err(|e| e.to_string())?;
+        tokio::io::copy(&mut err, &mut tokio::io::sink()).await.map_err(|e| e.to_string())?;
+        Ok::<_, String>(se)
+    };
+    let work = async {
+        let (so, se) = tokio::try_join!(read_out, read_err)?;
         let status = child.wait().await.map_err(|e| e.to_string())?;
         Ok::<_, String>((status, so, se))
     };
-    let (status, stdout, stderr) =
-        tokio::time::timeout(limits.wall, work).await.map_err(|_| format!("{} timed out", program.display()))??;
-    if stdout.len() > cap {
-        return Err(format!("{} produced more than {cap} bytes", program.display()));
-    }
+    let done = match tokio::time::timeout(limits.wall, work).await {
+        Ok(done) => done,
+        Err(_) => Err(format!("{} timed out", program.display())),
+    };
+    let (status, stdout, stderr) = match done {
+        Ok(done) => done,
+        Err(e) => {
+            // Too much output, a failed read or the time limit: the program may still be
+            // running. Kill it and wait for it, so it is gone before the caller goes on.
+            let _ = child.kill().await;
+            return Err(e);
+        }
+    };
     Ok(Output { success: status.success(), stdout, stderr: String::from_utf8_lossy(&stderr).into_owned() })
 }
 
@@ -120,4 +143,95 @@ pub async fn test_ffmpeg() -> Option<Ffmpeg> {
         panic!("ABSHARE_REQUIRE_LANDLOCK is set but the jailed ffmpeg cannot run ({}): {why}", ff.jail.display());
     }
     ok.then_some(ff)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    /// The jail's probe (built beside the jail by the workspace), as a program that is noisy
+    /// or slow on demand. `None` where the jail can't run; with ABSHARE_REQUIRE_LANDLOCK set
+    /// that is a failure instead of a skip.
+    async fn probe() -> Option<(Ffmpeg, std::path::PathBuf)> {
+        let ff = test_ffmpeg().await?;
+        let probe = ff.jail.with_file_name("abshare-jail-probe");
+        if !probe.exists() {
+            assert!(
+                std::env::var_os("ABSHARE_REQUIRE_LANDLOCK").is_none(),
+                "ABSHARE_REQUIRE_LANDLOCK is set but {} is not built",
+                probe.display()
+            );
+            return None;
+        }
+        Some((ff, probe))
+    }
+
+    fn limits(wall_secs: u64, stdout_cap: usize) -> Limits {
+        Limits { mem_mib: 512, cpu_secs: 30, fsize_mib: 1, wall: Duration::from_secs(wall_secs), stdout_cap }
+    }
+
+    async fn run(ff: &Ffmpeg, probe: &Path, args: &[&str], limits: &Limits) -> (Result<Output, String>, Duration) {
+        let args: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+        let started = Instant::now();
+        let r = run_jailed(ff, &[], None, probe, &args, limits).await;
+        (r, started.elapsed())
+    }
+
+    macro_rules! need_probe {
+        () => {
+            match probe().await {
+                Some(p) => p,
+                None => {
+                    eprintln!("skipped: the jail cannot run here");
+                    return;
+                }
+            }
+        };
+    }
+
+    /// Review M3: a program that writes without end to standard output used to block in
+    /// `write` and hold its lane until the wall-clock limit.
+    #[tokio::test]
+    async fn too_much_standard_output_is_an_error_at_once() {
+        let (ff, probe) = need_probe!();
+        let (r, took) = run(&ff, &probe, &["flood-out"], &limits(30, 4096)).await;
+        assert_eq!(r.err().as_deref(), Some(format!("{} produced more than 4096 bytes", probe.display()).as_str()));
+        assert!(took < Duration::from_secs(10), "took {took:?}: the program wasn't stopped");
+    }
+
+    #[tokio::test]
+    async fn standard_output_is_accepted_up_to_the_cap_and_no_further() {
+        let (ff, probe) = need_probe!();
+        let (r, _) = run(&ff, &probe, &["out", "4096"], &limits(30, 4096)).await;
+        let o = r.expect("exactly at the cap");
+        assert!(o.success);
+        assert_eq!(o.stdout.len(), 4096);
+        let (r, _) = run(&ff, &probe, &["out", "4097"], &limits(30, 4096)).await;
+        assert!(r.is_err_and(|e| e.contains("produced more than 4096 bytes")));
+    }
+
+    /// Review M3: a program that is very noisy on standard error used to block once the
+    /// 64 KiB that are kept had been read.
+    #[tokio::test]
+    async fn a_program_noisy_on_standard_error_still_finishes() {
+        let (ff, probe) = need_probe!();
+        let (r, took) = run(&ff, &probe, &["noise-err", "8"], &limits(30, 4096)).await;
+        let o = r.expect("the program finishes");
+        assert!(o.success);
+        assert_eq!(o.stdout, b"done\n");
+        assert_eq!(o.stderr.len() as u64, STDERR_CAP, "only the first 64 KiB are kept");
+        assert!(took < Duration::from_secs(10), "took {took:?}");
+    }
+
+    #[tokio::test]
+    async fn the_wall_clock_limit_stops_a_slow_program() {
+        let (ff, probe) = need_probe!();
+        let (r, took) = run(&ff, &probe, &["sleep", "60"], &limits(1, 4096)).await;
+        assert_eq!(r.err().as_deref(), Some(format!("{} timed out", probe.display()).as_str()));
+        assert!(took >= Duration::from_secs(1) && took < Duration::from_secs(10), "took {took:?}");
+        // A quick program under the same limit is fine.
+        let (r, _) = run(&ff, &probe, &["sleep", "0"], &limits(5, 4096)).await;
+        assert_eq!(r.expect("runs").stdout, b"ok\n");
+    }
 }
