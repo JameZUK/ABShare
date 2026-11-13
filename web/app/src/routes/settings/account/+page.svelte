@@ -150,12 +150,16 @@
 
 	<section>
 		<h2>Recovery codes</h2>
-		<p class="muted">{me?.factors.recovery_codes_left ?? 0} unused. Each signs you in once if you lose your other ways in.</p>
-		{#if codes.length}
-			<p>Your new codes (the old ones no longer work):</p>
-			<RecoveryCodes {codes} />
+		{#if me && !me.factors.password}
+			<p class="muted">Recovery codes work with a password, and this account signs in with passkeys only. Add a second passkey on another device as a spare. If you lose them all, an admin can send you a reset link.</p>
 		{:else}
-			<button class="btn soft" onclick={newCodes} disabled={busy}>Make new codes</button>
+			<p class="muted">{me?.factors.recovery_codes_left ?? 0} unused. After your password, each signs you in once if you lose your authenticator.</p>
+			{#if codes.length}
+				<p>Your new codes (the old ones no longer work):</p>
+				<RecoveryCodes {codes} />
+			{:else}
+				<button class="btn soft" onclick={newCodes} disabled={busy}>Make new codes</button>
+			{/if}
 		{/if}
 	</section>
 

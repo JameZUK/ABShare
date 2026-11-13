@@ -120,14 +120,25 @@ struct Inner {
     step_up: HashMap<i64, i64>,
 }
 
-#[derive(Default)]
 pub struct Sessions {
     inner: Mutex<Inner>,
+    /// Most access tokens alive at once.
+    max: usize,
+}
+
+impl Default for Sessions {
+    fn default() -> Self {
+        Self::with_capacity(MAX_ENTRIES)
+    }
 }
 
 impl Sessions {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_capacity(max: usize) -> Self {
+        Self { inner: Mutex::default(), max }
     }
 
     /// Issues an access token and a media token for a device.
@@ -137,7 +148,7 @@ impl Sessions {
         let mut g = self.inner.lock().ok()?;
         g.access.retain(|_, s| s.expires > now);
         g.media.retain(|_, s| s.expires > now);
-        if g.access.len() >= MAX_ENTRIES {
+        if g.access.len() >= self.max {
             return None;
         }
         // At most 8 live access tokens per device: drop the oldest.
@@ -296,5 +307,17 @@ mod tests {
         assert!(c.len() <= 3);
         c.start(0, 9000).expect("start");
         assert_eq!(c.len(), 1, "expired ceremonies were swept");
+    }
+
+    // The table of live sessions is bounded (2026-11-12 review: the cap had no test).
+    #[test]
+    fn a_full_session_table_issues_no_more_tokens() {
+        let s = Sessions::with_capacity(200);
+        for device in 0..200 {
+            s.issue(1, device, Role::Listener, false, 1000).expect("under the cap");
+        }
+        assert!(s.issue(1, -1, Role::Listener, false, 1000).is_none(), "the table grew past its cap");
+        // Expired sessions make room again.
+        assert!(s.issue(1, -1, Role::Listener, false, 1000 + MEDIA_TTL).is_some());
     }
 }

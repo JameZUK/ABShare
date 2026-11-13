@@ -261,7 +261,7 @@ Nothing is written to the database until `enrol/finish`. The `enrol` token lasts
 - **Effect:**
   - `enrol` invite: creates the account with the invite's role and permissions.
   - `reset` invite: deletes the user's passkeys, password and authenticator, signs out all their devices, then stores the new methods.
-  - Either way, makes 10 new recovery codes, uses up the invite, and signs this device in.
+  - Uses up the invite and signs this device in. With a password it also makes 10 new recovery codes (`recovery_codes`); with a passkey only, `recovery_codes` is empty: a code is used after the password, so a passkey-only account has none.
 - **Response:** the [sign-in response](#the-sign-in-response), plus `"recovery_codes": ["abcd-efgh-jkmn", …]` (10 codes, shown once).
 - **Errors:** `400` (no complete method); `410 invite_used`; `410 enrolment_expired`; `429` (10 new devices an hour).
 
@@ -1067,7 +1067,7 @@ No file paths are included (library roots, the data directory, the ffmpeg tools)
 - the ffmpeg sandbox not working;
 - no trusted proxy configured;
 - fewer than two admins;
-- users with no recovery codes left.
+- users with a password and no recovery codes left.
 
 This is the only place the version is shown.
 

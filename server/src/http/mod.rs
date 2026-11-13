@@ -388,35 +388,39 @@ pub fn spawn_revocation_sync(st: State) {
             // clock step) isn't missed; applying one twice is harmless (review H7).
             let from = since - 5;
             since = now();
-            let r = st
-                .db
-                .run(move |c| {
-                    let mut q =
-                        c.prepare("SELECT id FROM device WHERE revoked_at >= ?1").map_err(crate::db::sql_err)?;
-                    let devices: Vec<i64> = q
-                        .query_map([from], |r| r.get(0))
-                        .map_err(crate::db::sql_err)?
-                        .collect::<Result<_, _>>()
-                        .map_err(crate::db::sql_err)?;
-                    let mut q = c.prepare("SELECT id FROM user WHERE disabled_at >= ?1").map_err(crate::db::sql_err)?;
-                    let users: Vec<i64> = q
-                        .query_map([from], |r| r.get(0))
-                        .map_err(crate::db::sql_err)?
-                        .collect::<Result<_, _>>()
-                        .map_err(crate::db::sql_err)?;
-                    Ok((devices, users))
-                })
-                .await;
-            if let Ok((devices, users)) = r {
-                for d in devices {
-                    st.sessions.revoke_device(d);
-                }
-                for u in users {
-                    st.sessions.revoke_user(u);
-                }
-            }
+            sync_revocations(&st, from).await;
         }
     });
+}
+
+/// Ends the live sessions of every device revoked, and every user disabled, since `from`.
+async fn sync_revocations(st: &State, from: i64) {
+    let r = st
+        .db
+        .run(move |c| {
+            let mut q = c.prepare("SELECT id FROM device WHERE revoked_at >= ?1").map_err(crate::db::sql_err)?;
+            let devices: Vec<i64> = q
+                .query_map([from], |r| r.get(0))
+                .map_err(crate::db::sql_err)?
+                .collect::<Result<_, _>>()
+                .map_err(crate::db::sql_err)?;
+            let mut q = c.prepare("SELECT id FROM user WHERE disabled_at >= ?1").map_err(crate::db::sql_err)?;
+            let users: Vec<i64> = q
+                .query_map([from], |r| r.get(0))
+                .map_err(crate::db::sql_err)?
+                .collect::<Result<_, _>>()
+                .map_err(crate::db::sql_err)?;
+            Ok((devices, users))
+        })
+        .await;
+    if let Ok((devices, users)) = r {
+        for d in devices {
+            st.sessions.revoke_device(d);
+        }
+        for u in users {
+            st.sessions.revoke_user(u);
+        }
+    }
 }
 
 /// Events that an anonymous flood can generate, capped in the audit log (review A7).

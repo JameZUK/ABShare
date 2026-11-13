@@ -2,6 +2,23 @@
 
 What changed and when, newest first. Each entry says how it is tested. The design and the reasons behind it are in [`SPEC.md`](SPEC.md); what differs from the design is in SPEC §16.
 
+## 0.15.1 (2026-11-13)
+
+The two points 0.15.0 left open, and tests for the controls that had none.
+
+### Security
+- **Cover images are decoded inside the jail.** The scanner used to decode covers in its own process. It now runs the server binary's own `render-cover` command through `abshare-jail`, with memory, CPU and time limits and access to one job directory only. A hostile cover can no longer stop a scan. A cover that fails is remembered, so an unchanged file isn't tried again on every scan. `doctor` checks that a jailed render works.
+- **Recovery codes are only for accounts with a password.** A code is used after the password, so a passkey-only account was shown ten codes it could never use. Such accounts now get none, the app says so, and the ones already issued are removed (schema 11). Losing every passkey means a reset link from an admin.
+
+### Tests
+- A test for each control the review found without one: bookmark caps, the response headers on audio, the changed-file refusal, who may finish adding a factor, the passkey user handle, disabled accounts, the password length cap, revocations made by the CLI, the refresh grace bound, the session table's cap, the audit head at start-up, the config file's permissions, latest-seek-wins, the read-ahead bound, start-up job clean-up, the open-time link check, and passkey step-up over HTTP.
+- Each control was removed in turn (25 removals) and its test seen to fail.
+- 434 Rust tests, 145 web unit tests and 37 browser tests pass.
+
+### Notes
+- An install outside the image, where `abshare` is dynamically linked, must list its libraries in `[ffmpeg] libs` for the jailed cover render; `doctor` reports it. The image's binary is static.
+- `doctor` now creates and removes one job directory in the data directory.
+
 ## 0.15.0 (2026-11-12)
 
 Fixes from a full code review for security, stability and reliability (SPEC D39). The review found no way in without signing in, no way to another person's data, no jail escape and no script injection. It found 2 high, 17 medium and 32 low weaknesses.

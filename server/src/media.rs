@@ -1082,4 +1082,73 @@ mod tests {
         assert!(bitrate_for(48).is_some() && bitrate_for(40).is_some() && bitrate_for(32).is_some());
         assert!(bitrate_for(320).is_none() && bitrate_for(0).is_none());
     }
+
+    fn idle_media(data: &Path) -> Media {
+        let ff = Ffmpeg {
+            ffmpeg: "/x".into(),
+            ffprobe: "/x".into(),
+            jail: "/nonexistent/jail".into(),
+            libs: vec![],
+            jobs: 1,
+        };
+        Media::new(ff, data.to_path_buf(), HashMap::new())
+    }
+
+    // 2026-11-12 review: these three had no test.
+    #[test]
+    fn only_a_devices_latest_seek_counts() {
+        let m = idle_media(&std::env::temp_dir());
+        let first = m.new_seek(7);
+        assert!(!m.superseded(7, first));
+        let second = m.new_seek(7);
+        assert!(m.superseded(7, first), "an older request from the same device still counts");
+        assert!(!m.superseded(7, second));
+        // Another device's seeks don't touch it.
+        m.new_seek(8);
+        assert!(!m.superseded(7, second));
+    }
+
+    #[tokio::test]
+    async fn read_ahead_work_is_bounded() {
+        let base = std::env::temp_dir().join(format!("abshare-readahead-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let m = Arc::new(idle_media(&base));
+        let layout =
+            Profile::new(Bitrate::K48, 2_500).expect("profile").layout(samples_from_ms(3_600_000)).expect("layout");
+        // The background lane is taken, so every read-ahead started stays queued.
+        let _lane = m.prefetch.acquire_many(m.lanes as u32).await.expect("lane");
+        for i in 0..20 {
+            m.read_ahead(PathBuf::from("/x"), format!("book{i}"), layout, i, 1);
+        }
+        tokio::task::yield_now().await;
+        assert_eq!(m.read_aheads.load(Ordering::SeqCst), 4, "read-aheads queued without bound");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn start_up_clears_only_its_own_old_job_directories() {
+        let base = std::env::temp_dir().join(format!("abshare-cleanjobs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let jobs = base.join("jobs");
+        let old = std::time::SystemTime::now() - Duration::from_secs(2 * 3600);
+        for (name, aged) in
+            [("seg-old", true), ("copy-old", true), ("silent-old", true), ("seg-new", false), ("probe-old", true)]
+        {
+            let d = jobs.join(name);
+            std::fs::create_dir_all(&d).expect("mkdir");
+            if aged {
+                std::fs::File::open(&d).and_then(|f| f.set_modified(old)).expect("age");
+            }
+        }
+        idle_media(&base).clean_jobs();
+        let mut left: Vec<String> = std::fs::read_dir(&jobs)
+            .expect("jobs")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        // Recent ones may be in use; other kinds belong to the scanner.
+        assert_eq!(left, ["probe-old", "seg-new"]);
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

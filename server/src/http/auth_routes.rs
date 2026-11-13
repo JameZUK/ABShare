@@ -311,7 +311,11 @@ async fn enrol_finish(
         st.enrol.put_back(&b.enrol, e, now());
         return Err(ApiError::bad("Create a passkey, or set a password and confirm an authenticator code."));
     }
-    let codes: Vec<String> = (0..10).map(|_| recovery_code(&random::<8>())).collect();
+    // A recovery code is a second factor after the password, so only an account with a
+    // password gets them. A passkey-only account used to be shown ten codes it could never
+    // use (2026-11-12 review, L7); losing its passkeys means a reset link from an admin.
+    let codes: Vec<String> =
+        if has_pw_totp { (0..10).map(|_| recovery_code(&random::<8>())).collect() } else { Vec::new() };
     let hashes: Vec<[u8; 32]> = codes.iter().map(|c| token_hash(c)).collect();
     let passkey = e
         .passkey

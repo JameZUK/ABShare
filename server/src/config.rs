@@ -388,4 +388,22 @@ path = "/srv/audiobooks"
         assert!(prepare_data_dir(&dir).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    // 2026-11-12 review: this refusal had no test.
+    #[test]
+    fn a_config_file_others_can_write_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join(format!("abshare-config-{}.toml", std::process::id()));
+        std::fs::write(&path, GOOD).expect("write");
+        for mode in [0o620, 0o602, 0o666] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+            let err = Config::load(&path).expect_err("a writable config was accepted");
+            assert!(err.contains("writable"), "{mode:o}: {err}");
+        }
+        // Not refused for its mode when only the owner can write (it fails later, or not at
+        // all, for other reasons).
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).expect("chmod");
+        assert!(Config::load(&path).map_or_else(|e| !e.contains("writable"), |_| true));
+        let _ = std::fs::remove_file(&path);
+    }
 }

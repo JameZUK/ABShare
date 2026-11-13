@@ -30,6 +30,12 @@ trap cleanup EXIT
 # network at all (as the scan service in deploy/compose.example.yaml).
 SCAN=$(docker compose --profile scan run --rm scan 2>&1) || { echo "$SCAN"; echo "FAIL the scan in the image"; exit 1; }
 printf '%s\n' "$SCAN" | tail -15
+# The image's own cover renderer (abshare render-cover) ran in the jail: no cover failed.
+if printf '%s\n' "$SCAN" | grep -q "\[cover\]"; then echo "FAIL a cover was not rendered in the image"; exit 1; fi
+# doctor, in the image: the jailed ffmpeg and the jailed cover renderer both run.
+DOCTOR=$(docker compose --profile scan run --rm scan doctor --config /etc/abshare/abshare.toml 2>&1) || { echo "$DOCTOR"; echo "FAIL doctor in the image"; exit 1; }
+printf '%s\n' "$DOCTOR" | grep -q "\[  ok  \] jailed covers" || { echo "$DOCTOR"; echo "FAIL doctor did not check the jailed cover renderer"; exit 1; }
+printf '%s\n' "$DOCTOR" | grep "jailed"
 
 docker compose up -d --quiet-pull
 for _ in $(seq 1 30); do

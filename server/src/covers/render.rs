@@ -1,11 +1,11 @@
 //! Decoding a cover image and rendering its thumbnails. Pure: bytes in, JPEG bytes out.
 //!
-//! The image is untrusted, and it is decoded in the scanner's own process, not in the jail.
-//! A release build aborts on panic, so a panic here would stop the scanner: the decoder must
-//! never panic and never use much memory or time. To hold it to that, this file depends on
-//! nothing but the `image` crate, so the fuzz crate builds it as it is
-//! (`fuzz/fuzz_targets/cover_render.rs`), and the size is checked from the header before
-//! anything is decoded.
+//! The image is untrusted. In the server this code runs only in the `render-cover` command
+//! (`child.rs`), which the scanner runs inside the jail: a panic, or a decoder that runs away
+//! with memory or time, ends that one process and costs one book its cover. It is still held
+//! to never panicking and to bounded memory: this file depends on nothing but the `image`
+//! crate, so the fuzz crate builds it as it is (`fuzz/fuzz_targets/cover_render.rs`), and the
+//! size is checked from the header before anything is decoded.
 
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;

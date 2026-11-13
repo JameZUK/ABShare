@@ -677,8 +677,9 @@ async fn status(S(st): S<State>, Admin(_): Admin) -> Result<Json<Value>, ApiErro
                 })
                 .map_err(crate::db::sql_err)?;
             // Accounts with no recovery codes left can be locked out by one lost device.
+            // Passkey-only accounts have none by design (codes follow a password).
             let mut weak = Vec::new();
-            for u in store::list_users(c)?.into_iter().filter(|u| !u.disabled) {
+            for u in store::list_users(c)?.into_iter().filter(|u| !u.disabled && u.password_hash.is_some()) {
                 if store::recovery_left(c, u.id)? == 0 {
                     weak.push(u.username);
                 }

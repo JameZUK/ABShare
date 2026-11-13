@@ -248,6 +248,9 @@ pub const MIGRATIONS: &[&str] = &[
     // 10: the prune of old progress keys runs on every progress write; without an index on
     // `at` it read the whole table each time (2026-11-12 review, M4).
     "CREATE INDEX progress_key_at ON progress_key(at);",
+    // 11: recovery codes follow a password. Passkey-only accounts were issued codes they
+    // could never use (2026-11-12 review, L7); those are removed.
+    "DELETE FROM recovery_code WHERE user_id IN (SELECT id FROM user WHERE password_hash IS NULL);",
 ];
 
 pub fn sql_err(e: rusqlite::Error) -> String {
@@ -272,4 +275,47 @@ pub fn open(path: &Path) -> Result<Connection, String> {
         tx.commit().map_err(sql_err)?;
     }
     Ok(conn)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Migration 11 (2026-11-12 review, L7): codes issued to passkey-only accounts are removed;
+    // codes of accounts with a password stay.
+    #[test]
+    fn upgrading_removes_recovery_codes_from_accounts_without_a_password() {
+        let path = std::env::temp_dir().join(format!("abshare-migrate-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        {
+            let c = open(&path).expect("db");
+            for (id, name, hash) in [(1, "pam", None), (2, "quinn", Some("hash"))] {
+                c.execute(
+                    "INSERT INTO user (id, username, webauthn_id, display_name, role, password_hash, created_at)
+                     VALUES (?1, ?2, ?2, ?2, 'listener', ?3, 0)",
+                    rusqlite::params![id, name, hash],
+                )
+                .expect("user");
+                for n in 0..3u8 {
+                    c.execute(
+                        "INSERT INTO recovery_code (user_id, hash) VALUES (?1, ?2)",
+                        rusqlite::params![id, vec![n; 32]],
+                    )
+                    .expect("code");
+                }
+            }
+            // As a database from before the migration.
+            c.execute_batch("PRAGMA user_version = 10").expect("version");
+        }
+        let c = open(&path).expect("reopen");
+        let left = |id: i64| -> i64 {
+            c.query_row("SELECT count(*) FROM recovery_code WHERE user_id = ?1", [id], |r| r.get(0)).expect("n")
+        };
+        assert_eq!((left(1), left(2)), (0, 3));
+        assert_eq!(c.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).expect("v"), MIGRATIONS.len() as i64);
+        drop(c);
+        for ext in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{ext}", path.display()));
+        }
+    }
 }

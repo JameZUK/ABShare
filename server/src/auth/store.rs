@@ -806,4 +806,23 @@ mod tests {
         assert!(!use_totp_step(&c, u, 99).expect("older step"));
         assert!(use_totp_step(&c, u, 101).expect("newer step"));
     }
+
+    // The grace for a lost response is bounded (2026-11-12 review: MAX_SIBLINGS had no test).
+    #[test]
+    fn a_spent_token_is_replaced_again_only_so_many_times() {
+        let mut c = db();
+        let u = user(&mut c, "ada");
+        let d = device(&mut c, u, 1000);
+        issue_refresh(&c, d, &[1; 32], None, 1000).expect("issue");
+        assert_eq!(rotate(&mut c, [1; 32], [2; 32], 1100), RefreshOutcome::Rotated { device: d, user: u });
+        // Spaced out, so the per-minute renewal limit isn't what stops it.
+        for n in 1..MAX_SIBLINGS {
+            let new = [10 + n as u8; 32];
+            let got = rotate(&mut c, [1; 32], new, 1100 + n * 100);
+            assert_eq!(got, RefreshOutcome::Reissued { device: d, user: u }, "replacement {n}");
+        }
+        let last = rotate(&mut c, [1; 32], [99; 32], 1100 + MAX_SIBLINGS * 100);
+        assert_eq!(last, RefreshOutcome::Reused { device: d, user: u }, "the grace has no end");
+        assert!(!device_active(&c, d).expect("active"));
+    }
 }

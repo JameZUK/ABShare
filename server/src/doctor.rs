@@ -1,5 +1,6 @@
 //! `abshare doctor` (SPEC §5.8): checks a deployment from the inside and says what to fix.
-//! Read-only: it never changes the library, the database or the data directory.
+//! Read-only: it never changes the library or the database. In the data directory it makes
+//! one thing, the job directory of the cover-rendering check, and removes it again.
 
 use crate::config::{self, Config};
 use crate::tools::{Limits, run_jailed};
@@ -45,7 +46,9 @@ pub async fn run(cfg: &Config) -> Vec<Check> {
     } else {
         out.push(check(Level::Ok, "trusted proxies", format!("{} set", cfg.trusted_proxies.len())));
     }
-    out.push(from(data_dir(&cfg.data_dir), "data directory", Level::Fail));
+    let data = data_dir(&cfg.data_dir);
+    let data_ok = data.is_ok();
+    out.push(from(data, "data directory", Level::Fail));
     out.push(from(secret_file(&cfg.data_dir.join("secret.key")), "server secret", Level::Fail));
     for l in &cfg.libraries {
         out.push(from(
@@ -70,7 +73,18 @@ pub async fn run(cfg: &Config) -> Vec<Check> {
             "the jail can't start: Linux 6.12+ with lsm=landlock,... is needed (SPEC D24)",
         ),
     });
+    let jail_ok = jailed.is_ok();
     out.push(from(jailed, "jailed ffmpeg", Level::Fail));
+    // Covers are decoded by this binary's own `render-cover` command, in the jail: the jail
+    // must be able to run it (when it is dynamically linked, its libraries must be in
+    // [ffmpeg] libs) and it must be able to write in a job directory.
+    out.push(if !jail_ok {
+        check(Level::Fail, "jailed covers", "not tested: the jail must run first")
+    } else if !data_ok {
+        check(Level::Fail, "jailed covers", "not tested: fix the data directory first")
+    } else {
+        from(crate::covers::self_test(&cfg.ffmpeg, &cfg.data_dir).await, "jailed covers", Level::Fail)
+    });
     out.push(from(database(cfg), "database", Level::Fail));
     out.push(from(audit_chain(cfg), "audit log", Level::Fail));
     if let Some(web) = &cfg.web_dir {
@@ -230,6 +244,42 @@ mod tests {
         assert!(libs.level == Level::Fail && libs.detail.contains("ld.so.cache"), "{}", libs.detail);
         let sandbox = find("sandbox");
         assert!(sandbox.level == Level::Fail && !sandbox.detail.contains("Linux"), "{}", sandbox.detail);
+        // Nothing is rendered when the jail can't run, and nothing is made in the data directory.
+        let covers = find("jailed covers");
+        assert!(covers.level == Level::Fail && covers.detail.starts_with("not tested"), "{}", covers.detail);
+        assert!(!d.join("jobs").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// With a working jail, doctor renders its built-in image as a scan would, and leaves
+    /// nothing behind. Skipped where the jail can't run; a failure instead with
+    /// ABSHARE_REQUIRE_LANDLOCK set.
+    #[tokio::test]
+    async fn the_jailed_cover_renderer_is_checked() {
+        let Some(ff) = crate::tools::test_ffmpeg().await else {
+            eprintln!("skipped: the jail cannot run here");
+            return;
+        };
+        let d = tmp("covers");
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        let libs: Vec<String> = ff.libs.iter().map(|p| format!("{:?}", p.display().to_string())).collect();
+        let cfg: Config = toml::from_str(&format!(
+            "data_dir = {data:?}\npublic_origin = \"https://books.example.com\"\n\
+             [ffmpeg]\nffmpeg = {ffmpeg:?}\nffprobe = {ffprobe:?}\njail = {jail:?}\nlibs = [{libs}]\n\
+             [[library]]\nname = \"Audiobooks\"\npath = {data:?}\n",
+            data = d.display().to_string(),
+            ffmpeg = ff.ffmpeg.display().to_string(),
+            ffprobe = ff.ffprobe.display().to_string(),
+            jail = ff.jail.display().to_string(),
+            libs = libs.join(", "),
+        ))
+        .expect("parse");
+        let checks = run(&cfg).await;
+        let covers = checks.iter().find(|c| c.what == "jailed covers").expect("the check");
+        assert_eq!(covers.level, Level::Ok, "{}", covers.detail);
+        assert!(covers.detail.contains("4 thumbnails"), "{}", covers.detail);
+        let left: Vec<_> = std::fs::read_dir(d.join("jobs")).map(|rd| rd.flatten().collect()).unwrap_or_default();
+        assert!(left.is_empty(), "{left:?}");
         let _ = std::fs::remove_dir_all(&d);
     }
 

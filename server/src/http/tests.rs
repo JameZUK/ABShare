@@ -3883,3 +3883,275 @@ async fn an_idle_http2_connection_is_closed() {
     assert!(closed.is_ok(), "the idle connection was left open");
     assert!(tokio::time::timeout(std::time::Duration::from_secs(5), served).await.is_ok(), "its task never ended");
 }
+
+/// Steps up with a passkey.
+async fn step_up_passkey(t: &T, key: &mut SoftKey, access: &str) -> StatusCode {
+    let auth = format!("Bearer {access}");
+    let r = send(t, "POST", "/v1/auth/step-up/passkey/start", Some(json!({})), &[("authorization", &auth)]).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let v = json_of(r).await;
+    let body = json!({"challenge": v["challenge"], "credential": key.get(&v["options"], ORIGIN)});
+    send(t, "POST", "/v1/auth/step-up/passkey/finish", Some(body), &[("authorization", &auth)]).await.status()
+}
+
+// 2026-11-12 review, L7: a recovery code is used after a password, so a passkey-only account
+// was shown ten codes it could never use.
+#[tokio::test]
+async fn recovery_codes_are_only_for_accounts_with_a_password() {
+    let t = setup();
+    let (mut key, access) = enrol_passkey(&t, "pam").await;
+    let pam = user_id(&t, "pam");
+    let stored = |uid: i64| {
+        let c = t.st.db.0.lock().expect("db");
+        c.query_row("SELECT count(*) FROM recovery_code WHERE user_id = ?1", [uid], |r| r.get::<_, i64>(0)).expect("n")
+    };
+    assert_eq!(stored(pam), 0, "a passkey-only account was issued recovery codes");
+    let (_, me) = get_json(&t, "/v1/me", &access).await;
+    assert_eq!(me["factors"]["recovery_codes_left"], 0);
+    // Nor can it make any, even stepped up.
+    assert_eq!(step_up_passkey(&t, &mut key, &access).await, StatusCode::OK);
+    let r = as_user(&t, "POST", "/v1/me/recovery", Some(json!({})), &access).await;
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(stored(pam), 0);
+    // An account with a password gets its ten, and can replace them.
+    let (seed, access, _, codes) = enrol(&t, "quinn").await;
+    assert_eq!((codes.len(), stored(user_id(&t, "quinn"))), (10, 10));
+    step_up(&t, "quinn", &seed, &access).await;
+    let r = as_user(&t, "POST", "/v1/me/recovery", Some(json!({})), &access).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(json_of(r).await["recovery_codes"].as_array().map(Vec::len), Some(10));
+}
+
+// The passkey step-up routes over HTTP (2026-11-12 review: they had no test at all).
+#[tokio::test]
+async fn a_passkey_step_up_must_be_the_callers_own_and_each_challenge_works_once() {
+    let t = setup();
+    let (mut pam_key, pam) = enrol_passkey(&t, "pam").await;
+    let (mut rob_key, rob) = enrol_passkey(&t, "rob").await;
+    let start = |access: String| {
+        let t = &t;
+        async move {
+            let auth = format!("Bearer {access}");
+            let r =
+                send(t, "POST", "/v1/auth/step-up/passkey/start", Some(json!({})), &[("authorization", &auth)]).await;
+            assert_eq!(r.status(), StatusCode::OK);
+            json_of(r).await
+        }
+    };
+    let finish = |access: String, challenge: Value, credential: Value| {
+        let t = &t;
+        async move {
+            let auth = format!("Bearer {access}");
+            let body = json!({"challenge": challenge, "credential": credential});
+            send(t, "POST", "/v1/auth/step-up/passkey/finish", Some(body), &[("authorization", &auth)]).await.status()
+        }
+    };
+    let stepped_up = |access: String| {
+        let t = &t;
+        async move {
+            as_user(t, "POST", "/v1/me/recovery", Some(json!({})), &access).await.status() != StatusCode::FORBIDDEN
+        }
+    };
+    // Not signed in: no challenge.
+    let r = send(&t, "POST", "/v1/auth/step-up/passkey/start", Some(json!({})), &[]).await;
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+    // Rob can't finish Pam's challenge, with his key or (somehow) hers.
+    let v = start(pam.clone()).await;
+    let theirs = rob_key.get(&v["options"], ORIGIN);
+    assert_eq!(finish(rob.clone(), v["challenge"].clone(), theirs).await, StatusCode::UNAUTHORIZED);
+    assert!(!stepped_up(rob.clone()).await && !stepped_up(pam.clone()).await);
+    // The challenge was spent by that try: Pam's own answer to it is refused too.
+    let hers = pam_key.get(&v["options"], ORIGIN);
+    assert_eq!(finish(pam.clone(), v["challenge"].clone(), hers).await, StatusCode::UNAUTHORIZED);
+    // Pam's own valid answer to her own challenge, but sent in on Rob's session (he has got
+    // hold of both): it must not step Rob up.
+    let v = start(pam.clone()).await;
+    let hers = pam_key.get(&v["options"], ORIGIN);
+    assert_eq!(finish(rob.clone(), v["challenge"].clone(), hers).await, StatusCode::UNAUTHORIZED);
+    assert!(!stepped_up(rob.clone()).await, "another person's passkey answer stepped this session up");
+    // Another person's key doesn't answer Pam's fresh challenge.
+    let v = start(pam.clone()).await;
+    let wrong = rob_key.get(&v["options"], ORIGIN);
+    assert_eq!(finish(pam.clone(), v["challenge"].clone(), wrong).await, StatusCode::UNAUTHORIZED);
+    // A sign-in challenge is not a step-up challenge.
+    let (ch, options) = passkey_challenge(&t, None).await;
+    let cred = pam_key.get(&options, ORIGIN);
+    assert_eq!(finish(pam.clone(), json!(ch), cred).await, StatusCode::UNAUTHORIZED);
+    assert!(!stepped_up(pam.clone()).await);
+    // Her own key on her own challenge works, for her only.
+    assert_eq!(step_up_passkey(&t, &mut pam_key, &pam).await, StatusCode::OK);
+    assert!(stepped_up(pam).await && !stepped_up(rob).await);
+}
+
+// ---------------------------------------------------------------- controls that had no test
+// (2026-11-12 review: each of these fails when its control is removed)
+
+#[tokio::test]
+async fn bookmarks_are_capped_per_book_and_per_person() {
+    let m = setup_media();
+    let (access, _) = listener(&m).await;
+    let joe = user_id(&m.t, "joe");
+    let fill = |book: &str, n: i64| {
+        let c = m.t.st.db.0.lock().expect("db");
+        c.execute("DELETE FROM bookmark", []).expect("clear");
+        c.execute(
+            "INSERT INTO bookmark (user_id, book_id, position_ms, note, created_at, updated_at)
+             WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?3) SELECT ?1, ?2, i, '', 1, 1 FROM n",
+            rusqlite::params![joe, book, n],
+        )
+        .expect("fill");
+    };
+    let uri = format!("/v1/books/{BOOK}/bookmarks");
+    let add = || as_user(&m.t, "POST", &uri, Some(json!({"position_ms": 5, "note": ""})), &access);
+    fill(BOOK, 999);
+    assert!(add().await.status().is_success(), "the thousandth is allowed");
+    assert!(!add().await.status().is_success(), "a book takes 1,000 bookmarks");
+    // Across other books: 10,000 for one person.
+    fill("zzzzzzzzzzzzzzzzzzzzzzzzzz", 9_999);
+    assert!(add().await.status().is_success());
+    assert!(!add().await.status().is_success(), "a person has 10,000 bookmarks");
+}
+
+#[tokio::test]
+async fn audio_is_sent_so_a_browser_never_treats_it_as_a_page() {
+    let m = setup_media();
+    let (access, _) = listener(&m).await;
+    for uri in [format!("/v1/media/{BOOK}"), format!("/v1/media/{BOOK}?dl=1")] {
+        let r = as_user(&m.t, "GET", &uri, None, &access).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let h = r.headers();
+        assert_eq!(h["x-content-type-options"], "nosniff", "{uri}");
+        assert_eq!(h["content-security-policy"], "default-src 'none'; sandbox", "{uri}");
+        assert_eq!(h["content-disposition"], "inline", "{uri}");
+        assert_eq!(h["cache-control"], "private, no-store", "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn a_file_that_changed_since_the_scan_is_refused_and_a_scan_asked_for() {
+    let m = setup_media();
+    let (access, _) = listener(&m).await;
+    {
+        let c = m.t.st.db.0.lock().expect("db");
+        let n = c.execute("UPDATE file SET size = 1000 WHERE rel_path = 'book.mp3'", []).expect("size");
+        if n == 0 {
+            c.execute(
+                "INSERT INTO file (library_id, rel_path, size, mtime_ns, probe, probed_at) VALUES (1, 'book.mp3', 1000, 0, '{}', 0)",
+                [],
+            )
+            .expect("file");
+        }
+    }
+    let uri = format!("/v1/media/{BOOK}");
+    assert_eq!(as_user(&m.t, "GET", &uri, None, &access).await.status(), StatusCode::OK);
+    // Swapped for something else since the scan.
+    std::fs::write(m.dir.join("lib").join("book.mp3"), b"a different, shorter file").expect("swap");
+    let r = as_user(&m.t, "GET", &uri, None, &access).await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    assert_eq!(json_of(r).await["error"], "changed");
+    assert!(m.dir.join("data").join("scan-requested").exists(), "the scanner is asked to look again");
+}
+
+#[tokio::test]
+async fn adding_a_factor_can_only_be_finished_by_whoever_started_it() {
+    let t = setup();
+    let (joe_seed, joe, ..) = enrol(&t, "joe").await;
+    let (amy_seed, amy, ..) = enrol(&t, "amy").await;
+    step_up(&t, "joe", &joe_seed, &joe).await;
+    step_up(&t, "amy", &amy_seed, &amy).await;
+    // Joe starts adding an authenticator; Amy tries to finish it on her account.
+    let r = as_user(&t, "POST", "/v1/me/totp/start", Some(json!({})), &joe).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let v = json_of(r).await;
+    let challenge = v["challenge"].as_str().expect("challenge").to_owned();
+    let seed = b32_decode(v["secret"].as_str().expect("secret"));
+    let body = json!({"challenge": challenge, "code": code(&seed, 0)});
+    let r = as_user(&t, "POST", "/v1/me/totp/finish", Some(body.clone()), &amy).await;
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "another person's challenge was accepted");
+    // It was spent by that try.
+    assert_eq!(as_user(&t, "POST", "/v1/me/totp/finish", Some(body), &joe).await.status(), StatusCode::UNAUTHORIZED);
+    // The same for a passkey.
+    let r = as_user(&t, "POST", "/v1/me/passkeys/start", Some(json!({})), &joe).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let v = json_of(r).await;
+    let credential = SoftKey::new().create(&v["options"], ORIGIN);
+    let body = json!({"challenge": v["challenge"], "name": "Key", "credential": credential});
+    let r = as_user(&t, "POST", "/v1/me/passkeys/finish", Some(body), &amy).await;
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+    let (_, me) = get_json(&t, "/v1/me", &amy).await;
+    assert_eq!(me["factors"]["passkeys"], 0);
+}
+
+#[tokio::test]
+async fn a_passkey_answer_naming_another_account_is_refused() {
+    let t = setup();
+    let (mut pam_key, _) = enrol_passkey(&t, "pam").await;
+    let (rob_key, _) = enrol_passkey(&t, "rob").await;
+    // Pam's credential and signature, but the answer says it is Rob's account.
+    pam_key.user_handle = rob_key.user_handle.clone();
+    let (ch, options) = passkey_challenge(&t, None).await;
+    let r = passkey_finish(&t, &ch, &pam_key.get(&options, ORIGIN)).await;
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_disabled_account_can_neither_sign_in_with_a_passkey_nor_renew() {
+    let t = setup();
+    let (mut key, _) = enrol_passkey(&t, "pam").await;
+    let (_, _, refresh, _) = enrol(&t, "quinn").await;
+    {
+        let c = t.st.db.0.lock().expect("db");
+        c.execute("UPDATE user SET disabled_at = 1 WHERE username IN ('pam', 'quinn')", []).expect("disable");
+    }
+    let (ch, options) = passkey_challenge(&t, None).await;
+    let r = passkey_finish(&t, &ch, &key.get(&options, ORIGIN)).await;
+    assert!(!r.status().is_success(), "a disabled account signed in with its passkey");
+    assert!(r.headers().get("set-cookie").is_none());
+    // Its device was not revoked, only the account disabled: renewal is refused all the same.
+    let r = send(&t, "POST", "/v1/auth/refresh", None, &[("cookie", &format!("abshare_refresh={refresh}"))]).await;
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn an_enormous_password_is_refused_before_it_is_hashed() {
+    let t = setup();
+    enrol(&t, "olga").await;
+    let tracked = || t.st.limiter.lock().expect("limiter").tracked();
+    let before = tracked();
+    let body = json!({"username": "olga", "password": "x".repeat(4097), "device_name": "x"});
+    let r = send(&t, "POST", "/v1/auth/login/password", Some(body), &[]).await;
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+    // Refused at the door: it never reached the limiter, so it never reached the hasher.
+    assert_eq!(tracked(), before, "an over-long password got as far as an attempt");
+    // At the limit it is an ordinary wrong password, counted as an attempt.
+    let body = json!({"username": "olga", "password": "x".repeat(4096), "device_name": "x"});
+    let r = send(&t, "POST", "/v1/auth/login/password", Some(body), &[]).await;
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+    assert!(tracked() > before);
+}
+
+#[tokio::test]
+async fn a_revocation_made_outside_the_server_ends_live_sessions() {
+    let t = setup();
+    let (_, gone, ..) = enrol(&t, "gus").await;
+    let (_, stays, ..) = enrol(&t, "hal").await;
+    let (_, off, ..) = enrol(&t, "ivy").await;
+    let ok = |access: String| {
+        let t = &t;
+        async move { get_json(t, "/v1/me", &access).await.0 == StatusCode::OK }
+    };
+    // As the admin CLI does it: straight into the database, behind the server's back.
+    let then = super::now();
+    let gus = user_id(&t, "gus");
+    {
+        let c = t.st.db.0.lock().expect("db");
+        c.execute("UPDATE device SET revoked_at = ?1 WHERE user_id = ?2", rusqlite::params![then, gus])
+            .expect("revoke");
+        c.execute("UPDATE user SET disabled_at = ?1 WHERE username = 'ivy'", [then]).expect("disable");
+    }
+    assert!(ok(gone.clone()).await, "the token lives in memory until the sync");
+    super::sync_revocations(&t.st, then - 5).await;
+    assert!(!ok(gone).await, "a revoked device kept its session");
+    assert!(!ok(off).await, "a disabled person kept their session");
+    assert!(ok(stays).await);
+}

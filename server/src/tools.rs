@@ -1,7 +1,8 @@
-//! Running ffmpeg and ffprobe, always through `abshare-jail` (SPEC D19, §5.4).
+//! Running ffmpeg, ffprobe and the cover renderer, always through `abshare-jail` (SPEC D19,
+//! §5.4).
 
 use crate::config::Ffmpeg;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
@@ -21,6 +22,8 @@ impl Limits {
 
 pub struct Output {
     pub success: bool,
+    /// The exit status; `None` when a signal ended the program (a limit, or an abort).
+    pub code: Option<i32>,
     pub stdout: Vec<u8>,
     /// At most 64 KiB, for diagnostics shown only to admins.
     pub stderr: String,
@@ -28,6 +31,61 @@ pub struct Output {
 
 /// How much of the program's standard error is kept; the rest is read and thrown away.
 const STDERR_CAP: u64 = 64 * 1024;
+
+/// The jail's own exit status when it refuses or fails to set up: the program never ran.
+pub const JAIL_REFUSED: i32 = 125;
+
+/// Why a jailed run has no [`Output`].
+pub enum JailError {
+    /// The jail could not be started at all: nothing ran.
+    Start(String),
+    /// The program was still running at the wall-clock limit, and was killed.
+    TimedOut(String),
+    /// Too much standard output, or a pipe that could not be read; the program was killed.
+    Output(String),
+}
+
+impl JailError {
+    pub fn into_message(self) -> String {
+        match self {
+            Self::Start(e) | Self::TimedOut(e) | Self::Output(e) => e,
+        }
+    }
+}
+
+/// A directory under `jobs/` in the data directory for one jailed job, removed with
+/// everything in it when this is dropped: however the job ends, a cancelled scan included.
+pub struct JobDir(PathBuf);
+
+impl JobDir {
+    /// Makes `jobs/<kind>-<random>`, private to the server's user.
+    pub fn create(data_dir: &Path, kind: &str) -> Result<Self, String> {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut rnd = [0u8; 8];
+        getrandom::fill(&mut rnd).map_err(|e| e.to_string())?;
+        let name: String = rnd.iter().map(|b| format!("{b:02x}")).collect();
+        let jobs = data_dir.join("jobs");
+        let path = jobs.join(format!("{kind}-{name}"));
+        let mut builder = std::fs::DirBuilder::new();
+        builder.mode(0o700);
+        if !jobs.is_dir() {
+            builder.recursive(true).create(&jobs).map_err(|e| format!("{}: {e}", jobs.display()))?;
+        }
+        // Not recursive: a name that exists already is an error, never reused.
+        builder.recursive(false).create(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(Self(path))
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for JobDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
 
 /// Runs `program` jailed with read access to `read` and write access to `write`.
 pub async fn run_jailed(
@@ -38,6 +96,18 @@ pub async fn run_jailed(
     args: &[String],
     limits: &Limits,
 ) -> Result<Output, String> {
+    run_jailed_classified(ff, read, write, program, args, limits).await.map_err(JailError::into_message)
+}
+
+/// [`run_jailed`], telling apart the ways a run can fail to produce an [`Output`].
+pub async fn run_jailed_classified(
+    ff: &Ffmpeg,
+    read: &[&Path],
+    write: Option<&Path>,
+    program: &Path,
+    args: &[String],
+    limits: &Limits,
+) -> Result<Output, JailError> {
     let mut cmd = tokio::process::Command::new(&ff.jail);
     for r in read {
         cmd.arg("--read").arg(r);
@@ -56,9 +126,9 @@ pub async fn run_jailed(
     cmd.args(["--nofile", &nofile.to_string()]);
     cmd.arg("--").arg(program).args(args);
     cmd.env_clear().stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
-    let mut child = cmd.spawn().map_err(|e| format!("cannot start {}: {e}", ff.jail.display()))?;
-    let mut out = child.stdout.take().ok_or("no stdout")?;
-    let mut err = child.stderr.take().ok_or("no stderr")?;
+    let mut child = cmd.spawn().map_err(|e| JailError::Start(format!("cannot start {}: {e}", ff.jail.display())))?;
+    let mut out = child.stdout.take().ok_or_else(|| JailError::Start("no stdout".into()))?;
+    let mut err = child.stderr.take().ok_or_else(|| JailError::Start("no stderr".into()))?;
     let cap = limits.stdout_cap;
     // Neither pipe is ever left unread while the program runs: a program blocked writing to
     // a full pipe can't exit, and would hold its lane until the wall-clock limit (review M3).
@@ -84,8 +154,8 @@ pub async fn run_jailed(
         Ok::<_, String>((status, so, se))
     };
     let done = match tokio::time::timeout(limits.wall, work).await {
-        Ok(done) => done,
-        Err(_) => Err(format!("{} timed out", program.display())),
+        Ok(done) => done.map_err(JailError::Output),
+        Err(_) => Err(JailError::TimedOut(format!("{} timed out", program.display()))),
     };
     let (status, stdout, stderr) = match done {
         Ok(done) => done,
@@ -96,7 +166,12 @@ pub async fn run_jailed(
             return Err(e);
         }
     };
-    Ok(Output { success: status.success(), stdout, stderr: String::from_utf8_lossy(&stderr).into_owned() })
+    Ok(Output {
+        success: status.success(),
+        code: status.code(),
+        stdout,
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+    })
 }
 
 /// The forced input demuxer for a file extension (SPEC §5.4): HLS, concat and other
@@ -222,6 +297,25 @@ mod tests {
         assert_eq!(o.stdout, b"done\n");
         assert_eq!(o.stderr.len() as u64, STDERR_CAP, "only the first 64 KiB are kept");
         assert!(took < Duration::from_secs(10), "took {took:?}");
+    }
+
+    #[test]
+    fn a_job_directory_is_private_and_removed_when_dropped() {
+        use std::os::unix::fs::PermissionsExt;
+        let data = std::env::temp_dir().join(format!("abshare-jobdir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        std::fs::create_dir_all(&data).expect("mkdir");
+        let (a, b) = (JobDir::create(&data, "cover").expect("job"), JobDir::create(&data, "cover").expect("job"));
+        assert_ne!(a.path(), b.path());
+        assert!(a.path().starts_with(data.join("jobs")) && a.path().is_dir());
+        assert_eq!(std::fs::metadata(a.path()).expect("stat").permissions().mode() & 0o777, 0o700);
+        std::fs::write(a.path().join("file"), b"x").expect("write");
+        let (pa, pb) = (a.path().to_owned(), b.path().to_owned());
+        drop(a);
+        assert!(!pa.exists() && pb.is_dir(), "only its own directory goes");
+        drop(b);
+        assert!(!pb.exists() && data.join("jobs").is_dir());
+        let _ = std::fs::remove_dir_all(&data);
     }
 
     #[tokio::test]

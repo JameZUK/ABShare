@@ -320,6 +320,14 @@ async fn remove_totp(S(st): S<State>, Ip(ip): Ip, Authed(s): Authed) -> Result<S
 async fn new_recovery(S(st): S<State>, Ip(ip): Ip, Authed(s): Authed) -> Result<Json<Value>, ApiError> {
     require_step_up(&st, &s)?;
     let uid = s.user;
+    // Only for an account with a password: a code is used after it, never by itself.
+    let has_password =
+        st.db.run(move |c| Ok(store::user_by_id(c, uid)?.is_some_and(|u| u.password_hash.is_some()))).await?;
+    if !has_password {
+        return Err(ApiError::bad(
+            "Recovery codes work with a password. With passkeys only, ask an admin for a reset link if you lose them.",
+        ));
+    }
     let codes: Vec<String> = (0..10).map(|_| recovery_code(&random::<8>())).collect();
     let hashes: Vec<[u8; 32]> = codes.iter().map(|c| token_hash(c)).collect();
     st.db.run(move |c| store::replace_recovery(c, uid, &hashes)).await?;

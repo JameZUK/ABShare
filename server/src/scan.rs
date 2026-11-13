@@ -185,16 +185,20 @@ pub async fn scan_library(
                 rep.covers += 1;
                 Some(h)
             }
-            (None, Some(s)) => match covers::make(&cfg.ffmpeg, &cfg.data_dir, &id, s).await {
-                Ok(h) => {
-                    rep.covers += 1;
-                    Some(h)
+            // In the jail, never in this process. A cover that fails is a problem for its
+            // book, remembered against `cover_src` so an unchanged source is not tried again.
+            (None, Some(s)) => {
+                match covers::make(&cfg.ffmpeg, &cfg.data_dir, &id, s, cover_src.as_deref().unwrap_or_default()).await {
+                    Ok(h) => {
+                        rep.covers += 1;
+                        Some(h)
+                    }
+                    Err(e) => {
+                        rep.problems.push((first.rel_path.clone(), "cover", e));
+                        None
+                    }
                 }
-                Err(e) => {
-                    rep.problems.push((first.rel_path.clone(), "cover", e));
-                    None
-                }
-            },
+            }
             (None, None) => None,
         };
         if plan.needs_copy {

@@ -4,10 +4,10 @@ Checks, through the proxy: plain HTTP redirects to HTTPS; exactly one Content-Se
 and HSTS on responses; a wrong Host is refused; the API refuses requests without a token;
 enrolment works and its cookies are HttpOnly, Secure, SameSite=Strict with narrow paths; a
 client can't dodge the sign-in lockout by spoofing X-Forwarded-For. And, on the invented demo
-library that run.sh had the image scan: the books are there, an original stream answers a
-Range request, a data-saver segment is encoded, and a book of several files gets its playable
-copy. That exercises the image's minimal ffmpeg and the jail under Docker. Standard library
-only.
+library that run.sh had the image scan: the books are there, embedded and sidecar covers were
+rendered and are served, an original stream answers a Range request, a data-saver segment is
+encoded, and a book of several files gets its playable copy. That exercises the image's
+minimal ffmpeg, its cover renderer and the jail under Docker. Standard library only.
 
 usage: test.py INVITE_LINK
 """
@@ -68,6 +68,26 @@ def media(access):
         check(title in books, f"{title} is in the library")
     if "The Copper Tide" not in books or "Far Station" not in books:
         return
+
+    # Covers: the image's own renderer ran in the jail during the scan, on an embedded PNG
+    # (extracted by the jailed ffmpeg) and on a cover.jpg beside a book.
+    covers = {i.get("title"): i.get("cover") for i in items}
+    for title in ("Twin Tale", "Sidecar Cover"):
+        url = covers.get(title)
+        check(bool(url), f"{title} has a cover after the scan in the image")
+        if not url:
+            continue
+        for size, side in ((None, 320), (1280, None)):
+            r, b = request("GET", f"/v1/{url}" + (f"?size={size}" if size else ""), headers=auth)
+            jpeg = r.status == 200 and r.getheader("Content-Type") == "image/jpeg" and b[:3] == b"\xff\xd8\xff"
+            check(jpeg and b[-2:] == b"\xff\xd9", f"{title}'s cover is served as a JPEG (got {r.status}, {len(b)} bytes)")
+            if jpeg and side:
+                # The frame header (SOF0) holds the height and width: the thumbnail was resized.
+                at = b.find(b"\xff\xc0")
+                h, w = struct.unpack(">HH", b[at + 5:at + 9]) if at > 0 else (0, 0)
+                check(max(h, w) == side, f"{title}'s default cover is {side} px a side (got {w} x {h})")
+    r, _ = request("GET", f"/v1/{covers.get('Sidecar Cover') or 'media/covers/x/y'}")
+    check(r.status == 401, f"covers need a credential (got {r.status})")
 
     # A single AAC file is served as it is, by range.
     one = books["The Copper Tide"]

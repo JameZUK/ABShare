@@ -751,4 +751,38 @@ mod tests {
         assert_eq!(save_name("***", "m4b"), "audiobook.m4b");
         assert!(save_name(&"x".repeat(500), "m4b").len() <= 124);
     }
+
+    // The check at open time, not only the earlier one when the book is resolved (2026-11-12
+    // review: nothing failed without it). A file swapped for a link in between is refused.
+    #[tokio::test]
+    async fn a_part_that_became_a_link_is_refused_when_it_is_opened() {
+        let base = std::env::temp_dir().join(format!("abshare-openlink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let lib = base.join("lib");
+        std::fs::create_dir_all(&lib).expect("mkdir");
+        std::fs::write(base.join("outside.mp3"), b"outside the library").expect("write");
+        std::fs::write(lib.join("book.mp3"), b"inside").expect("write");
+        let ff = crate::config::Ffmpeg {
+            ffmpeg: "/x".into(),
+            ffprobe: "/x".into(),
+            jail: "/x".into(),
+            libs: vec![],
+            jobs: 1,
+        };
+        let m = Media::new(ff, base.join("data"), HashMap::from([("Audiobooks".to_owned(), lib.clone())]));
+        let file = lib.join("book.mp3");
+        let src = Source {
+            book_id: "aaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            parts: vec![file.clone()],
+            duration_ms: 1000,
+            needs_copy: false,
+            sizes: vec![None],
+            container: Some("mp3".into()),
+        };
+        assert!(serve_file(&src, &file, None, &m).await.is_ok(), "an ordinary file is served");
+        std::fs::remove_file(&file).expect("remove");
+        std::os::unix::fs::symlink(base.join("outside.mp3"), &file).expect("link");
+        assert!(serve_file(&src, &file, None, &m).await.is_err(), "a link out of the library was followed");
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

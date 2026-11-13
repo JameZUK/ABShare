@@ -1,6 +1,6 @@
-//! Cover images (review M5): arbitrary bytes into the decoder and thumbnail renderer the
-//! scanner runs in its own process. It must never panic, and what it returns is always one
-//! JPEG for each thumbnail size.
+//! Cover images (review M5): arbitrary bytes into the decoder and thumbnail renderer that
+//! the server's jailed `render-cover` command runs. It must never panic, and what it returns
+//! is always one JPEG for each thumbnail size.
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 

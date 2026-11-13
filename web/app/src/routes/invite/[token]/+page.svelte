@@ -96,7 +96,9 @@
 		const r = await callJson<SignedIn>('v1/auth/enrol/finish', json({ enrol, device_name: deviceName() }));
 		signedIn = r;
 		codes = r.recovery_codes ?? [];
-		step = 'codes';
+		// With a passkey only there are no codes to save: they follow a password.
+		if (codes.length) step = 'codes';
+		else done();
 	}
 
 	function done() {

@@ -42,6 +42,11 @@ const USAGE: &str = "usage:
 const STOP_GRACE: Duration = Duration::from_secs(8);
 
 fn main() -> ExitCode {
+    // `abshare render-cover`: the cover renderer the scanner runs in the jail. Not in USAGE;
+    // it takes no configuration and starts no runtime.
+    if let Some(code) = covers::render_command(std::env::args_os()) {
+        return code;
+    }
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {

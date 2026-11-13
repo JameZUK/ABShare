@@ -363,4 +363,16 @@ mod tests {
         assert_eq!(len, 500);
         assert_eq!(verify(&c, &K), Ok(1));
     }
+
+    // Start-up tagging is for a log that has no head yet. It must never re-sign a log that
+    // has one (2026-11-12 review: no test): that would bless whatever tampering came before.
+    #[test]
+    fn start_up_never_re_signs_a_log_that_already_has_a_head() {
+        let c = db();
+        add(&c, 10, 1000);
+        c.execute("DELETE FROM audit WHERE id > 7", []).expect("cut the tail");
+        assert!(verify(&c, &K).is_err());
+        ensure_tags(&c, &K).expect("tags");
+        assert!(verify(&c, &K).is_err(), "start-up re-signed a tampered log");
+    }
 }
